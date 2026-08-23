@@ -1,0 +1,32 @@
+appId: dev.mfordjody.lumen
+productName: Lumen
+copyright: Copyright © 2026
+asar: true
+directories:
+  output: release
+  buildResources: resources
+files:
+  - out/**/*
+  - package.json
+  - node_modules/**/*
+  - "!node_modules/.cache/**/*"
+  - "!**/{README,readme,CHANGELOG,changelog}*"
+  - "!**/{test,tests,__tests__,powered-test,example,examples}/**"
+  - "!**/*.{map,md,ts,tsx}"
+extraResources:
+  - from: node_modules/sql.js/dist/sql-wasm.wasm
+    to: sql-wasm.wasm
+mac:
+  category: public.app-category.productivity
+  icon: icon.icns
+  target:
+    - dmg
+    - dir
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  darkModeSupport: true
+dmg:
+  artifactName: "${productName}-${version}-${arch}.dmg"
+  title: Lumen
+npmRebuild: false
