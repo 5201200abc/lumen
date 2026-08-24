@@ -1,9 +1,9 @@
-import { safeStorage } from "electron";
 import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Effort, Settings, Theme } from "@shared/types";
+import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
 const DEFAULT_MODELS_DIR = join(homedir(), "models");
 const LOCAL_ENV = join(DEFAULT_MODELS_DIR, "websearch", ".env");
@@ -40,30 +40,13 @@ const store = new Store<Disk>({
   }
 });
 
-function encrypt(plain: string): string {
-  if (!plain) return "";
-  if (!safeStorage.isEncryptionAvailable()) return `plain:${plain}`;
-  return safeStorage.encryptString(plain).toString("base64");
-}
-
-function decrypt(value: string): string {
-  if (!value) return "";
-  if (value.startsWith("plain:")) return value.slice(6);
-  if (!safeStorage.isEncryptionAvailable()) return "";
-  try {
-    return safeStorage.decryptString(Buffer.from(value, "base64"));
-  } catch {
-    return "";
-  }
-}
-
 function seedTavily(): void {
-  if (decrypt(store.get("tavilyApiKeyEnc"))) return;
+  if (decryptLocalSecret(store.get("tavilyApiKeyEnc"))) return;
   if (!existsSync(LOCAL_ENV)) return;
   const text = readFileSync(LOCAL_ENV, "utf8");
   const match = text.match(/^\s*TAVILY_API_KEY\s*=\s*(.+)\s*$/m);
   const key = match?.[1]?.trim();
-  if (key) store.set("tavilyApiKeyEnc", encrypt(key));
+  if (key) store.set("tavilyApiKeyEnc", encryptLocalSecret(key));
 }
 
 export function readSystemPrompt(): string {
@@ -87,9 +70,9 @@ export function getSettings(): Settings {
   seedTavily();
   return {
     llamaUrl: store.get("llamaUrl"),
-    llamaApiKey: decrypt(store.get("llamaApiKeyEnc")),
+    llamaApiKey: decryptLocalSecret(store.get("llamaApiKeyEnc")),
     model: store.get("model"),
-    tavilyApiKey: decrypt(store.get("tavilyApiKeyEnc")),
+    tavilyApiKey: decryptLocalSecret(store.get("tavilyApiKeyEnc")),
     defaultEffort: normalizeEffort(store.get("defaultEffort")),
     memoryEnabled: store.get("memoryEnabled"),
     theme: store.get("theme"),
@@ -97,9 +80,12 @@ export function getSettings(): Settings {
     systemPrompt: readSystemPrompt(),
     systemPromptPath: SYSTEM_PROMPT_PATH,
     chatInstructions: store.get("chatInstructions"),
-    coworkInstructions: store.get("coworkInstructions"),
-    googleClientId: store.get("googleClientId")
+    coworkInstructions: store.get("coworkInstructions")
   };
+}
+
+export function getLegacyGoogleClientId(): string {
+  return store.get("googleClientId");
 }
 
 export function setSettings(patch: Partial<Settings>): Settings {
@@ -119,13 +105,6 @@ export function setSettings(patch: Partial<Settings>): Settings {
   }
   if (patch.model !== undefined && patch.model.length > 200) {
     throw new Error("Model name is too long.");
-  }
-  if (
-    patch.googleClientId !== undefined &&
-    patch.googleClientId.trim() &&
-    !/^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$/.test(patch.googleClientId.trim())
-  ) {
-    throw new Error("Google OAuth Client ID must end with .apps.googleusercontent.com.");
   }
   if (patch.chatInstructions !== undefined && patch.chatInstructions.length > 20_000) {
     throw new Error("Chat custom instructions cannot exceed 20,000 characters.");
@@ -154,9 +133,8 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.modelsDir !== undefined) store.set("modelsDir", patch.modelsDir.trim());
   if (patch.chatInstructions !== undefined) store.set("chatInstructions", patch.chatInstructions);
   if (patch.coworkInstructions !== undefined) store.set("coworkInstructions", patch.coworkInstructions);
-  if (patch.googleClientId !== undefined) store.set("googleClientId", patch.googleClientId.trim());
-  if (patch.llamaApiKey !== undefined) store.set("llamaApiKeyEnc", encrypt(patch.llamaApiKey.trim()));
-  if (patch.tavilyApiKey !== undefined) store.set("tavilyApiKeyEnc", encrypt(patch.tavilyApiKey.trim()));
+  if (patch.llamaApiKey !== undefined) store.set("llamaApiKeyEnc", encryptLocalSecret(patch.llamaApiKey.trim()));
+  if (patch.tavilyApiKey !== undefined) store.set("tavilyApiKeyEnc", encryptLocalSecret(patch.tavilyApiKey.trim()));
   if (patch.systemPrompt !== undefined) writeSystemPrompt(patch.systemPrompt);
   return getSettings();
 }

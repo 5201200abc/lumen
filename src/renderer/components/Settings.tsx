@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import type { GoogleAccount, Settings } from "@shared/types";
+import type { Settings } from "@shared/types";
 import { IconTrash } from "./icons";
 
 type Props = {
   settings: Settings;
-  account: GoogleAccount;
   onChange: (patch: Partial<Settings>) => Promise<void>;
   onClose: () => void;
   onDeleteAllMemories?: () => Promise<void>;
@@ -87,23 +86,6 @@ export function SettingsPanel(props: Props) {
         <div className="settings-scroll">
           <section className="settings-section">
             <div className="settings-section-heading">
-              <h3>Account</h3>
-              <p>Google login stores an encrypted token locally and backs up Lumen's database to Drive app data.</p>
-            </div>
-            <label className="field">
-              <span>Google OAuth Desktop Client ID</span>
-              <input
-                value={s.googleClientId}
-                onChange={(event) => void props.onChange({ googleClientId: event.target.value }).catch((cause) => setError(String(cause)))}
-                placeholder="000000000000-….apps.googleusercontent.com"
-                spellCheck={false}
-              />
-              <small>{props.account.connected ? `Connected as ${props.account.email}` : "Required once before Continue with Google can open."}</small>
-            </label>
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-heading">
               <h3>Instructions</h3>
               <p>Separate guidance for lightweight Chat and tool-using Cowork sessions.</p>
             </div>
@@ -183,7 +165,7 @@ export function SettingsPanel(props: Props) {
                 {!ruleEditable ? (
                   <div className="rule-lock-note">
                     <span>Style rule protected</span>
-                    <small>Modify only when you intend to change model output style.</small>
+                    <small>Includes concise reasoning and loop prevention. Modify only to change output style.</small>
                   </div>
                 ) : null}
               </div>

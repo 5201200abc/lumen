@@ -5,6 +5,7 @@ import { SettingsPanel } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { CodexView } from "./components/CodexView";
 import type { Attachment, ChatMessage, Conversation, CodexTask, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
+import { planChatRequest } from "@shared/chat-plan";
 
 const WELCOME_PROMPTS = ["What are we going to do?", "What would you like to talk about?"] as const;
 
@@ -24,7 +25,7 @@ export function App() {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [effort, setEffort] = useState<Effort>("xhigh");
-  const [webSearch, setWebSearch] = useState(false);
+  const [webSearch, setWebSearch] = useState(true);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -152,11 +153,17 @@ export function App() {
         if (d.conversationId !== activeId) return;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === d.messageId
+            m.id === d.messageId || (m.id === "tmp-asst" && m.role === "assistant")
               ? {
                   ...m,
                   content: d.content ?? m.content,
-                  thinking: d.thinking ?? m.thinking
+                  thinking: d.thinking ?? m.thinking,
+                  phase: d.phase ?? m.phase,
+                  statusText: d.statusText ?? m.statusText,
+                  phaseStartedAt:
+                    d.phase === "thinking" && m.phase !== "thinking"
+                      ? Date.now()
+                      : m.phaseStartedAt
                 }
               : m
           )
@@ -168,7 +175,17 @@ export function App() {
         setStreaming(false);
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === d.messageId ? { ...m, content: d.content, thinking: d.thinking } : m
+            m.id === d.messageId || (m.id === "tmp-asst" && m.role === "assistant")
+              ? {
+                  ...m,
+                  id: d.messageId,
+                  content: d.content,
+                  thinking: d.thinking,
+                  phase: "done",
+                  statusText: "",
+                  durationSeconds: d.durationSeconds
+                }
+              : m
           )
         );
       }),
@@ -177,7 +194,11 @@ export function App() {
         if (d.conversationId !== activeId) return;
         setStreaming(false);
         setMessages((prev) =>
-          prev.map((m) => (m.id === d.messageId ? { ...m, content: `生成失败：${d.error}` } : m))
+          prev.map((m) =>
+            m.id === d.messageId || (m.id === "tmp-asst" && m.role === "assistant")
+              ? { ...m, id: d.messageId, content: `Generation failed: ${d.error}`, phase: "error", statusText: "" }
+              : m
+          )
         );
       }),
       window.lumen.screenshot.onAdded((file) => {
@@ -232,6 +253,7 @@ export function App() {
     }
     const content = draft;
     const files = attachments;
+    const plan = planChatRequest(content, webSearch);
     setDraft("");
     setAttachments([]);
     setStreaming(true);
@@ -251,7 +273,10 @@ export function App() {
       content: "",
       thinking: "",
       attachments: [],
-      createdAt: Date.now() + 1
+      createdAt: Date.now() + 1,
+      phase: "preparing",
+      introText: plan.action,
+      statusText: plan.useWeb ? "Preparing web search" : "Preparing the request"
     };
     setMessages((prev) => [...prev, user, assistant]);
     try {
@@ -279,7 +304,7 @@ export function App() {
       setMessages((prev) =>
         prev.map((m) =>
           m.id === "tmp-asst"
-            ? { ...m, content: `生成失败：${message}` }
+            ? { ...m, content: `Generation failed: ${message}` }
             : m
         )
       );
@@ -289,6 +314,8 @@ export function App() {
   const regenerate = async (): Promise<void> => {
     if (!activeId || streaming) return;
     const original = [...messages].reverse().find((m) => m.role === "assistant");
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const plan = planChatRequest(lastUser?.content || "", webSearch);
     setStreaming(true);
     setMessages((prev) => {
       const next = [...prev];
@@ -303,20 +330,23 @@ export function App() {
           content: "",
           thinking: "",
           attachments: [],
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          phase: "preparing",
+          introText: plan.action,
+          statusText: plan.useWeb ? "Preparing web search" : "Preparing the request"
         }
       ];
     });
     try {
       const res = await window.lumen.chat.regenerate(activeId, effort, webSearch);
-      if (!res.ok || !res.assistantId) throw new Error("无法重新生成：未找到上一条用户消息");
+      if (!res.ok || !res.assistantId) throw new Error("Could not regenerate because the previous user message was not found.");
       setMessages((prev) => prev.map((m) => (m.id === "tmp-asst" ? { ...m, id: res.assistantId! } : m)));
     } catch (err) {
       setStreaming(false);
       setMessages((prev) =>
         prev.map((m) =>
           m.id === "tmp-asst"
-            ? original || { ...m, content: `生成失败：${err instanceof Error ? err.message : String(err)}` }
+            ? original || { ...m, content: `Generation failed: ${err instanceof Error ? err.message : String(err)}` }
             : m
         )
       );
@@ -330,9 +360,6 @@ export function App() {
 
     const write = settingsWrite.current.then(async () => {
       await window.lumen.settings.set(patch);
-      if (patch.googleClientId !== undefined) {
-        setAccount(await window.lumen.google.status());
-      }
     });
     settingsWrite.current = write.catch(() => undefined);
     await write;
@@ -480,7 +507,6 @@ export function App() {
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
-          account={account}
           onChange={patchSettings}
           onClose={() => setSettingsOpen(false)}
           onDeleteAllMemories={async () => {

@@ -10,21 +10,19 @@ type Props = {
 };
 
 export function MessageView({ message, streaming, onRegenerate }: Props) {
-  const [seconds, setSeconds] = useState(() =>
-    streaming ? Math.max(0, Math.floor((Date.now() - message.createdAt) / 1000)) : 0
-  );
+  const [seconds, setSeconds] = useState(0);
   const [copied, setCopied] = useState(false);
   const copyReset = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!streaming) return;
-    const t0 = message.createdAt;
+    if (!streaming || message.phase !== "thinking") return;
+    const t0 = message.phaseStartedAt || Date.now();
     setSeconds(Math.max(0, Math.floor((Date.now() - t0) / 1000)));
     const id = window.setInterval(() => {
       setSeconds(Math.floor((Date.now() - t0) / 1000));
     }, 200);
     return () => window.clearInterval(id);
-  }, [streaming, message.id]);
+  }, [streaming, message.id, message.phase, message.phaseStartedAt]);
 
   useEffect(
     () => () => {
@@ -51,7 +49,13 @@ export function MessageView({ message, streaming, onRegenerate }: Props) {
   }
 
   const thinking = message.thinking.trim();
-  const showThought = Boolean(thinking || streaming);
+  const visibleThinking =
+    thinking.length > 6000
+      ? `[Earlier reasoning hidden to reduce rendering load]\n\n${thinking.slice(-6000)}`
+      : thinking;
+  const activelyThinking = Boolean(streaming && message.phase === "thinking");
+  const showThought = Boolean(activelyThinking || (thinking && !streaming));
+  const showLiveStatus = Boolean(streaming && !activelyThinking && message.statusText);
 
   if (!streaming && !showThought && !message.content) return null;
 
@@ -80,23 +84,35 @@ export function MessageView({ message, streaming, onRegenerate }: Props) {
 
   return (
     <div className="turn assistant-turn">
+      {showLiveStatus ? (
+        <div className={`assistant-live-status ${message.phase || "preparing"}`}>
+          <span className="spin" />
+          <span>{message.statusText}</span>
+        </div>
+      ) : null}
+      {!streaming && message.durationSeconds ? (
+        <div className="worked-status">Worked for {message.durationSeconds}s</div>
+      ) : null}
       {showThought ? (
-        <details className="thought" open={Boolean(streaming)}>
+        <details className="thought" open={activelyThinking}>
           <summary>
-            {streaming ? <span className="spin" /> : null}
-            <span>{streaming ? `Thinking ${seconds}s` : seconds > 0 ? `Thought for ${seconds}s` : "Thought complete"}</span>
+            {activelyThinking ? <span className="spin" /> : null}
+            <span>{activelyThinking ? `Thinking ${seconds}s` : "Reasoning"}</span>
           </summary>
-          <pre>{thinking || (streaming ? "" : "")}</pre>
+          {visibleThinking ? <pre>{visibleThinking}</pre> : null}
         </details>
+      ) : null}
+      {activelyThinking && message.introText ? (
+        <p className="assistant-intro">{message.introText}</p>
       ) : null}
       <MarkdownView text={message.content} />
       {!streaming && message.content ? (
         <div className="turn-actions">
-          <button className="icon-btn ghost-icon message-action" type="button" title={copied ? "已复制" : "复制"} aria-label={copied ? "已复制" : "复制"} onClick={() => void copy()}>
+          <button className="icon-btn ghost-icon message-action" type="button" title={copied ? "Copied" : "Copy"} aria-label={copied ? "Copied" : "Copy"} onClick={() => void copy()}>
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
           </button>
           {onRegenerate ? (
-            <button className="icon-btn ghost-icon message-action" type="button" title="重新生成" aria-label="重新生成" onClick={onRegenerate}>
+            <button className="icon-btn ghost-icon message-action" type="button" title="Regenerate" aria-label="Regenerate" onClick={onRegenerate}>
               <IconRefresh size={14} />
             </button>
           ) : null}

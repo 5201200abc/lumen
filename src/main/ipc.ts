@@ -70,6 +70,7 @@ async function beginStream(opts: {
   }
 
   const assistantId = crypto.randomUUID();
+  const startedAt = Date.now();
   insertMessage({
     id: assistantId,
     conversationId: opts.conversationId,
@@ -77,7 +78,7 @@ async function beginStream(opts: {
     content: "",
     thinking: "",
     attachments: [],
-    createdAt: Date.now() + 1
+    createdAt: startedAt + 1
   });
 
   const userMsg = {
@@ -103,6 +104,15 @@ async function beginStream(opts: {
     vision: status.vision,
     abort,
     handlers: {
+      onStatus: (statusUpdate) => {
+        if (aborts.get(opts.conversationId) !== abort) return;
+        opts.win?.webContents.send("chat:delta", {
+          conversationId: opts.conversationId,
+          messageId: assistantId,
+          phase: statusUpdate.phase,
+          statusText: statusUpdate.text
+        });
+      },
       onDelta: (chunk) => {
         if (aborts.get(opts.conversationId) !== abort) return;
         opts.win?.webContents.send("chat:delta", {
@@ -116,7 +126,12 @@ async function beginStream(opts: {
           deleteMessage(assistantId);
           return;
         }
-        updateMessage(assistantId, { content: result.content, thinking: result.thinking });
+        const durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        updateMessage(assistantId, {
+          content: result.content,
+          thinking: result.thinking,
+          durationSeconds
+        });
         if (settings.memoryEnabled && !result.stopped && result.content.trim()) {
           maybeRemember(userMsg, {
             ...userMsg,
@@ -133,7 +148,8 @@ async function beginStream(opts: {
           messageId: assistantId,
           thinking: result.thinking,
           content: result.content,
-          stopped: result.stopped
+          stopped: result.stopped,
+          durationSeconds
         });
 
         // Automatically summarize a concise topic title using the local model

@@ -2,6 +2,7 @@
 export type Effort = "low" | "medium" | "xhigh";
 export type Theme = "system" | "light" | "dark";
 export type Role = "user" | "assistant" | "system";
+export type ChatPhase = "preparing" | "searching" | "thinking" | "answering" | "done" | "error";
 
 export type Settings = {
   llamaUrl: string;
@@ -16,7 +17,6 @@ export type Settings = {
   systemPromptPath: string;
   chatInstructions: string;
   coworkInstructions: string;
-  googleClientId: string;
 };
 
 export type GoogleAccount = {
@@ -58,6 +58,11 @@ export type ChatMessage = {
   thinking: string;
   attachments: Attachment[];
   createdAt: number;
+  phase?: ChatPhase;
+  phaseStartedAt?: number;
+  introText?: string;
+  statusText?: string;
+  durationSeconds?: number;
 };
 
 export type MemoryItem = {
@@ -92,6 +97,8 @@ export type StreamDelta = {
   messageId: string;
   thinking?: string;
   content?: string;
+  phase?: ChatPhase;
+  statusText?: string;
 };
 
 export type StreamDone = {
@@ -100,6 +107,7 @@ export type StreamDone = {
   thinking: string;
   content: string;
   stopped?: boolean;
+  durationSeconds?: number;
 };
 
 export type CodexToolCall = {
@@ -119,6 +127,8 @@ export type CodexMessage = {
   status?: "streaming" | "done" | "error";
   contextUsed?: number;
   contextTotal?: number;
+  activity?: string;
+  durationSeconds?: number;
   createdAt: number;
 };
 

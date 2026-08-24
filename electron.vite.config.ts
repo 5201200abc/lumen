@@ -7,7 +7,10 @@ const shared = resolve("src/shared");
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    resolve: { alias: { "@shared": shared } }
+    resolve: { alias: { "@shared": shared } },
+    define: {
+      __LUMEN_GOOGLE_CLIENT_ID__: JSON.stringify(process.env.LUMEN_GOOGLE_CLIENT_ID || "")
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

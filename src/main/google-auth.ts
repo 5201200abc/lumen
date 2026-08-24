@@ -1,11 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
-import { safeStorage, shell } from "electron";
+import { existsSync, readFileSync } from "node:fs";
+import { shell } from "electron";
 import Store from "electron-store";
 import type { GoogleAccount } from "@shared/types";
 import { databasePath, flushDb } from "./db";
-import { getSettings } from "./store";
+import { getLegacyGoogleClientId } from "./store";
+import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
+
+declare const __LUMEN_GOOGLE_CLIENT_ID__: string;
 
 type AuthDisk = {
   refreshTokenEnc: string;
@@ -38,27 +42,60 @@ let syncTimer: NodeJS.Timeout | null = null;
 let syncInFlight: Promise<GoogleAccount> | null = null;
 let suppressScheduledSync = false;
 
-function secureStorageAvailable(): boolean {
-  if (!safeStorage.isEncryptionAvailable()) return false;
-  return process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text";
-}
-
 function encrypt(value: string): string {
-  if (!value || !secureStorageAvailable()) return "";
-  return safeStorage.encryptString(value).toString("base64");
+  return encryptLocalSecret(value);
 }
 
 function decrypt(value: string): string {
-  if (!value || !secureStorageAvailable()) return "";
-  try {
-    return safeStorage.decryptString(Buffer.from(value, "base64"));
-  } catch {
-    return "";
-  }
+  return decryptLocalSecret(value);
 }
 
 function clientId(): string {
-  return getSettings().googleClientId || process.env.LUMEN_GOOGLE_CLIENT_ID || "";
+  return __LUMEN_GOOGLE_CLIENT_ID__ || process.env.LUMEN_GOOGLE_CLIENT_ID || getLegacyGoogleClientId();
+}
+
+function launchBrowser(executable: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, { detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+async function openGoogleLogin(url: string): Promise<void> {
+  try {
+    if (process.platform === "darwin") {
+      await launchBrowser("/usr/bin/open", ["-a", "Google Chrome", url]);
+      return;
+    }
+    if (process.platform === "win32") {
+      const roots = [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA];
+      const chrome = roots
+        .filter((root): root is string => Boolean(root))
+        .map((root) => `${root}\\Google\\Chrome\\Application\\chrome.exe`)
+        .find(existsSync);
+      if (chrome) {
+        await launchBrowser(chrome, [url]);
+        return;
+      }
+    }
+    if (process.platform === "linux") {
+      for (const executable of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
+        try {
+          await launchBrowser(executable, [url]);
+          return;
+        } catch {
+          // Try next common Chrome executable.
+        }
+      }
+    }
+  } catch {
+    // Fall through when Chrome is not installed or cannot be launched.
+  }
+  await shell.openExternal(url);
 }
 
 export function googleStatus(error?: string): GoogleAccount {
@@ -91,7 +128,7 @@ async function accessToken(): Promise<string> {
   const cached = decrypt(authStore.get("accessTokenEnc"));
   if (cached && authStore.get("expiresAt") > Date.now() + 60_000) return cached;
   const refresh = decrypt(authStore.get("refreshTokenEnc"));
-  if (!refresh) throw new Error("Google 登录已失效，请重新登录");
+  if (!refresh) throw new Error("Google sign-in expired. Sign in again.");
   let json: Record<string, any>;
   try {
     json = await tokenRequest(
@@ -115,10 +152,7 @@ async function accessToken(): Promise<string> {
 export async function googleLogin(): Promise<GoogleAccount> {
   const id = clientId();
   if (!id) {
-    return googleStatus("请先在 Settings > Account 中配置 Google OAuth Desktop Client ID");
-  }
-  if (!secureStorageAvailable()) {
-    return googleStatus("系统安全存储不可用，无法安全保存 Google 登录令牌");
+    return googleStatus("Google sign-in is unavailable in this build.");
   }
   if (authStore.get("clientId") && authStore.get("clientId") !== id) {
     authStore.clear();
@@ -138,7 +172,7 @@ export async function googleLogin(): Promise<GoogleAccount> {
       if (url.searchParams.get("state") !== state) {
         response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Invalid OAuth state.");
         server.close();
-        reject(new Error("Google OAuth state 校验失败"));
+        reject(new Error("Google OAuth state validation failed."));
         return;
       }
       const error = url.searchParams.get("error");
@@ -146,7 +180,7 @@ export async function googleLogin(): Promise<GoogleAccount> {
       if (error || !code) {
         response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Google sign-in was cancelled.");
         server.close();
-        reject(new Error(error || "Google 登录已取消"));
+        reject(new Error(error || "Google sign-in was cancelled."));
         return;
       }
       response
@@ -168,19 +202,19 @@ export async function googleLogin(): Promise<GoogleAccount> {
         response_type: "code",
         scope: "openid email profile https://www.googleapis.com/auth/drive.appdata",
         access_type: "offline",
-        prompt: "consent",
+        prompt: "select_account consent",
         code_challenge: challenge,
         code_challenge_method: "S256",
         state
       }).toString();
-      void shell.openExternal(authUrl.toString()).catch((error) => {
+      void openGoogleLogin(authUrl.toString()).catch((error) => {
         server.close();
-        reject(new Error(`无法打开系统浏览器：${error instanceof Error ? error.message : String(error)}`));
+        reject(new Error(`Could not open Chrome: ${error instanceof Error ? error.message : String(error)}`));
       });
     });
     const timeout = setTimeout(() => {
       server.close();
-      reject(new Error("Google 登录超时"));
+      reject(new Error("Google sign-in timed out."));
     }, 180_000);
     server.on("close", () => clearTimeout(timeout));
     server.on("error", reject);

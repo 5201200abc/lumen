@@ -3,11 +3,10 @@ import type { CodexMessage, CodexTask, CodexToolCall, Effort, WorkspaceInfo } fr
 import { MarkdownView } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
+import { toolActivity, toolDescription } from "@shared/cowork-status";
 import {
   IconArrowUp,
   IconCheck,
-  IconChevronDown,
-  IconChevronUp,
   IconCopy,
   IconBranch,
   IconFileText,
@@ -63,72 +62,38 @@ function getToolIcon(name: string) {
 }
 
 function ToolCallCard({ tool }: { tool: CodexToolCall }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const getToolDesc = () => {
-    const n = tool.name.toLowerCase();
-    if (n === "bash" || n === "sh" || n.includes("command")) {
-      return tool.input?.command || "执行 Shell 命令";
-    }
-    if (n === "edit" || n === "write" || n === "read" || n.includes("write") || n.includes("edit") || n.includes("read")) {
-      return tool.input?.file_path || tool.input?.path || tool.input?.filename || "";
-    }
-    if (n === "grep" || n === "glob" || n.includes("search") || n.includes("find")) {
-      return tool.input?.pattern || tool.input?.query || "";
-    }
-    return tool.input && Object.keys(tool.input).length > 0 ? JSON.stringify(tool.input) : "";
-  };
-
-  const desc = getToolDesc();
+  const desc = toolDescription(tool);
 
   return (
     <div className={`tool-card ${tool.status}`}>
-      <div className="tool-card-header" onClick={() => setExpanded(!expanded)}>
+      <div className="tool-card-header">
         <div className="tool-card-left">
           <span className="tool-badge-icon" title={tool.name}>
             {getToolIcon(tool.name)}
           </span>
+          <span className="tool-name">{tool.name}</span>
           <span className="tool-desc" title={desc || tool.name}>
-            {desc || tool.name}
+            {desc}
           </span>
         </div>
         <div className="tool-card-right">
-          <span className={`tool-status-badge ${tool.status}`} title={tool.status === "completed" ? "已完成" : tool.status === "error" ? "失败" : "执行中"}>
+          <span className={`tool-status-badge ${tool.status}`} title={tool.status === "completed" ? "Completed" : tool.status === "error" ? "Failed" : "Running"}>
             {tool.status === "running" && (
               <>
                 <span className="spin" />
-                <span className="tool-status-text">执行中</span>
+                <span className="tool-status-text">Running</span>
               </>
             )}
             {tool.status === "completed" && <IconCheck size={13} />}
             {tool.status === "error" && (
               <>
                 <span className="tool-error-mark">✕</span>
-                <span className="tool-status-text">失败</span>
+                <span className="tool-status-text">Failed</span>
               </>
             )}
           </span>
-          <span className="tool-arrow" title={expanded ? "收起" : "展开"} aria-label={expanded ? "收起" : "展开"}>
-            {expanded ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
-          </span>
         </div>
       </div>
-      {expanded && (
-        <div className="tool-card-body">
-          {tool.input && Object.keys(tool.input).length > 0 && (
-            <div className="tool-section">
-              <div className="tool-sub-label">输入参数</div>
-              <pre className="tool-pre">{JSON.stringify(tool.input, null, 2)}</pre>
-            </div>
-          )}
-          {tool.output && (
-            <div className="tool-section">
-              <div className="tool-sub-label">执行输出</div>
-              <pre className="tool-pre">{tool.output}</pre>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -190,22 +155,21 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
   };
 
   const displaySec = finalSeconds ?? seconds;
+  const workedSeconds = message.durationSeconds ?? displaySec;
 
   return (
     <div className="turn assistant-turn">
-      {/* Thought Duration Header */}
       {message.status === "streaming" ? (
         <div className="thought-header streaming">
           <span className="spin" />
-          <span>Thinking {formatDuration(seconds)}</span>
+          <span>{message.activity || "Planning the task"} · {formatDuration(seconds)}</span>
         </div>
       ) : (
         <div className="thought-header done">
-          <span>{displaySec > 0 ? `Thought for ${formatDuration(displaySec)}` : "Thought complete"}</span>
+          <span>{workedSeconds > 0 ? `Worked for ${formatDuration(workedSeconds)}` : "Work complete"}</span>
         </div>
       )}
 
-      {/* Render Tool Calls as Interactive Cards */}
       {message.toolCalls && message.toolCalls.length > 0 && (
         <div className="codex-tools-list">
           {message.toolCalls.map((tc) => (
@@ -214,7 +178,6 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
         </div>
       )}
 
-      {/* Render Assistant Markdown Response */}
       {message.content && <MarkdownView text={message.content} />}
 
       {message.status !== "streaming" && message.content ? (
@@ -222,8 +185,8 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
           <button
             className="icon-btn ghost-icon message-action"
             type="button"
-            title={copied ? "已复制" : "复制"}
-            aria-label={copied ? "已复制" : "复制"}
+            title={copied ? "Copied" : "Copy"}
+            aria-label={copied ? "Copied" : "Copy"}
             onClick={() => void copy()}
           >
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
@@ -334,10 +297,18 @@ export function CodexView(props: Props) {
         return prev.map((m) => {
           if (m.id === event.messageId) {
             if (event.type === "text") {
-              return { ...m, content: event.content };
+              return { ...m, content: event.content, activity: "Writing the response" };
             }
-            if (event.type === "tool_use" || event.type === "tool_result") {
-              return { ...m, toolCalls: event.toolCalls };
+            if (event.type === "tool_use") {
+              const activeTool = event.toolCall || event.toolCalls?.find((tool: CodexToolCall) => tool.status === "running");
+              return {
+                ...m,
+                toolCalls: event.toolCalls,
+                activity: activeTool ? toolActivity(activeTool) : "Using a tool"
+              };
+            }
+            if (event.type === "tool_result") {
+              return { ...m, toolCalls: event.toolCalls, activity: "Reviewing the tool result" };
             }
             if (event.type === "usage") {
               return {
@@ -354,12 +325,21 @@ export function CodexView(props: Props) {
                 toolCalls: event.toolCalls || m.toolCalls,
                 contextUsed: event.contextUsed || m.contextUsed,
                 contextTotal: event.contextTotal || m.contextTotal,
-                status: "done"
+                status: event.exitCode === 0 ? "done" : "error",
+                activity: event.exitCode === 0 ? "Completed" : "Task failed",
+                durationSeconds:
+                  event.durationSeconds ||
+                  Math.max(1, Math.round((Date.now() - m.createdAt) / 1000))
               };
             }
             if (event.type === "error") {
               setRunning(false);
-              return { ...m, status: "error" };
+              return {
+                ...m,
+                status: "error",
+                activity: "Task failed",
+                durationSeconds: Math.max(1, Math.round((Date.now() - m.createdAt) / 1000))
+              };
             }
           }
           return m;
@@ -417,6 +397,7 @@ export function CodexView(props: Props) {
       status: "streaming",
       contextUsed: contextTokens.used,
       contextTotal: contextTokens.total,
+      activity: "Planning the task",
       createdAt: Date.now() + 1
     };
 
@@ -442,13 +423,13 @@ export function CodexView(props: Props) {
       } else if (!res.ok) {
         setRunning(false);
         setMessages((prev) =>
-          prev.map((m) => (m.id === asstMsg.id ? { ...m, content: `启动失败: ${res.error}`, status: "error" } : m))
+          prev.map((m) => (m.id === asstMsg.id ? { ...m, content: `Could not start: ${res.error}`, status: "error", activity: "Task failed" } : m))
         );
       }
     } catch (e: any) {
       setRunning(false);
       setMessages((prev) =>
-        prev.map((m) => (m.id === asstMsg.id ? { ...m, content: `执行出错: ${e.message}`, status: "error" } : m))
+        prev.map((m) => (m.id === asstMsg.id ? { ...m, content: `Execution failed: ${e.message}`, status: "error", activity: "Task failed" } : m))
       );
     }
   };

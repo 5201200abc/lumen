@@ -72,9 +72,16 @@ jobs:
             exit 1
           }
 
+      - name: Verify Google sign-in configuration
+        shell: bash
+        env:
+          LUMEN_GOOGLE_CLIENT_ID: ${{ secrets.LUMEN_GOOGLE_CLIENT_ID }}
+        run: test -n "$LUMEN_GOOGLE_CLIENT_ID" || { echo "::error::Missing LUMEN_GOOGLE_CLIENT_ID repository secret"; exit 1; }
+
       - name: Package with electron-builder
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LUMEN_GOOGLE_CLIENT_ID: ${{ secrets.LUMEN_GOOGLE_CLIENT_ID }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run build && npx electron-builder ${{ matrix.target }} --publish never
 

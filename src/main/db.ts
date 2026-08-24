@@ -100,6 +100,7 @@ export async function initDb(): Promise<void> {
       content TEXT NOT NULL DEFAULT '',
       thinking TEXT NOT NULL DEFAULT '',
       attachments TEXT NOT NULL DEFAULT '[]',
+      duration_seconds INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS memories (
@@ -111,6 +112,11 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);
   `);
+  try {
+    db.run("ALTER TABLE messages ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
   persist();
 }
 
@@ -197,6 +203,7 @@ function rowToMessage(row: {
   content: string;
   thinking: string;
   attachments: string;
+  duration_seconds: number;
   created_at: number;
 }): ChatMessage {
   return {
@@ -206,6 +213,7 @@ function rowToMessage(row: {
     content: row.content,
     thinking: row.thinking,
     attachments: parseAttachments(row.attachments),
+    durationSeconds: row.duration_seconds || undefined,
     createdAt: row.created_at
   };
 }
@@ -218,16 +226,17 @@ export function listMessages(conversationId: string): ChatMessage[] {
     content: string;
     thinking: string;
     attachments: string;
+    duration_seconds: number;
     created_at: number;
   }>(
-    "SELECT id, conversation_id, role, content, thinking, attachments, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+    "SELECT id, conversation_id, role, content, thinking, attachments, duration_seconds, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
     [conversationId]
   ).map(rowToMessage);
 }
 
 export function insertMessage(message: ChatMessage): void {
   run(
-    "INSERT INTO messages (id, conversation_id, role, content, thinking, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO messages (id, conversation_id, role, content, thinking, attachments, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [
       message.id,
       message.conversationId,
@@ -235,6 +244,7 @@ export function insertMessage(message: ChatMessage): void {
       message.content,
       message.thinking,
       JSON.stringify(message.attachments),
+      message.durationSeconds || 0,
       message.createdAt
     ]
   );
@@ -243,16 +253,17 @@ export function insertMessage(message: ChatMessage): void {
 
 export function updateMessage(
   id: string,
-  patch: { content?: string; thinking?: string }
+  patch: { content?: string; thinking?: string; durationSeconds?: number }
 ): void {
-  const current = all<{ content: string; thinking: string }>(
-    "SELECT content, thinking FROM messages WHERE id = ?",
+  const current = all<{ content: string; thinking: string; duration_seconds: number }>(
+    "SELECT content, thinking, duration_seconds FROM messages WHERE id = ?",
     [id]
   )[0];
   if (!current) return;
-  run("UPDATE messages SET content = ?, thinking = ? WHERE id = ?", [
+  run("UPDATE messages SET content = ?, thinking = ?, duration_seconds = ? WHERE id = ?", [
     patch.content ?? current.content,
     patch.thinking ?? current.thinking,
+    patch.durationSeconds ?? current.duration_seconds,
     id
   ]);
 }

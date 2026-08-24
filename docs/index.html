@@ -117,6 +117,26 @@
       gap: 10px;
     }
 
+    .legal-links {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      z-index: 4;
+      display: flex;
+      gap: 18px;
+      transform: translateX(-50%);
+      font-size: 12px;
+    }
+
+    .legal-links a {
+      color: var(--fg-subtle);
+      text-decoration: none;
+    }
+
+    .legal-links a:hover {
+      color: var(--fg);
+    }
+
     .btn-circle-control {
       background: var(--glass);
       backdrop-filter: blur(var(--blur-strength));
@@ -439,7 +459,7 @@
     <!-- The Two Buttons (左右各一个按钮) -->
     <div class="buttons-row">
       <!-- Left Button: Primary Download for Detected OS (No Version) -->
-      <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-mac-arm64.dmg" id="primaryDownloadBtn" class="btn-download-primary" download>
+      <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-mac-arm64.dmg" id="primaryDownloadBtn" class="btn-download-primary" download>
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="7 10 12 15 17 10"/>
@@ -467,15 +487,15 @@
           <!-- macOS -->
           <div class="menu-section">
             <div class="menu-section-title">macOS</div>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-mac-arm64.dmg" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-mac-arm64.dmg" class="dropdown-link" download>
               <span class="link-primary" id="txtMacArmDmg">Apple Silicon (M1/M2/M3/M4)</span>
               <span class="link-badge">DMG</span>
             </a>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-mac-arm64.zip" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-mac-arm64.zip" class="dropdown-link" download>
               <span class="link-primary" id="txtMacArmZip">Apple Silicon 免安装版</span>
               <span class="link-badge">ZIP</span>
             </a>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-mac-x64.dmg" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-mac-x64.dmg" class="dropdown-link" download>
               <span class="link-primary" id="txtMacIntelDmg">Intel Core (x64)</span>
               <span class="link-badge">DMG</span>
             </a>
@@ -484,15 +504,15 @@
           <!-- Windows -->
           <div class="menu-section">
             <div class="menu-section-title">Windows</div>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.2.0-x64.exe" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.3.0-x64.exe" class="dropdown-link" download>
               <span class="link-primary" id="txtWinX64">Windows 64-bit 安装向导</span>
               <span class="link-badge">EXE</span>
             </a>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Portable-0.2.0-x64.exe" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Portable-0.3.0-x64.exe" class="dropdown-link" download>
               <span class="link-primary" id="txtWinPortable">Windows 绿色便携版</span>
               <span class="link-badge">EXE</span>
             </a>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.2.0-arm64.exe" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.3.0-arm64.exe" class="dropdown-link" download>
               <span class="link-primary" id="txtWinArm">Windows ARM64 (骁龙 X)</span>
               <span class="link-badge">EXE</span>
             </a>
@@ -501,15 +521,15 @@
           <!-- Linux -->
           <div class="menu-section">
             <div class="menu-section-title">Linux</div>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-linux-x86_64.AppImage" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-linux-x86_64.AppImage" class="dropdown-link" download>
               <span class="link-primary" id="txtLinuxAppImage">Linux x64 免安装版</span>
               <span class="link-badge">AppImage</span>
             </a>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-linux-amd64.deb" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-linux-amd64.deb" class="dropdown-link" download>
               <span class="link-primary" id="txtLinuxDeb">Debian / Ubuntu 软件包</span>
               <span class="link-badge">.deb</span>
             </a>
-            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-linux-arm64.AppImage" class="dropdown-link" download>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-linux-arm64.AppImage" class="dropdown-link" download>
               <span class="link-primary" id="txtLinuxArm">Linux ARM64 (树莓派)</span>
               <span class="link-badge">AppImage</span>
             </a>
@@ -518,6 +538,12 @@
       </div>
     </div>
   </main>
+
+  <footer class="legal-links">
+    <a href="privacy.html">Privacy</a>
+    <a href="terms.html">Terms</a>
+    <a href="https://github.com/5201200abc/lumen">Source</a>
+  </footer>
 
   <!-- Dynamic Living Light Canvas Simulation Engine -->
   <script>
@@ -707,17 +733,17 @@
       const plat = (navigator.platform || '').toLowerCase();
       const t = I18N[currentLang];
       let label = t.downloadMac;
-      let link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-mac-arm64.dmg';
+      let link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-mac-arm64.dmg';
 
       if (ua.includes('win') || plat.includes('win')) {
         label = t.downloadWin;
-        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.2.0-x64.exe';
+        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.3.0-x64.exe';
       } else if (ua.includes('linux') || plat.includes('linux')) {
         label = t.downloadLinux;
-        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-linux-x86_64.AppImage';
+        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-linux-x86_64.AppImage';
       } else if (ua.includes('mac') || plat.includes('mac')) {
         label = t.downloadMac;
-        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.2.0-mac-arm64.dmg';
+        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.3.0-mac-arm64.dmg';
       }
 
       document.getElementById('primaryBtnLabel').textContent = label;

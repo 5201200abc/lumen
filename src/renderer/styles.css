@@ -461,6 +461,29 @@ select {
   background: transparent;
 }
 
+.assistant-intro {
+  margin: 0 0 9px;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.assistant-live-status {
+  min-height: 24px;
+  margin: 0 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.worked-status {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .thought summary {
   list-style: none;
   cursor: pointer;
@@ -1387,45 +1410,46 @@ select {
 .codex-tools-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin: 6px 0;
+  gap: 3px;
+  margin: 5px 0 8px;
+  width: 100%;
 }
 
 .tool-card {
   border: none;
-  background: var(--fill);
-  border-radius: 8px;
-  overflow: hidden;
-  transition: background 0.15s ease;
+  background: transparent;
+  border-radius: 0;
+  overflow: visible;
 }
 
 .tool-card.running {
-  background: color-mix(in srgb, var(--fill) 85%, #3b82f6 15%);
+  background: transparent;
 }
 
 .tool-card.completed {
-  background: var(--fill);
+  background: transparent;
 }
 
 .tool-card.error {
-  background: color-mix(in srgb, var(--fill) 85%, #ef4444 15%);
+  background: transparent;
 }
 
 .tool-card-header {
+  width: 100%;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 12px;
-  cursor: pointer;
+  padding: 3px 0;
+  cursor: default;
   user-select: none;
   font-size: 12px;
-  border-radius: 8px;
-  transition: background 0.12s ease;
+  color: inherit;
   gap: 16px;
+  text-align: left;
 }
 
 .tool-card-header:hover {
-  background: var(--fill-strong);
+  background: transparent;
 }
 
 .tool-card-left {
@@ -1464,6 +1488,7 @@ select {
   font-weight: 600;
   color: var(--fg);
   font-family: var(--font);
+  flex-shrink: 0;
 }
 
 .tool-desc {
@@ -1494,10 +1519,10 @@ select {
 }
 
 .tool-status-badge.running {
-  background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-  padding: 2px 6px;
-  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  border-radius: 0;
 }
 
 .tool-status-badge.completed {
@@ -1510,10 +1535,10 @@ select {
 }
 
 .tool-status-badge.error {
-  background: rgba(239, 68, 68, 0.12);
+  background: transparent;
   color: #ef4444;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 0;
+  border-radius: 0;
 }
 
 .tool-error-mark {
@@ -1970,37 +1995,6 @@ select {
   .settings-grid {
     grid-template-columns: 1fr;
   }
-}
-
-.tool-card-body {
-  border-top: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
-  padding: 8px 10px;
-  background: color-mix(in srgb, var(--bg-chat) 50%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.tool-sub-label {
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-
-.tool-pre {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--bg-chat);
-  border: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
-  font-family: var(--font);
-  font-size: 11px;
-  line-height: 1.4;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--fg);
 }
 
 .codex-typing-indicator {

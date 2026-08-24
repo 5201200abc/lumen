@@ -133,6 +133,8 @@ if (!gotTheLock) {
       if (win.isMinimized()) win.restore();
       win.show();
       win.focus();
+    } else if (app.isReady()) {
+      win = createWindow();
     }
   });
 

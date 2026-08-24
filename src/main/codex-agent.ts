@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import readline from "readline";
 import type { CodexMessage, CodexTask, CodexToolCall, WorkspaceInfo } from "@shared/types";
+import { toolActivity } from "@shared/cowork-status";
 import { generateConversationTitle } from "./title";
 import { getSettings } from "./store";
 
@@ -120,9 +121,17 @@ export function registerCodexIpc(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     const resolvedCwd = resolveWorkingDir(cwd || defaultCwd);
     const coworkInstructions = getSettings().coworkInstructions.trim();
-    const effectivePrompt = coworkInstructions
-      ? `<custom_instructions>\n${coworkInstructions}\n</custom_instructions>\n\n${prompt}`
-      : prompt;
+    const reasoningDiscipline =
+      "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach.</reasoning_discipline>";
+    const effectivePrompt = [
+      coworkInstructions
+        ? `<custom_instructions>\n${coworkInstructions}\n</custom_instructions>`
+        : "",
+      reasoningDiscipline,
+      prompt
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     let task = tasks.get(taskId);
     if (!task) {
@@ -169,6 +178,7 @@ export function registerCodexIpc(): void {
       content: "",
       toolCalls: [],
       status: "streaming",
+      activity: "Planning the task",
       contextUsed: task.contextUsed || 0,
       contextTotal: 16384,
       createdAt: Date.now() + 1
@@ -251,6 +261,7 @@ export function registerCodexIpc(): void {
             for (const block of json.message.content) {
               if (block.type === "text" && block.text) {
                 asstMsg.content += (asstMsg.content ? "\n\n" : "") + block.text;
+                asstMsg.activity = "Writing the response";
                 if (win && !win.isDestroyed()) {
                   win.webContents.send("codex:event", {
                     taskId,
@@ -268,6 +279,7 @@ export function registerCodexIpc(): void {
                 };
                 toolCallsMap.set(tc.id, tc);
                 asstMsg.toolCalls = Array.from(toolCallsMap.values());
+                asstMsg.activity = toolActivity(tc);
                 if (win && !win.isDestroyed()) {
                   win.webContents.send("codex:event", {
                     taskId,
@@ -290,6 +302,7 @@ export function registerCodexIpc(): void {
                   tc.status = block.is_error ? "error" : "completed";
                   tc.output = typeof block.content === "string" ? block.content : JSON.stringify(block.content, null, 2);
                   asstMsg.toolCalls = Array.from(toolCallsMap.values());
+                  asstMsg.activity = "Reviewing the tool result";
                   if (win && !win.isDestroyed()) {
                     win.webContents.send("codex:event", {
                       taskId,
@@ -341,6 +354,8 @@ export function registerCodexIpc(): void {
       child.on("close", (code) => {
         activeProcesses.delete(taskId);
         asstMsg.status = code === 0 ? "done" : "error";
+        asstMsg.durationSeconds = Math.max(1, Math.round((Date.now() - asstMsg.createdAt) / 1000));
+        asstMsg.activity = code === 0 ? "Completed" : "Task failed";
         if (win && !win.isDestroyed()) {
           win.webContents.send("codex:event", {
             taskId,
@@ -350,6 +365,7 @@ export function registerCodexIpc(): void {
             toolCalls: asstMsg.toolCalls,
             contextUsed: task.contextUsed,
             contextTotal: task.contextTotal || 16384,
+            durationSeconds: asstMsg.durationSeconds,
             exitCode: code
           });
         }
@@ -375,6 +391,8 @@ export function registerCodexIpc(): void {
       child.on("error", (err) => {
         activeProcesses.delete(taskId);
         asstMsg.status = "error";
+        asstMsg.durationSeconds = Math.max(1, Math.round((Date.now() - asstMsg.createdAt) / 1000));
+        asstMsg.activity = "Task failed";
         asstMsg.content += `\n\n执行出错: ${err.message}`;
         if (win && !win.isDestroyed()) {
           win.webContents.send("codex:event", {

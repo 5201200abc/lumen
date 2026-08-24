@@ -136,7 +136,7 @@ export function startLocalLlama(settings: Settings, mmproj?: string | null): voi
     LLAMA_PORT: "18082",
     LLAMA_ALIAS: settings.model || "Qwen3.8-27B"
   } as NodeJS.ProcessEnv;
-  const projector = mmproj || found.mmproj || (existsSync(VISION_MMPROJ) ? VISION_MMPROJ : "");
+  const projector = mmproj || "";
   if (projector) env.LLAMA_MMPROJ = projector;
   if (found.ggufs[0]) env.LLAMA_MODEL = found.ggufs[0];
   if (script) {
@@ -179,18 +179,19 @@ export function startLocalLlama(settings: Settings, mmproj?: string | null): voi
 }
 
 export async function ensureLocalLlama(settings: Settings, restart = false): Promise<LlamaStatus> {
-  const found = discoverLocal(settings.modelsDir || DEFAULT_DIR);
   let status = await probeLlama(settings);
   // A custom remote OpenAI-compatible endpoint must never trigger or restart
   // the local llama-server process.
   if (!isManagedLocalLlamaUrl(settings.llamaUrl || DEFAULT_URL)) return status;
-  const needStart = !status.online || restart || (!status.vision && Boolean(found.mmproj));
+  const needStart = !status.online || restart;
   if (!needStart) return status;
-  startLocalLlama(settings, found.mmproj);
+  // Vision stays opt-in because its projector reserves substantial unified GPU
+  // memory even during text-only conversations.
+  startLocalLlama(settings, null);
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 1000));
     status = await probeLlama(settings);
-    if (status.online && (!found.mmproj || status.vision || i > 8)) break;
+    if (status.online) break;
   }
   return status;
 }
