@@ -115,7 +115,7 @@ jobs:
       - name: Create SHA-256 checksums
         shell: bash
         run: |
-          find artifacts -type f ! -name '*.blockmap' ! -name 'latest*.yml' -print0 \
+          find artifacts -type f ! -name '*.blockmap' ! -name 'latest*.yml' ! -name 'SHA256SUMS.txt' -print0 \
             | sort -z \
             | xargs -0 sha256sum > artifacts/SHA256SUMS.txt
 
