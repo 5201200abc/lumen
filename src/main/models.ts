@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { LlamaStatus, Settings } from "@shared/types";
 
-const DEFAULT_DIR = "/Users/mfordjody/models";
+const DEFAULT_DIR = join(homedir(), "models");
 const DEFAULT_URL = "http://127.0.0.1:18082/v1";
 export const VISION_MMPROJ = join(
   DEFAULT_DIR,
@@ -140,7 +140,12 @@ export function startLocalLlama(settings: Settings, mmproj?: string | null): voi
   if (projector) env.LLAMA_MMPROJ = projector;
   if (found.ggufs[0]) env.LLAMA_MODEL = found.ggufs[0];
   if (script) {
-    spawn("/bin/zsh", [script], { env, detached: true, stdio: "ignore" }).unref();
+    if (process.platform === "win32") {
+      spawn("cmd.exe", ["/c", script], { env, detached: true, stdio: "ignore" }).unref();
+    } else {
+      const shellBin = process.env.SHELL || "/bin/sh";
+      spawn(shellBin, [script], { env, detached: true, stdio: "ignore" }).unref();
+    }
     return;
   }
   const model = found.ggufs[0];
@@ -157,6 +162,11 @@ export function startLocalLlama(settings: Settings, mmproj?: string | null): voi
     "-np",
     "1",
     "--jinja",
+    "--reasoning",
+    "auto",
+    "--reasoning-effort",
+    "default",
+    "--reasoning-preserve",
     "--reasoning-format",
     "auto",
     "--host",

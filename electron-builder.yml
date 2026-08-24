@@ -18,15 +18,62 @@ extraResources:
     to: sql-wasm.wasm
 mac:
   category: public.app-category.productivity
-  icon: icon.icns
+  icon: resources/icon.icns
   target:
     - dmg
-    - dir
+    - zip
   identity: null
   hardenedRuntime: false
   gatekeeperAssess: false
   darkModeSupport: true
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
 dmg:
-  artifactName: "${productName}-${version}-${arch}.dmg"
+  artifactName: "${productName}-${version}-mac-${arch}.dmg"
   title: Lumen
-npmRebuild: false
+win:
+  icon: resources/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+    - target: portable
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  artifactName: "${productName}-${version}-windows-${arch}.${ext}"
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Lumen
+  artifactName: "${productName}-Setup-${version}-${arch}.exe"
+portable:
+  artifactName: "${productName}-Portable-${version}-${arch}.exe"
+linux:
+  category: Utility
+  icon: resources/icon.png
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: deb
+      arch:
+        - x64
+        - arm64
+    - target: rpm
+      arch:
+        - x64
+        - arm64
+    - target: tar.gz
+      arch:
+        - x64
+        - arm64
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"

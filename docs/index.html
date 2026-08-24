@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Lumen</title>
+  <meta name="description" content="Lumen — 本地开源模型对话与 Cowork 智能体桌面应用。" />
+  <link rel="icon" type="image/png" href="icon.png" />
+
+  <!-- Distinctive High-Aesthetic Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #09090b;
+      --fg: #f4f4f0;
+      --fg-subtle: #9a9a92;
+      --fg-faint: #52524c;
+      --glass: rgba(18, 18, 22, 0.65);
+      --glass-dropdown: rgba(18, 18, 22, 0.9);
+      --glass-border: rgba(255, 255, 255, 0.1);
+      --glass-border-hover: rgba(255, 255, 255, 0.28);
+      --glass-hover: rgba(255, 255, 255, 0.08);
+      --primary-bg: #f4f4f0;
+      --primary-fg: #09090b;
+      --accent-glow: rgba(234, 158, 98, 0.35);
+      --accent-copper: #e59a68;
+      --font-display: "Cinzel", "Playfair Display", "Songti SC", "STSong", serif;
+      --font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+      --blur-strength: 28px;
+    }
+
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg: #f7f6f2;
+      --fg: #151513;
+      --fg-subtle: #6b6a63;
+      --fg-faint: #b2b1a8;
+      --glass: rgba(255, 255, 255, 0.7);
+      --glass-dropdown: rgba(255, 255, 255, 0.94);
+      --glass-border: rgba(20, 20, 18, 0.1);
+      --glass-border-hover: rgba(20, 20, 18, 0.28);
+      --glass-hover: rgba(0, 0, 0, 0.05);
+      --primary-bg: #151513;
+      --primary-fg: #f7f6f2;
+      --accent-glow: rgba(184, 93, 25, 0.25);
+      --accent-copper: #b85d19;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      transition: background-color 0.4s ease, color 0.4s ease;
+    }
+
+    /* Fullscreen Dynamic Living Light Canvas */
+    #ambientLightCanvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Tactile Micro-Grain Film Overlay */
+    .film-grain {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.04;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+    }
+
+    /* Centered Stage Layout (Pure & Headerless) */
+    .stage {
+      position: relative;
+      z-index: 2;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 40px 24px;
+      text-align: center;
+    }
+
+    /* Top Corner Controls (Language Icon + Optical Theme) */
+    .top-controls {
+      position: fixed;
+      top: 28px;
+      right: 28px;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn-circle-control {
+      background: var(--glass);
+      backdrop-filter: blur(var(--blur-strength));
+      -webkit-backdrop-filter: blur(var(--blur-strength));
+      border: 1px solid var(--glass-border);
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      cursor: pointer;
+      color: var(--fg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    }
+
+    .btn-circle-control:hover {
+      transform: scale(1.08);
+      border-color: var(--glass-border-hover);
+      background: var(--glass-dropdown);
+    }
+
+    /* Core Emblem */
+    .emblem-wrapper {
+      position: relative;
+      width: 88px;
+      height: 88px;
+      margin-bottom: 32px;
+    }
+
+    .emblem-glow {
+      position: absolute;
+      inset: -12px;
+      background: radial-gradient(circle, var(--accent-glow) 0%, rgba(0,0,0,0) 70%);
+      border-radius: 50%;
+      filter: blur(8px);
+      animation: pulseGlow 5s ease-in-out infinite alternate;
+    }
+
+    .emblem-core {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 22px;
+      overflow: hidden;
+      border: 1px solid var(--glass-border-hover);
+      background: var(--glass);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .emblem-core img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    @keyframes pulseGlow {
+      0% { transform: scale(0.92); opacity: 0.6; }
+      100% { transform: scale(1.15); opacity: 1; }
+    }
+
+    /* Main Typography */
+    .hero-title-wrap {
+      margin-bottom: 14px;
+    }
+
+    .brand-wordmark {
+      font-family: var(--font-display);
+      font-size: clamp(54px, 8.5vw, 88px);
+      font-weight: 500;
+      letter-spacing: -2px;
+      line-height: 0.98;
+      color: var(--fg);
+      text-shadow: 0 2px 24px rgba(0,0,0,0.18);
+    }
+
+    .brand-subtext {
+      font-size: 18px;
+      color: var(--fg-subtle);
+      max-width: 580px;
+      margin: 0 auto 46px;
+      line-height: 1.5;
+      font-weight: 400;
+      letter-spacing: -0.1px;
+    }
+
+    /* The Two Buttons Container (左右各一个按钮) */
+    .buttons-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      width: 100%;
+      max-width: 540px;
+      position: relative;
+    }
+
+    /* Left Button: Primary Download (Auto-detected OS, No Version) */
+    .btn-download-primary {
+      flex: 1;
+      background: var(--primary-bg);
+      color: var(--primary-fg);
+      border: none;
+      padding: 16px 28px;
+      border-radius: 12px;
+      font-family: var(--font-body);
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-decoration: none;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .btn-download-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+      opacity: 0.95;
+    }
+
+    .btn-download-primary:active {
+      transform: translateY(0);
+    }
+
+    /* Right Button: Dropdown Container */
+    .dropdown-wrapper {
+      flex: 1;
+      position: relative;
+    }
+
+    .btn-dropdown-trigger {
+      width: 100%;
+      background: var(--glass);
+      backdrop-filter: blur(var(--blur-strength));
+      -webkit-backdrop-filter: blur(var(--blur-strength));
+      color: var(--fg);
+      border: 1px solid var(--glass-border-hover);
+      padding: 16px 24px;
+      border-radius: 12px;
+      font-family: var(--font-body);
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      text-decoration: none;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      white-space: nowrap;
+    }
+
+    .btn-dropdown-trigger:hover {
+      background: var(--glass-dropdown);
+      border-color: var(--fg);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+    }
+
+    .btn-dropdown-trigger:active {
+      transform: translateY(0);
+    }
+
+    .chevron-icon {
+      transition: transform 0.2s ease;
+    }
+
+    .dropdown-wrapper.open .chevron-icon {
+      transform: rotate(180deg);
+    }
+
+    /* Floating Dropdown Menu */
+    .dropdown-menu {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      width: 320px;
+      background: var(--glass-dropdown);
+      backdrop-filter: blur(32px);
+      -webkit-backdrop-filter: blur(32px);
+      border: 1px solid var(--glass-border-hover);
+      border-radius: 16px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+      padding: 12px;
+      text-align: left;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-8px) scale(0.97);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 100;
+    }
+
+    .dropdown-wrapper.open .dropdown-menu {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0) scale(1);
+    }
+
+    .menu-section {
+      margin-bottom: 8px;
+    }
+
+    .menu-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .menu-section-title {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--accent-copper);
+      padding: 6px 10px 4px;
+      font-weight: 500;
+    }
+
+    .dropdown-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: 8px;
+      text-decoration: none;
+      color: var(--fg);
+      font-size: 13px;
+      transition: all 0.12s ease;
+    }
+
+    .dropdown-link:hover {
+      background: var(--glass-hover);
+      transform: translateX(2px);
+    }
+
+    .link-primary {
+      font-weight: 500;
+    }
+
+    .link-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--fg-subtle);
+    }
+
+    /* Responsive */
+    @media (max-width: 620px) {
+      .brand-wordmark { font-size: 48px; }
+      .brand-subtext { font-size: 15.5px; }
+      .buttons-row { flex-direction: column; gap: 12px; }
+      .btn-download-primary, .dropdown-wrapper { width: 100%; }
+      .dropdown-menu { width: 100%; right: 0; }
+      .top-controls { top: 16px; right: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Dynamic Ambient Canvas Background -->
+  <canvas id="ambientLightCanvas"></canvas>
+  <div class="film-grain"></div>
+
+  <!-- Top Corner Controls: Language Custom Icon & Theme Switcher -->
+  <div class="top-controls">
+    <!-- Distinctive Language Icon Button -->
+    <button id="langToggleBtn" class="btn-circle-control" onclick="toggleLanguage()" title="Switch Language / 切换语言 (ZH / EN)">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="2" y1="12" x2="22" y2="12"></line>
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+      </svg>
+    </button>
+
+    <!-- Optical Theme Button -->
+    <button id="themeToggleBtn" class="btn-circle-control" title="Toggle Light/Dark / 切换光影">
+      <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="5"></circle>
+        <line x1="12" y1="1" x2="12" y2="3"></line>
+        <line x1="12" y1="21" x2="12" y2="23"></line>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+        <line x1="1" y1="12" x2="3" y2="12"></line>
+        <line x1="21" y1="12" x2="23" y2="12"></line>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Central Presentation Stage -->
+  <main class="stage">
+    <!-- Emblem -->
+    <div class="emblem-wrapper">
+      <div class="emblem-glow"></div>
+      <div class="emblem-core">
+        <img src="icon.png" alt="Lumen" onerror="this.style.display='none'" />
+      </div>
+    </div>
+
+    <!-- Title (Lumen) -->
+    <div class="hero-title-wrap">
+      <h1 class="brand-wordmark">Lumen</h1>
+    </div>
+
+    <!-- Subtitle (Single Concise Line) -->
+    <p class="brand-subtext" id="heroSubtitle">
+      本地开源模型对话与 Cowork 智能体桌面应用。
+    </p>
+
+    <!-- The Two Buttons (左右各一个按钮) -->
+    <div class="buttons-row">
+      <!-- Left Button: Primary Download for Detected OS (No Version) -->
+      <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-mac-arm64.dmg" id="primaryDownloadBtn" class="btn-download-primary" download>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <span id="primaryBtnLabel">下载 macOS 版</span>
+      </a>
+
+      <!-- Right Button: Dropdown Menu Trigger for Other Clients -->
+      <div class="dropdown-wrapper" id="dropdownWrapper">
+        <button class="btn-dropdown-trigger" onclick="toggleDropdown(event)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <span id="dropdownBtnLabel">其他客户端</span>
+          <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+
+        <!-- Dropdown Menu List -->
+        <div class="dropdown-menu" id="dropdownMenu" onclick="event.stopPropagation()">
+          <!-- macOS -->
+          <div class="menu-section">
+            <div class="menu-section-title">macOS</div>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-mac-arm64.dmg" class="dropdown-link" download>
+              <span class="link-primary" id="txtMacArmDmg">Apple Silicon (M1/M2/M3/M4)</span>
+              <span class="link-badge">DMG</span>
+            </a>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-mac-arm64.zip" class="dropdown-link" download>
+              <span class="link-primary" id="txtMacArmZip">Apple Silicon 免安装版</span>
+              <span class="link-badge">ZIP</span>
+            </a>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-mac-x64.dmg" class="dropdown-link" download>
+              <span class="link-primary" id="txtMacIntelDmg">Intel Core (x64)</span>
+              <span class="link-badge">DMG</span>
+            </a>
+          </div>
+
+          <!-- Windows -->
+          <div class="menu-section">
+            <div class="menu-section-title">Windows</div>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.1.0-x64.exe" class="dropdown-link" download>
+              <span class="link-primary" id="txtWinX64">Windows 64-bit 安装向导</span>
+              <span class="link-badge">EXE</span>
+            </a>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Portable-0.1.0-x64.exe" class="dropdown-link" download>
+              <span class="link-primary" id="txtWinPortable">Windows 绿色便携版</span>
+              <span class="link-badge">EXE</span>
+            </a>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.1.0-arm64.exe" class="dropdown-link" download>
+              <span class="link-primary" id="txtWinArm">Windows ARM64 (骁龙 X)</span>
+              <span class="link-badge">EXE</span>
+            </a>
+          </div>
+
+          <!-- Linux -->
+          <div class="menu-section">
+            <div class="menu-section-title">Linux</div>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-linux-x64.AppImage" class="dropdown-link" download>
+              <span class="link-primary" id="txtLinuxAppImage">Linux x64 免安装版</span>
+              <span class="link-badge">AppImage</span>
+            </a>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-linux-x64.deb" class="dropdown-link" download>
+              <span class="link-primary" id="txtLinuxDeb">Debian / Ubuntu 软件包</span>
+              <span class="link-badge">.deb</span>
+            </a>
+            <a href="https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-linux-arm64.AppImage" class="dropdown-link" download>
+              <span class="link-primary" id="txtLinuxArm">Linux ARM64 (树莓派)</span>
+              <span class="link-badge">AppImage</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Dynamic Living Light Canvas Simulation Engine -->
+  <script>
+    (function initDynamicCausticEngine() {
+      const canvas = document.getElementById('ambientLightCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      let width, height;
+
+      function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+      }
+      window.addEventListener('resize', resize);
+      resize();
+
+      const mouse = {
+        x: width * 0.5,
+        y: height * 0.4,
+        targetX: width * 0.5,
+        targetY: height * 0.4
+      };
+
+      window.addEventListener('mousemove', (e) => {
+        mouse.targetX = e.clientX;
+        mouse.targetY = e.clientY;
+      });
+
+      // Ambient Floating Light Beams
+      const beams = [
+        {
+          x: width * 0.28,
+          y: height * 0.32,
+          radius: 460,
+          speedX: 0.18,
+          speedY: 0.12,
+          colorDark: 'rgba(234, 158, 98, 0.14)',
+          colorLight: 'rgba(217, 119, 54, 0.16)'
+        },
+        {
+          x: width * 0.72,
+          y: height * 0.45,
+          radius: 520,
+          speedX: -0.15,
+          speedY: 0.19,
+          colorDark: 'rgba(129, 140, 248, 0.09)',
+          colorLight: 'rgba(147, 130, 230, 0.13)'
+        },
+        {
+          x: width * 0.5,
+          y: height * 0.7,
+          radius: 420,
+          speedX: 0.12,
+          speedY: -0.14,
+          colorDark: 'rgba(245, 185, 95, 0.10)',
+          colorLight: 'rgba(250, 200, 110, 0.15)'
+        }
+      ];
+
+      let frame = 0;
+      function animate() {
+        frame += 0.005;
+
+        mouse.x += (mouse.targetX - mouse.x) * 0.04;
+        mouse.y += (mouse.targetY - mouse.y) * 0.04;
+
+        ctx.clearRect(0, 0, width, height);
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+        for (let i = 0; i < beams.length; i++) {
+          const b = beams[i];
+          b.x += b.speedX + Math.sin(frame + i * 1.5) * 0.45;
+          b.y += b.speedY + Math.cos(frame * 0.8 + i) * 0.45;
+
+          if (b.x < -150) b.x = width + 150;
+          if (b.x > width + 150) b.x = -150;
+          if (b.y < -150) b.y = height + 150;
+          if (b.y > height + 150) b.y = -150;
+
+          const gradient = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius);
+          gradient.addColorStop(0, isDark ? b.colorDark : b.colorLight);
+          gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+          ctx.fillStyle = gradient;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Interactive cursor halo
+        const haloGrad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 360);
+        haloGrad.addColorStop(0, isDark ? 'rgba(240, 210, 180, 0.08)' : 'rgba(220, 160, 100, 0.12)');
+        haloGrad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = haloGrad;
+        ctx.beginPath();
+        ctx.arc(mouse.x, mouse.y, 360, 0, Math.PI * 2);
+        ctx.fill();
+
+        requestAnimationFrame(animate);
+      }
+      animate();
+    })();
+
+    // Optical Theme Toggle
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    function applyTheme(mode) {
+      document.documentElement.setAttribute('data-theme', mode);
+      localStorage.setItem('lumen_user_theme', mode);
+    }
+    const currentTheme = localStorage.getItem('lumen_user_theme') || 'dark';
+    applyTheme(currentTheme);
+
+    themeToggleBtn.addEventListener('click', () => {
+      const active = document.documentElement.getAttribute('data-theme');
+      applyTheme(active === 'dark' ? 'light' : 'dark');
+    });
+
+    // Bilingual Translation Matrix (ZH / EN)
+    const I18N = {
+      zh: {
+        subtitle: '本地开源模型对话与 Cowork 智能体桌面应用。',
+        downloadMac: '下载 macOS 版',
+        downloadWin: '下载 Windows 版',
+        downloadLinux: '下载 Linux 版',
+        dropdownBtn: '其他客户端',
+        macArmDmg: 'Apple Silicon (M1/M2/M3/M4)',
+        macArmZip: 'Apple Silicon 免安装版',
+        macIntelDmg: 'Intel Core (x64)',
+        winX64: 'Windows 64-bit 安装向导',
+        winPortable: 'Windows 绿色便携版',
+        winArm: 'Windows ARM64 (骁龙 X)',
+        linuxAppImage: 'Linux x64 免安装版',
+        linuxDeb: 'Debian / Ubuntu 软件包',
+        linuxArm: 'Linux ARM64 (树莓派)'
+      },
+      en: {
+        subtitle: 'Local open-source model chat & Cowork agent desktop app.',
+        downloadMac: 'Download for macOS',
+        downloadWin: 'Download for Windows',
+        downloadLinux: 'Download for Linux',
+        dropdownBtn: 'Other Clients',
+        macArmDmg: 'Apple Silicon (M1/M2/M3/M4)',
+        macArmZip: 'Apple Silicon Portable ZIP',
+        macIntelDmg: 'Intel Core (x64)',
+        winX64: 'Windows 64-bit Installer',
+        winPortable: 'Windows Portable EXE',
+        winArm: 'Windows ARM64 (Snapdragon)',
+        linuxAppImage: 'Linux x64 AppImage',
+        linuxDeb: 'Debian / Ubuntu (.deb)',
+        linuxArm: 'Linux ARM64 (Raspberry Pi)'
+      }
+    };
+
+    let currentLang = localStorage.getItem('lumen_lang') || 'zh';
+
+    function applyLanguage(lang) {
+      currentLang = lang;
+      localStorage.setItem('lumen_lang', lang);
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+
+      const t = I18N[lang];
+      document.getElementById('heroSubtitle').textContent = t.subtitle;
+      document.getElementById('dropdownBtnLabel').textContent = t.dropdownBtn;
+
+      // Update dropdown menu items
+      document.getElementById('txtMacArmDmg').textContent = t.macArmDmg;
+      document.getElementById('txtMacArmZip').textContent = t.macArmZip;
+      document.getElementById('txtMacIntelDmg').textContent = t.macIntelDmg;
+      document.getElementById('txtWinX64').textContent = t.winX64;
+      document.getElementById('txtWinPortable').textContent = t.winPortable;
+      document.getElementById('txtWinArm').textContent = t.winArm;
+      document.getElementById('txtLinuxAppImage').textContent = t.linuxAppImage;
+      document.getElementById('txtLinuxDeb').textContent = t.linuxDeb;
+      document.getElementById('txtLinuxArm').textContent = t.linuxArm;
+
+      // Update primary download button text according to OS
+      detectClientPlatform();
+    }
+
+    function toggleLanguage() {
+      applyLanguage(currentLang === 'zh' ? 'en' : 'zh');
+    }
+
+    // Auto OS Detection for Primary Button
+    function detectClientPlatform() {
+      const ua = navigator.userAgent.toLowerCase();
+      const plat = (navigator.platform || '').toLowerCase();
+      const t = I18N[currentLang];
+      let label = t.downloadMac;
+      let link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-mac-arm64.dmg';
+
+      if (ua.includes('win') || plat.includes('win')) {
+        label = t.downloadWin;
+        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-Setup-0.1.0-x64.exe';
+      } else if (ua.includes('linux') || plat.includes('linux')) {
+        label = t.downloadLinux;
+        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-linux-x64.AppImage';
+      } else if (ua.includes('mac') || plat.includes('mac')) {
+        label = t.downloadMac;
+        link = 'https://github.com/5201200abc/lumen/releases/latest/download/Lumen-0.1.0-mac-arm64.dmg';
+      }
+
+      document.getElementById('primaryBtnLabel').textContent = label;
+      document.getElementById('primaryDownloadBtn').href = link;
+    }
+
+    // Initialize Language & OS detection
+    applyLanguage(currentLang);
+
+    // Dropdown Toggle Logic
+    const dropdownWrapper = document.getElementById('dropdownWrapper');
+
+    function toggleDropdown(e) {
+      e.stopPropagation();
+      dropdownWrapper.classList.toggle('open');
+    }
+
+    // Close Dropdown when clicking outside or pressing Escape
+    document.addEventListener('click', (e) => {
+      if (!dropdownWrapper.contains(e.target)) {
+        dropdownWrapper.classList.remove('open');
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        dropdownWrapper.classList.remove('open');
+      }
+    });
+  </script>
+</body>
+</html>

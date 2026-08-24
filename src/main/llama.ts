@@ -16,6 +16,8 @@ type OpenAIPart =
 type OpenAIMessage = {
   role: "system" | "user" | "assistant";
   content: string | OpenAIPart[];
+  reasoning_content?: string;
+  reasoning?: string;
 };
 
 class ThinkSplitter {
@@ -72,37 +74,9 @@ class ThinkSplitter {
 }
 
 function effortParams(effort: Effort): {
-  temperature: number;
-  top_p: number;
-  enable_thinking: boolean;
   reasoning_effort: Effort;
-  extraSystem: string;
 } {
-  if (effort === "low") {
-    return {
-      temperature: 0.3,
-      top_p: 0.8,
-      enable_thinking: true,
-      reasoning_effort: "low",
-      extraSystem: "Keep the final answer direct and concise."
-    };
-  }
-  if (effort === "xhigh") {
-    return {
-      temperature: 0.85,
-      top_p: 0.95,
-      enable_thinking: true,
-      reasoning_effort: "xhigh",
-      extraSystem: "Prioritize correctness, consistency, and clarity in the final answer."
-    };
-  }
-  return {
-    temperature: 0.7,
-    top_p: 0.95,
-    enable_thinking: true,
-    reasoning_effort: "medium",
-    extraSystem: "Give a clear, well-considered answer."
-  };
+  return { reasoning_effort: effort };
 }
 
 function compactImage(dataUrl: string): string {
@@ -142,7 +116,16 @@ function historyMessages(history: ChatMessage[], vision: boolean): OpenAIMessage
       item.role === "user"
         ? userContent(item.content, item.attachments, vision)
         : item.content;
-    out.push({ role: item.role === "assistant" ? "assistant" : "user", content });
+    if (item.role === "assistant") {
+      out.push({
+        role: "assistant",
+        content,
+        reasoning_content: item.thinking || undefined,
+        reasoning: item.thinking || undefined
+      });
+    } else {
+      out.push({ role: "user", content });
+    }
   }
   return out;
 }
@@ -174,7 +157,6 @@ export async function streamChat(opts: {
   const mem = settings.memoryEnabled ? memoryBlock(opts.userText) : "";
   const system = [
     settings.systemPrompt.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。",
-    params.extraSystem,
     mem,
     searchBlock ? `全网检索结果：\n${searchBlock}` : ""
   ]
@@ -200,14 +182,20 @@ export async function streamChat(opts: {
         model: settings.model,
         messages,
         stream: true,
-        temperature: params.temperature,
-        top_p: params.top_p,
+        temperature: 1.0,
+        top_p: 0.95,
+        top_k: 20,
+        min_p: 0.0,
+        presence_penalty: 0.0,
+        repetition_penalty: 1.0,
         reasoning_effort: params.reasoning_effort,
         chat_template_kwargs: {
-          enable_thinking: params.enable_thinking,
+          enable_thinking: true,
+          preserve_thinking: true,
           reasoning_effort: params.reasoning_effort
         },
-        enable_thinking: params.enable_thinking,
+        enable_thinking: true,
+        preserve_thinking: true,
         reasoning_format: "auto"
       }),
       signal: abort.signal

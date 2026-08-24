@@ -1,7 +1,7 @@
 import { BrowserWindow, clipboard, nativeImage } from "electron";
 import { existsSync, statSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { spawn } from "node:child_process";
 
 const NAME = /^(Screen Shot|Screenshot|截屏|屏幕快照).*\.(png|jpe?g|gif|webp)$/i;
@@ -30,7 +30,7 @@ function ingestFile(win: BrowserWindow | null, file: string): void {
     if (img.isEmpty()) return;
     if (lastFiles.size >= 400) lastFiles.clear();
     lastFiles.add(file);
-    send(win, { name: file.split("/").pop() || "screenshot.png", dataUrl: img.toDataURL() });
+    send(win, { name: basename(file) || "screenshot.png", dataUrl: img.toDataURL() });
   } catch {
     /* ignore incomplete writes */
   }
@@ -58,12 +58,19 @@ export function stopScreenshotWatch(): void {
 }
 
 export function captureInteractive(win: BrowserWindow | null): void {
-  const child = spawn("screencapture", ["-i", "-c"], { stdio: "ignore" });
-  child.on("close", () => {
+  if (process.platform === "darwin") {
+    const child = spawn("screencapture", ["-i", "-c"], { stdio: "ignore" });
+    child.on("close", () => {
+      const img = clipboard.readImage();
+      if (img.isEmpty()) return;
+      send(win, { name: "capture.png", dataUrl: img.toDataURL() });
+    });
+  } else {
     const img = clipboard.readImage();
-    if (img.isEmpty()) return;
-    send(win, { name: "capture.png", dataUrl: img.toDataURL() });
-  });
+    if (!img.isEmpty()) {
+      send(win, { name: "capture.png", dataUrl: img.toDataURL() });
+    }
+  }
 }
 
 export function markClipboard(_dataUrl: string): void {

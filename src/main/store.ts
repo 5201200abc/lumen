@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Effort, Settings, Theme } from "@shared/types";
 
-const MODELS_DIR = "/Users/mfordjody/models";
-const LOCAL_ENV = join(MODELS_DIR, "websearch", ".env");
+const DEFAULT_MODELS_DIR = join(homedir(), "models");
+const LOCAL_ENV = join(DEFAULT_MODELS_DIR, "websearch", ".env");
 export const SYSTEM_PROMPT_PATH = join(homedir(), ".config", "llama", "LLAMA.md");
 
 type Disk = {
@@ -27,10 +27,10 @@ const store = new Store<Disk>({
     llamaApiKeyEnc: "",
     model: "Qwen3.8-27B",
     tavilyApiKeyEnc: "",
-    defaultEffort: "medium",
+    defaultEffort: "xhigh",
     memoryEnabled: true,
     theme: "system",
-    modelsDir: MODELS_DIR
+    modelsDir: DEFAULT_MODELS_DIR
   }
 });
 
@@ -87,7 +87,7 @@ export function getSettings(): Settings {
     defaultEffort: normalizeEffort(store.get("defaultEffort")),
     memoryEnabled: store.get("memoryEnabled"),
     theme: store.get("theme"),
-    modelsDir: store.get("modelsDir") || MODELS_DIR,
+    modelsDir: store.get("modelsDir") || DEFAULT_MODELS_DIR,
     systemPrompt: readSystemPrompt(),
     systemPromptPath: SYSTEM_PROMPT_PATH
   };

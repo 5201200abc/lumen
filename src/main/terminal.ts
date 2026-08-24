@@ -2,14 +2,57 @@ import { BrowserWindow, dialog, ipcMain } from "electron";
 import * as pty from "node-pty";
 import os from "os";
 import fs from "fs";
+import path from "path";
 
 let ptyProcess: pty.IPty | null = null;
 let currentCwd = process.env.HOME || os.homedir();
 
 function getClaudeBin(): string {
+  if (process.platform === "win32") {
+    const userProfile = process.env.USERPROFILE || "";
+    const customWin = path.join(userProfile, ".local", "bin", "claude.exe");
+    if (fs.existsSync(customWin)) return customWin;
+    return "claude.exe";
+  }
   const custom = `${process.env.HOME}/.local/bin/claude`;
   if (fs.existsSync(custom)) return custom;
   return "claude";
+}
+
+function getDefaultShell(): { bin: string; args: string[] } {
+  if (process.platform === "win32") {
+    return {
+      bin: process.env.COMSPEC || "powershell.exe",
+      args: []
+    };
+  }
+  return {
+    bin: process.env.SHELL || "/bin/bash",
+    args: ["-l"]
+  };
+}
+
+function getTerminalEnv(): Record<string, string> {
+  const home = os.homedir();
+  const extraPath =
+    process.platform === "win32"
+      ? path.join(home, ".local", "bin")
+      : `${home}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`;
+
+  const existingPath = process.env.PATH || "";
+  const sep = process.platform === "win32" ? ";" : ":";
+  const finalPath = extraPath ? `${extraPath}${sep}${existingPath}` : existingPath;
+
+  return {
+    ...process.env,
+    ANTHROPIC_BASE_URL: "http://127.0.0.1:18084",
+    ANTHROPIC_API_KEY: "sk-local-llama",
+    PATH: finalPath,
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+    LANG: "en_US.UTF-8",
+    CLAUDE_CODE_SAFE_MODE: "0"
+  } as Record<string, string>;
 }
 
 export function registerTerminalIpc(): void {
@@ -24,16 +67,7 @@ export function registerTerminalIpc(): void {
     }
 
     const claudeBin = getClaudeBin();
-    const env = {
-      ...process.env,
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:18084",
-      ANTHROPIC_API_KEY: "sk-local-llama",
-      PATH: `${process.env.HOME}/.local/bin:${process.env.PATH || ""}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`,
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-      LANG: "en_US.UTF-8",
-      CLAUDE_CODE_SAFE_MODE: "0"
-    };
+    const env = getTerminalEnv();
 
     try {
       ptyProcess = pty.spawn(claudeBin, ["--dangerously-skip-permissions"], {
@@ -60,10 +94,10 @@ export function registerTerminalIpc(): void {
       return { ok: true, cwd: currentCwd };
     } catch (err) {
       console.error("Failed to spawn claude pty:", err);
-      // Fallback to shell
-      const shell = process.env.SHELL || "/bin/zsh";
+      // Fallback to default system shell
+      const defaultShell = getDefaultShell();
       try {
-        ptyProcess = pty.spawn(shell, ["-l"], {
+        ptyProcess = pty.spawn(defaultShell.bin, defaultShell.args, {
           name: "xterm-256color",
           cols,
           rows,
@@ -124,16 +158,7 @@ export function registerTerminalIpc(): void {
     if (opts?.cwd) currentCwd = opts.cwd;
 
     const claudeBin = getClaudeBin();
-    const env = {
-      ...process.env,
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:18084",
-      ANTHROPIC_API_KEY: "sk-local-llama",
-      PATH: `${process.env.HOME}/.local/bin:${process.env.PATH || ""}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`,
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-      LANG: "en_US.UTF-8",
-      CLAUDE_CODE_SAFE_MODE: "0"
-    };
+    const env = getTerminalEnv();
 
     try {
       ptyProcess = pty.spawn(claudeBin, ["--dangerously-skip-permissions"], {
@@ -159,7 +184,34 @@ export function registerTerminalIpc(): void {
 
       return { ok: true, cwd: currentCwd };
     } catch (e) {
-      return { ok: false, error: String(e) };
+      // Fallback to system shell
+      const defaultShell = getDefaultShell();
+      try {
+        ptyProcess = pty.spawn(defaultShell.bin, defaultShell.args, {
+          name: "xterm-256color",
+          cols,
+          rows,
+          cwd: currentCwd,
+          env
+        });
+
+        ptyProcess.onData((data: string) => {
+          if (win && !win.isDestroyed()) {
+            win.webContents.send("terminal:data", data);
+          }
+        });
+
+        ptyProcess.onExit(({ exitCode }) => {
+          ptyProcess = null;
+          if (win && !win.isDestroyed()) {
+            win.webContents.send("terminal:exit", exitCode);
+          }
+        });
+
+        return { ok: true, cwd: currentCwd, fallback: true };
+      } catch (err2) {
+        return { ok: false, error: String(e) };
+      }
     }
   });
 
