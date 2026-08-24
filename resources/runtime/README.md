@@ -16,5 +16,10 @@ Requirements:
 
 `claude-bridge.mjs` is a dependency-free loopback adapter used by Cowork to
 translate the locally installed Claude CLI's Anthropic requests to the selected
-OpenAI-compatible Llama endpoint. Lumen starts it only when port `18084` does
+OpenAI-compatible Llama endpoint. Lumen starts it only when its dedicated port `18086` does
 not already have a healthy bridge.
+
+`codex-responses-bridge.mjs` performs the equivalent Responses-to-Chat
+translation for Codex. `lumen-codex.mjs` and `lumen-claude.mjs` are one-shot
+peer-agent launchers, allowing either Cowork lead agent to delegate a bounded
+subtask to the other while preserving the same selected Llama endpoint/model.

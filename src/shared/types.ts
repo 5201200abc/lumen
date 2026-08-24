@@ -7,11 +7,90 @@ export type LlamaModel = {
   endpointId: string;
   reasoningControl: ReasoningControl;
 };
+
+/**
+ * Automatically detects the reasoning/thinking control mode of a model based on
+ * its name, family, and standard capability conventions.
+ */
+export function detectReasoningControl(modelName: string): ReasoningControl {
+  if (!modelName) return "none";
+  const name = modelName.trim().toLowerCase();
+
+  // Models whose public API exposes multiple reasoning-effort levels.
+  if (
+    /(^|[/_-])(o1|o3|o4)([/_.-]|$)/i.test(name) ||
+    /(^|[/_-])gpt-5([/_.-]|$)/i.test(name) ||
+    /claude-(opus|sonnet)-4[._-]6/i.test(name) ||
+    /qwen3\.8/i.test(name) ||
+    /reasoning[-_]?effort/i.test(name) ||
+    /effort[-_]?levels?/i.test(name)
+  ) {
+    return "effort";
+  }
+
+  // Models that expose thinking as a mode/switch, but not low/medium/high effort.
+  if (
+    /(-thinking|-think|_thinking|_think|\bthinking\b|\bthink\b)/i.test(name) ||
+    /(^|[/_-])(deepseek-r1|deepseek-reasoner|r1|qwq)([/_.-]|$)/i.test(name) ||
+    /qwen[-_]?3/i.test(name) ||
+    /claude-3[._-]7/i.test(name) ||
+    /kimi.*k1\.5/i.test(name) ||
+    /glm-4.*thinking/i.test(name) ||
+    /qwen2\.5.*thinking/i.test(name)
+  ) {
+    return "toggle";
+  }
+
+  // 3. Models with NO Reasoning / Thinking Control:
+  // - Standard Llama 2 / 3 / 3.1 / 3.2 / 3.3
+  // - Mistral, Mixtral, Gemma, Gemma-2, Phi-2, Phi-3, Phi-4, Vicuna, Command-R
+  // - Standard GPT-4o, GPT-4o-mini, GPT-4, GPT-3.5
+  // - Claude 3.5 Sonnet / Haiku / Opus, Claude 3
+  if (
+    /\b(llama-?[23]|mistral|mixtral|gemma|phi-?[234]|vicuna|command-r|chatglm|baichuan|gpt-4o|gpt-4|gpt-3\.5|claude-3-5|claude-3)\b/i.test(name)
+  ) {
+    return "none";
+  }
+
+  if (/(reasoner|reasoning)/i.test(name)) return "toggle";
+  return "none";
+}
+
+/**
+ * Returns human-readable label for a reasoning control mode.
+ */
+export function reasoningControlLabel(
+  control: ReasoningControl,
+  lang: "zh" | "en" = "zh"
+): { label: string; tag: string; description: string } {
+  if (control === "effort") {
+    return lang === "zh"
+      ? { label: "思考强度级别", tag: "Effort", description: "支持低/中/高分级思考强度" }
+      : { label: "Reasoning effort levels", tag: "Effort", description: "Supports low / medium / high effort levels" };
+  }
+  if (control === "toggle") {
+    return lang === "zh"
+      ? { label: "思考开关", tag: "Toggle", description: "支持开启/关闭思考" }
+      : { label: "Thinking toggle", tag: "Toggle", description: "Supports thinking on / off toggle" };
+  }
+  return lang === "zh"
+    ? { label: "标准模型", tag: "No thinking", description: "无深度思考控制" }
+    : { label: "Standard model", tag: "No thinking", description: "No thinking control" };
+}
+
 export type Theme = "system" | "light" | "dark";
 export type Language = "en" | "zh";
-export type FontSize = "small" | "medium" | "large";
+export type FontSize = 13 | 14 | 15 | 16 | "small" | "medium" | "large";
 export type Role = "user" | "assistant" | "system";
 export type ChatPhase = "preparing" | "searching" | "thinking" | "answering" | "done" | "error";
+
+export type ApiKeyItem = {
+  id: string;
+  name: string;
+  key: string;
+};
+
+export type CoworkEngine = "claude-code" | "codex";
 
 export type Settings = {
   llamaUrl: string;
@@ -26,6 +105,7 @@ export type Settings = {
   systemPromptPath: string;
   chatInstructions: string;
   coworkInstructions: string;
+  coworkEngine: CoworkEngine;
   language: Language;
   fontSize: FontSize;
   modelCatalog: string[];
@@ -35,6 +115,8 @@ export type Settings = {
     name: string;
     url: string;
   }>;
+  tavilyApiKeys: ApiKeyItem[];
+  llamaApiKeys: ApiKeyItem[];
 };
 
 export type GoogleAccount = {
@@ -52,6 +134,12 @@ export type WorkspaceInfo = {
   name: string;
   branch: string | null;
   location: "Local";
+  changes: {
+    files: number;
+    additions: number;
+    deletions: number;
+  };
+  hasRemote: boolean;
 };
 
 export type Conversation = {
@@ -160,6 +248,7 @@ export type CodexTask = {
   id: string;
   title: string;
   cwd: string;
+  engine: CoworkEngine;
   contextUsed?: number;
   contextTotal?: number;
   createdAt: number;

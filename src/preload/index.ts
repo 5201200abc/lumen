@@ -11,7 +11,7 @@ import type {
   StreamDelta,
   StreamDone,
   CodexMessage,
-  CodexTask,
+  CodexTask, CoworkEngine,
   GoogleAccount,
   WorkspaceInfo
 } from "@shared/types";
@@ -90,12 +90,12 @@ const api = {
     getHome: (): Promise<string> => ipcRenderer.invoke("codex:getHome"),
     workspaceInfo: (cwd?: string): Promise<WorkspaceInfo> => ipcRenderer.invoke("codex:workspaceInfo", cwd),
     listTasks: (): Promise<CodexTask[]> => ipcRenderer.invoke("codex:listTasks"),
-    createTask: (opts?: { title?: string; cwd?: string }): Promise<CodexTask> => ipcRenderer.invoke("codex:createTask", opts || {}),
+    createTask: (opts?: { title?: string; cwd?: string; engine?: CoworkEngine }): Promise<CodexTask> => ipcRenderer.invoke("codex:createTask", opts || {}),
     getMessages: (taskId: string): Promise<CodexMessage[]> => ipcRenderer.invoke("codex:getMessages", taskId),
     deleteTask: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:deleteTask", taskId),
     selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("codex:selectDirectory"),
     stop: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:stop", taskId),
-    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
+    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string; engine?: CoworkEngine }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
       ipcRenderer.invoke("codex:run", opts),
     onEvent: (fn: (event: any) => void): Unlisten => on("codex:event", fn)
   },

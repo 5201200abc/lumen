@@ -16,7 +16,6 @@ type Props = {
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
   reasoningControl: ReasoningControl;
-  onConfigure: () => void;
   onWebSearch: (v: boolean) => void;
   onSend: () => void;
   onStop: () => void;
@@ -86,7 +85,6 @@ export function Composer(props: Props) {
               onModel={props.onModel}
               onEffort={props.onEffort}
               reasoningControl={props.reasoningControl}
-              onConfigure={props.onConfigure}
             />
             {props.streaming ? (
               <button className="send stop" type="button" onClick={props.onStop} aria-label="停止生成" title="停止生成">

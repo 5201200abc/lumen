@@ -8,6 +8,7 @@ const PORT = parseInt(process.env.CLAUDE_BRIDGE_PORT || "18084", 10);
 const HOST = process.env.CLAUDE_BRIDGE_HOST || "127.0.0.1";
 const DEFAULT_MODEL = process.env.LLAMA_MODEL_ALIAS || "Qwen3.8-27B";
 const LLAMA_API_KEY = process.env.LLAMA_API_KEY || "";
+const REASONING_CONTROL = process.env.LLAMA_REASONING_CONTROL || "effort";
 
 function randomId(prefix = "msg_") {
   return `${prefix}${crypto.randomBytes(12).toString("hex")}`;
@@ -150,7 +151,7 @@ function convertAnthropicToOpenAI(body) {
   }
 
   const headerEffort = (body.effort || process.env.CLAUDE_EFFORT || "medium").toLowerCase();
-  const reasoningControl = process.env.LLAMA_REASONING_CONTROL || "effort";
+  const reasoningControl = REASONING_CONTROL;
   const enableThinking = headerEffort !== "low";
   const temp = headerEffort === "low" ? 0.3 : headerEffort === "xhigh" ? 0.85 : (body.temperature ?? 0.7);
 
@@ -159,7 +160,9 @@ function convertAnthropicToOpenAI(body) {
     messages,
     stream: Boolean(body.stream),
     temperature: temp,
-    max_tokens: body.max_tokens ?? 4096
+    // Claude's advertised model metadata can request 64K output. A single local
+    // llama slot must stay bounded so tool turns remain interruptible.
+    max_tokens: Math.min(body.max_tokens ?? 1024, 1024)
   };
 
   if (reasoningControl === "effort") {
@@ -437,7 +440,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", backend: LLAMA_URL }));
+    res.end(JSON.stringify({
+      status: "ok",
+      bridge: "lumen-claude",
+      backend: LLAMA_URL,
+      model: DEFAULT_MODEL,
+      reasoningControl: REASONING_CONTROL
+    }));
     return;
   }
 

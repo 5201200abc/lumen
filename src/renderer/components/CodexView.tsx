@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Attachment, CodexMessage, CodexTask, CodexToolCall, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CodexMessage, CodexTask, CodexToolCall, CoworkEngine, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
 import { toolActivity, toolDescription } from "@shared/cowork-status";
 import { AttachmentAddButton, AttachmentList, readDroppedFiles } from "./AttachmentControls";
+import { EnvironmentPanel } from "./EnvironmentPanel";
 import {
   IconArrowUp,
   IconCheck,
@@ -26,7 +27,7 @@ type Props = {
   activeTaskId: string | null;
   tasks: CodexTask[];
   onSelectTask: (taskId: string) => void;
-  onNewTask: (cwd?: string) => Promise<string>;
+  onNewTask: (cwd?: string, engine?: CoworkEngine) => Promise<string>;
   onDeleteTask: (taskId: string) => void;
   model: string;
   models: string[];
@@ -34,12 +35,13 @@ type Props = {
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
   reasoningControl: ReasoningControl;
-  onConfigure: () => void;
+  engine: CoworkEngine;
+  onEngine: (engine: CoworkEngine) => void;
 };
 
 const COWORK_WELCOME_PROMPTS = [
-  "What tasks do you want to complete today?",
-  "What plans do you have for today?"
+  "What are we going to do?",
+  "What would you like to talk about?"
 ] as const;
 
 function formatDuration(sec: number): string {
@@ -211,6 +213,7 @@ export function CodexView(props: Props) {
   const [cwd, setCwd] = useState<string>("");
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [contextTokens, setContextTokens] = useState({ used: 0, total: 16384 });
+  const [environmentOpen, setEnvironmentOpen] = useState(true);
   const welcomeIndex = useRef(0);
   const [welcomePrompt, setWelcomePrompt] = useState<(typeof COWORK_WELCOME_PROMPTS)[number]>(
     COWORK_WELCOME_PROMPTS[0]
@@ -218,6 +221,8 @@ export function CodexView(props: Props) {
 
   const threadRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  const creatingTask = useRef(false);
+  const startingTask = useRef<string | null>(null);
   const activeTask = props.tasks.find((t) => t.id === props.activeTaskId);
 
   const nextWelcomePrompt = useCallback(() => {
@@ -268,6 +273,16 @@ export function CodexView(props: Props) {
     if (selected) setCwd(selected);
   };
 
+  const addEnvironmentSources = async (): Promise<void> => {
+    const files = await window.lumen.attachments.pickFiles();
+    if (files.length) setAttachments((current) => [...current, ...files]);
+  };
+
+  const prepareEnvironmentPrompt = (text: string): void => {
+    setPrompt(text);
+    window.requestAnimationFrame(() => areaRef.current?.focus());
+  };
+
   // Load messages when activeTaskId changes
   useEffect(() => {
     if (!props.activeTaskId) {
@@ -275,6 +290,7 @@ export function CodexView(props: Props) {
       setContextTokens({ used: 0, total: 16384 });
       return;
     }
+    if (creatingTask.current || startingTask.current === props.activeTaskId) return;
     void window.lumen.codex.getMessages(props.activeTaskId).then((list) => {
       setMessages(list);
       setRunning(list.some((message) => message.status === "streaming"));
@@ -381,14 +397,22 @@ export function CodexView(props: Props) {
     userScrolledUp.current = false;
 
     let taskId = props.activeTaskId;
+    setRunning(true);
     if (!taskId) {
-      taskId = await props.onNewTask(cwd);
+      creatingTask.current = true;
+      try {
+        taskId = await props.onNewTask(cwd, props.engine);
+      } catch {
+        creatingTask.current = false;
+        setRunning(false);
+        return;
+      }
+      creatingTask.current = false;
+      startingTask.current = taskId;
     }
 
     setPrompt("");
     setAttachments([]);
-    setRunning(true);
-
     const userMsg: CodexMessage = {
       id: "tmp-user-" + Date.now(),
       taskId,
@@ -420,10 +444,12 @@ export function CodexView(props: Props) {
         attachments: files,
         cwd,
         effort: props.effort,
-        model: props.model
+        model: props.model,
+        engine: props.tasks.find((task) => task.id === taskId)?.engine || props.engine
       });
 
       if (res.ok && res.userMsgId && res.asstMsgId) {
+        startingTask.current = null;
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id === userMsg.id) return { ...m, id: res.userMsgId! };
@@ -432,12 +458,15 @@ export function CodexView(props: Props) {
           })
         );
       } else if (!res.ok) {
+        startingTask.current = null;
         setRunning(false);
         setMessages((prev) =>
           prev.map((m) => (m.id === asstMsg.id ? { ...m, content: `Could not start: ${res.error}`, status: "error", activity: "Task failed" } : m))
         );
       }
     } catch (e: any) {
+      creatingTask.current = false;
+      startingTask.current = null;
       setRunning(false);
       setMessages((prev) =>
         prev.map((m) => (m.id === asstMsg.id ? { ...m, content: `Execution failed: ${e.message}`, status: "error", activity: "Task failed" } : m))
@@ -453,9 +482,10 @@ export function CodexView(props: Props) {
   };
 
   return (
-    <div className="codex-view">
+    <div className={`codex-view ${environmentOpen ? "environment-open" : ""}`}>
+      <div className="codex-primary">
       {/* Top Header Bar */}
-      <header className="main-top">
+      <header className="main-top cowork-topbar">
         {!props.sidebarOpen && props.onToggleSidebar && (
           <button
             className="icon-btn ghost-icon sidebar-toggle-btn"
@@ -467,6 +497,16 @@ export function CodexView(props: Props) {
             <IconSidebar size={16} />
           </button>
         )}
+        <button
+          className="icon-btn ghost-icon environment-toggle"
+          type="button"
+          aria-pressed={environmentOpen}
+          title={environmentOpen ? "Hide environment" : "Show environment"}
+          aria-label={environmentOpen ? "Hide environment" : "Show environment"}
+          onClick={() => setEnvironmentOpen((current) => !current)}
+        >
+          <IconSidebar size={16} />
+        </button>
       </header>
 
       {/* Main Conversation Thread */}
@@ -584,7 +624,8 @@ export function CodexView(props: Props) {
                 onModel={props.onModel}
                 onEffort={props.onEffort}
                 reasoningControl={props.reasoningControl}
-                onConfigure={props.onConfigure}
+                engine={props.tasks.find((task) => task.id === props.activeTaskId)?.engine || props.engine}
+                onEngine={props.onEngine}
               />
               {running ? (
                 <button
@@ -612,6 +653,20 @@ export function CodexView(props: Props) {
           </div>
         </div>
       </div>
+      </div>
+      {environmentOpen && (
+        <EnvironmentPanel
+          workspace={workspace}
+          running={running}
+          engine={props.tasks.find((task) => task.id === props.activeTaskId)?.engine || props.engine}
+          model={props.model}
+          messages={messages}
+          attachments={attachments}
+          onSelectWorkspace={() => void selectWorkspace()}
+          onAddSource={() => void addEnvironmentSources()}
+          onPrompt={prepareEnvironmentPrompt}
+        />
+      )}
     </div>
   );
 }

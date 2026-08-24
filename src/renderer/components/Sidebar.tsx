@@ -1,6 +1,6 @@
 import { useState, type RefObject } from "react";
 import type { Conversation, CodexTask, GoogleAccount } from "@shared/types";
-import { IconCompose, IconSearch, IconSidebar, IconTrash } from "./icons";
+import { IconChatBubble, IconCompose, IconLumen, IconSearch, IconSidebar, IconTrash } from "./icons";
 import { AccountMenu } from "./AccountMenu";
 
 type Props = {
@@ -15,6 +15,7 @@ type Props = {
   onDelete: (id: string) => void;
   onSettings: () => void;
   onToggleSidebar?: () => void;
+  collapsed?: boolean;
   account: GoogleAccount;
   accountBusy: boolean;
   onGoogleLogin: () => void;
@@ -30,6 +31,11 @@ type Props = {
   onDeleteCodexTask?: (id: string) => void;
 };
 
+function initials(account: GoogleAccount): string {
+  const source = account.name || account.email || "Lumen";
+  return source.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+}
+
 function time(ts: number): string {
   const d = new Date(ts);
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -37,6 +43,71 @@ function time(ts: number): string {
 
 export function Sidebar(props: Props) {
   const [searchOpen, setSearchOpen] = useState(false);
+
+  if (props.collapsed) {
+    return (
+      <aside className="sidebar collapsed">
+        <div className="drag" />
+        <div className="sidebar-collapsed-rail">
+          <div className="collapsed-top-icons">
+            <button
+              type="button"
+              className="collapsed-icon-btn logo-btn"
+              onClick={props.onToggleSidebar}
+              title="Expand sidebar (展开侧边栏 ⌘B)"
+              aria-label="Expand sidebar"
+            >
+              <IconLumen size={20} />
+            </button>
+            <button
+              type="button"
+              className="collapsed-icon-btn"
+              onClick={props.mode === "code" ? () => props.onNewCodexTask?.() : props.onNew}
+              title="New chat (新建会话 ⌘N)"
+              aria-label="New chat"
+            >
+              <IconCompose size={17} />
+            </button>
+            <button
+              type="button"
+              className="collapsed-icon-btn"
+              onClick={() => {
+                props.onToggleSidebar?.();
+                setTimeout(() => props.searchRef.current?.focus(), 50);
+              }}
+              title="Search (搜索会话)"
+              aria-label="Search"
+            >
+              <IconSearch size={16} />
+            </button>
+            <button
+              type="button"
+              className={`collapsed-icon-btn ${props.mode === "chat" ? "active" : ""}`}
+              onClick={() => {
+                if (props.mode !== "chat") props.onModeChange("chat");
+                props.onToggleSidebar?.();
+              }}
+              title="Chat conversations (聊天会话)"
+              aria-label="Chat conversations"
+            >
+              <IconChatBubble size={16} />
+            </button>
+          </div>
+          <div className="collapsed-foot">
+            <button
+              type="button"
+              className="collapsed-icon-btn avatar-btn"
+              onClick={props.onToggleSidebar}
+              title="Expand sidebar (展开侧边栏 ⌘B)"
+              aria-label="Expand sidebar"
+            >
+              <span className="account-avatar">{initials(props.account)}</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <aside className="sidebar">
@@ -163,10 +234,10 @@ export function Sidebar(props: Props) {
             className="new-chat-btn"
             type="button"
             onClick={() => props.onNewCodexTask && props.onNewCodexTask()}
-            title="New task (⌘N)"
+            title="New chat (⌘N)"
           >
             <IconCompose size={16} />
-            <span>New task</span>
+            <span>New chat</span>
           </button>
 
           <div className="chats">
@@ -177,14 +248,14 @@ export function Sidebar(props: Props) {
                 onClick={() => props.onSelectCodexTask && props.onSelectCodexTask(t.id)}
               >
                 <div>
-                  <div className="title">{t.title || "编程任务"}</div>
+                  <div className="title">{t.title || "新会话"}</div>
                   <div className="meta">{time(t.updatedAt)}</div>
                 </div>
                 <button
                   className="del"
                   type="button"
-                  aria-label={`删除任务：${t.title}`}
-                  title="删除任务"
+                  aria-label={`删除会话：${t.title}`}
+                  title="删除会话"
                   onClick={(e) => {
                     e.stopPropagation();
                     props.onDeleteCodexTask && props.onDeleteCodexTask(t.id);

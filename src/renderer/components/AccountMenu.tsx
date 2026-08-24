@@ -10,6 +10,7 @@ type Props = {
   onLogout: () => void;
   onSync: () => void;
   onSettings: () => void;
+  collapsed?: boolean;
 };
 
 function initials(account: GoogleAccount): string {
@@ -35,9 +36,9 @@ export function AccountMenu(props: Props) {
     : "Sign in";
 
   return (
-    <div className="account-menu-root" ref={root}>
+    <div className={`account-menu-root ${props.collapsed ? "collapsed" : ""}`} ref={root}>
       {open ? (
-        <div className="account-popover" role="menu">
+        <div className={`account-popover ${props.collapsed ? "collapsed-popover" : ""}`} role="menu">
           <div className="account-popover-head">
             <div className="account-avatar large">{initials(props.account)}</div>
             <div className="account-identity">
@@ -67,7 +68,8 @@ export function AccountMenu(props: Props) {
           <button
             type="button"
             className="account-menu-row"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               setOpen(false);
               props.onSettings();
             }}
@@ -84,17 +86,20 @@ export function AccountMenu(props: Props) {
         </div>
       ) : null}
       <button
-        className={`account-trigger ${open ? "open" : ""}`}
+        className={`account-trigger ${open ? "open" : ""} ${props.collapsed ? "collapsed" : ""}`}
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
+        title={label}
       >
         <span className="account-avatar">{initials(props.account)}</span>
-        <span className="account-trigger-copy">
-          <strong>{label}</strong>
-          {props.account.connected ? <small>Google backup on</small> : null}
-        </span>
+        {!props.collapsed && (
+          <span className="account-trigger-copy">
+            <strong>{label}</strong>
+            {props.account.connected ? <small>Google backup on</small> : null}
+          </span>
+        )}
       </button>
     </div>
   );

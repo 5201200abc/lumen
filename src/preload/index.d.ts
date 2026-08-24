@@ -10,7 +10,7 @@ import type {
   StreamDelta,
   StreamDone,
   CodexMessage,
-  CodexTask,
+  CodexTask, CoworkEngine,
   GoogleAccount,
   WorkspaceInfo
 } from "@shared/types";
@@ -79,12 +79,12 @@ interface LumenAPI {
     getHome: () => Promise<string>;
     workspaceInfo: (cwd?: string) => Promise<WorkspaceInfo>;
     listTasks: () => Promise<CodexTask[]>;
-    createTask: (opts?: { title?: string; cwd?: string }) => Promise<CodexTask>;
+    createTask: (opts?: { title?: string; cwd?: string; engine?: CoworkEngine }) => Promise<CodexTask>;
     getMessages: (taskId: string) => Promise<CodexMessage[]>;
     deleteTask: (taskId: string) => Promise<boolean>;
     selectDirectory: () => Promise<string | null>;
     stop: (taskId: string) => Promise<boolean>;
-    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
+    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string; engine?: CoworkEngine }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
     onEvent: (fn: (event: any) => void) => Unlisten;
   };
   ui: {

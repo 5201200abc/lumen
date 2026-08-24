@@ -1,5 +1,6 @@
 import { nativeImage } from "electron";
 import type { Attachment, ChatMessage, Effort, Settings } from "@shared/types";
+import { detectReasoningControl } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 import { memoryBlock } from "./memory";
 import { tavilySearch } from "./search";
@@ -79,7 +80,8 @@ class ThinkSplitter {
 }
 
 function effortParams(settings: Settings, effort: Effort): Record<string, Effort | boolean> {
-  const control = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl ?? "effort";
+  const configured = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl;
+  const control = configured ?? detectReasoningControl(settings.model);
   if (control === "none") return {};
   if (control === "toggle") return { enable_thinking: effort !== "low" };
   return { reasoning_effort: effort };

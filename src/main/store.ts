@@ -2,7 +2,8 @@ import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Effort, FontSize, Language, LlamaModel, Settings, Theme } from "@shared/types";
+import type { CoworkEngine, Effort, FontSize, Language, LlamaModel, Settings, Theme } from "@shared/types";
+import { detectReasoningControl } from "@shared/types";
 import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
 const DEFAULT_MODELS_DIR = join(homedir(), "models");
@@ -12,14 +13,17 @@ export const SYSTEM_PROMPT_PATH = join(homedir(), ".config", "llama", "LLAMA.md"
 type Disk = {
   llamaUrl: string;
   llamaApiKeyEnc: string;
+  llamaApiKeysEnc: string;
   model: string;
   tavilyApiKeyEnc: string;
+  tavilyApiKeysEnc: string;
   defaultEffort: Effort | "light" | "high";
   memoryEnabled: boolean;
   theme: Theme;
   modelsDir: string;
   chatInstructions: string;
   coworkInstructions: string;
+  coworkEngine: CoworkEngine;
   googleClientId: string;
   language: Language;
   fontSize: FontSize;
@@ -33,14 +37,17 @@ const store = new Store<Disk>({
   defaults: {
     llamaUrl: "http://127.0.0.1:18082/v1",
     llamaApiKeyEnc: "",
+    llamaApiKeysEnc: "",
     model: "Qwen3.8-27B",
     tavilyApiKeyEnc: "",
+    tavilyApiKeysEnc: "",
     defaultEffort: "xhigh",
     memoryEnabled: true,
     theme: "system",
     modelsDir: DEFAULT_MODELS_DIR,
     chatInstructions: "",
     coworkInstructions: "",
+    coworkEngine: "claude-code",
     googleClientId: "",
     language: "en",
     fontSize: "small",
@@ -76,6 +83,16 @@ function normalizeEffort(value: string | undefined): Effort {
   return "medium";
 }
 
+function normalizeFontSize(value: unknown): FontSize {
+  if (value === "small" || value === 13 || value === "13") return 13;
+  if (value === 14 || value === "14") return 14;
+  if (value === "medium" || value === 15 || value === "15") return 15;
+  if (value === "large" || value === 16 || value === "16") return 16;
+  const parsed = parseInt(String(value), 10);
+  if (!isNaN(parsed) && parsed >= 13 && parsed <= 16) return parsed as FontSize;
+  return 13;
+}
+
 export function getSettings(): Settings {
   seedTavily();
   const activeUrl = store.get("llamaUrl");
@@ -92,13 +109,34 @@ export function getSettings(): Settings {
         id: index === 0 ? "default-model" : `legacy-model-${index}`,
         name,
         endpointId: activeEndpoint?.id || "local",
-        reasoningControl: "effort" as const
+        reasoningControl: detectReasoningControl(name)
       }));
+
+  const activeTavilyKey = decryptLocalSecret(store.get("tavilyApiKeyEnc"));
+  const rawTavilyKeys = decryptLocalSecret(store.get("tavilyApiKeysEnc"));
+  let tavilyApiKeys: Array<{ id: string; name: string; key: string }> = [];
+  try {
+    if (rawTavilyKeys) tavilyApiKeys = JSON.parse(rawTavilyKeys);
+  } catch {}
+  if (activeTavilyKey && !tavilyApiKeys.some((k) => k.key === activeTavilyKey)) {
+    tavilyApiKeys = [{ id: "default-tavily", name: "Default Key", key: activeTavilyKey }, ...tavilyApiKeys];
+  }
+
+  const activeLlamaKey = decryptLocalSecret(store.get("llamaApiKeyEnc"));
+  const rawLlamaKeys = decryptLocalSecret(store.get("llamaApiKeysEnc"));
+  let llamaApiKeys: Array<{ id: string; name: string; key: string }> = [];
+  try {
+    if (rawLlamaKeys) llamaApiKeys = JSON.parse(rawLlamaKeys);
+  } catch {}
+  if (activeLlamaKey && !llamaApiKeys.some((k) => k.key === activeLlamaKey)) {
+    llamaApiKeys = [{ id: "default-llama", name: "Default Key", key: activeLlamaKey }, ...llamaApiKeys];
+  }
+
   return {
     llamaUrl: activeUrl,
-    llamaApiKey: decryptLocalSecret(store.get("llamaApiKeyEnc")),
+    llamaApiKey: activeLlamaKey,
     model: store.get("model"),
-    tavilyApiKey: decryptLocalSecret(store.get("tavilyApiKeyEnc")),
+    tavilyApiKey: activeTavilyKey,
     defaultEffort: normalizeEffort(store.get("defaultEffort")),
     memoryEnabled: store.get("memoryEnabled"),
     theme: store.get("theme"),
@@ -107,11 +145,14 @@ export function getSettings(): Settings {
     systemPromptPath: SYSTEM_PROMPT_PATH,
     chatInstructions: store.get("chatInstructions"),
     coworkInstructions: store.get("coworkInstructions"),
+    coworkEngine: store.get("coworkEngine") || "claude-code",
     language: store.get("language") || "en",
-    fontSize: store.get("fontSize") || "small",
+    fontSize: normalizeFontSize(store.get("fontSize")),
     modelCatalog: catalog,
     llamaModels,
-    llamaEndpoints: normalizedEndpoints
+    llamaEndpoints: normalizedEndpoints,
+    tavilyApiKeys,
+    llamaApiKeys
   };
 }
 
@@ -143,6 +184,9 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.coworkInstructions !== undefined && patch.coworkInstructions.length > 20_000) {
     throw new Error("Cowork custom instructions cannot exceed 20,000 characters.");
   }
+  if (patch.coworkEngine !== undefined && !["claude-code", "codex"].includes(patch.coworkEngine)) {
+    throw new Error("Cowork engine must be claude-code or codex.");
+  }
   if (patch.systemPrompt !== undefined && patch.systemPrompt.length > 100_000) {
     throw new Error("Model rule style cannot exceed 100,000 characters.");
   }
@@ -158,8 +202,11 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.language !== undefined && !["en", "zh"].includes(patch.language)) {
     throw new Error("Language must be English or Chinese.");
   }
-  if (patch.fontSize !== undefined && !["small", "medium", "large"].includes(patch.fontSize)) {
-    throw new Error("Font size must be small, medium, or large.");
+  if (patch.fontSize !== undefined) {
+    const validSizes = [13, 14, 15, 16, "13", "14", "15", "16", "small", "medium", "large"];
+    if (!validSizes.includes(patch.fontSize as any)) {
+      throw new Error("Font size must be between 13 and 16.");
+    }
   }
   if (patch.modelCatalog !== undefined) {
     if (!Array.isArray(patch.modelCatalog) || patch.modelCatalog.length > 50) {
@@ -203,13 +250,36 @@ export function setSettings(patch: Partial<Settings>): Settings {
     }
   }
 
+  if (patch.tavilyApiKeys !== undefined) {
+    if (!Array.isArray(patch.tavilyApiKeys) || patch.tavilyApiKeys.length > 50) {
+      throw new Error("Tavily API key list must contain no more than 50 keys.");
+    }
+    for (const item of patch.tavilyApiKeys) {
+      if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.key !== "string") {
+        throw new Error("Every Tavily key must have an id, name, and key string.");
+      }
+    }
+  }
+
+  if (patch.llamaApiKeys !== undefined) {
+    if (!Array.isArray(patch.llamaApiKeys) || patch.llamaApiKeys.length > 50) {
+      throw new Error("Llama API key list must contain no more than 50 keys.");
+    }
+    for (const item of patch.llamaApiKeys) {
+      if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.key !== "string") {
+        throw new Error("Every Llama key must have an id, name, and key string.");
+      }
+    }
+  }
+
   if (patch.llamaUrl !== undefined) store.set("llamaUrl", patch.llamaUrl.trim());
   if (patch.model !== undefined) store.set("model", patch.model.trim());
   if (patch.defaultEffort !== undefined) store.set("defaultEffort", normalizeEffort(patch.defaultEffort));
+  if (patch.coworkEngine !== undefined) store.set("coworkEngine", patch.coworkEngine);
   if (patch.memoryEnabled !== undefined) store.set("memoryEnabled", patch.memoryEnabled);
   if (patch.theme !== undefined) store.set("theme", patch.theme);
   if (patch.language !== undefined) store.set("language", patch.language);
-  if (patch.fontSize !== undefined) store.set("fontSize", patch.fontSize);
+  if (patch.fontSize !== undefined) store.set("fontSize", normalizeFontSize(patch.fontSize));
   if (patch.modelCatalog !== undefined) store.set("modelCatalog", [...new Set(patch.modelCatalog.map((model) => model.trim()))]);
   if (patch.llamaModels !== undefined) {
     store.set("llamaModels", patch.llamaModels.map((model) => ({ ...model, name: model.name.trim() })));
@@ -221,6 +291,28 @@ export function setSettings(patch: Partial<Settings>): Settings {
       name: endpoint.name.trim(),
       url: endpoint.url.trim()
     })));
+  }
+  if (patch.tavilyApiKeys !== undefined) {
+    const clean = patch.tavilyApiKeys.map((k) => ({
+      id: k.id,
+      name: k.name.trim() || "Tavily Key",
+      key: k.key.trim()
+    }));
+    store.set("tavilyApiKeysEnc", encryptLocalSecret(JSON.stringify(clean)));
+    if (patch.tavilyApiKey === undefined && clean.length > 0 && !clean.some((k) => k.key === getSettings().tavilyApiKey)) {
+      store.set("tavilyApiKeyEnc", encryptLocalSecret(clean[0].key));
+    }
+  }
+  if (patch.llamaApiKeys !== undefined) {
+    const clean = patch.llamaApiKeys.map((k) => ({
+      id: k.id,
+      name: k.name.trim() || "Llama Key",
+      key: k.key.trim()
+    }));
+    store.set("llamaApiKeysEnc", encryptLocalSecret(JSON.stringify(clean)));
+    if (patch.llamaApiKey === undefined && clean.length > 0 && !clean.some((k) => k.key === getSettings().llamaApiKey)) {
+      store.set("llamaApiKeyEnc", encryptLocalSecret(clean[0].key));
+    }
   }
   if (patch.modelsDir !== undefined) store.set("modelsDir", patch.modelsDir.trim());
   if (patch.chatInstructions !== undefined) store.set("chatInstructions", patch.chatInstructions);

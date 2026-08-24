@@ -5,7 +5,8 @@ import { SettingsPanel } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { CodexView } from "./components/CodexView";
 import { IconSidebar } from "./components/icons";
-import type { Attachment, ChatMessage, Conversation, CodexTask, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
+import type { Attachment, ChatMessage, Conversation, CodexTask, CoworkEngine, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
+import { detectReasoningControl } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 
 const WELCOME_PROMPTS = ["What are we going to do?", "What would you like to talk about?"] as const;
@@ -20,7 +21,10 @@ function applyTheme(theme: Settings["theme"]): void {
 function applyPreferences(settings: Pick<Settings, "theme" | "language" | "fontSize">): void {
   applyTheme(settings.theme);
   document.documentElement.lang = settings.language === "zh" ? "zh-CN" : "en";
-  document.documentElement.dataset.fontSize = settings.fontSize;
+  const rawSize = settings.fontSize || 13;
+  const numSize = rawSize === "small" ? 13 : rawSize === "medium" ? 15 : rawSize === "large" ? 16 : parseInt(String(rawSize), 10) || 13;
+  document.documentElement.dataset.fontSize = String(numSize);
+  document.documentElement.style.setProperty("--base-font-size", `${numSize}px`);
 }
 
 export function App() {
@@ -100,12 +104,12 @@ export function App() {
     nextWelcomePrompt();
   }, [activeId, nextWelcomePrompt, streaming]);
 
-  const handleNewCodexTask = useCallback(async (cwd?: string): Promise<string> => {
-    const t = await window.lumen.codex.createTask({ cwd });
+  const handleNewCodexTask = useCallback(async (cwd?: string, engine?: CoworkEngine): Promise<string> => {
+    const t = await window.lumen.codex.createTask({ cwd, engine: engine || settings?.coworkEngine || "claude-code" });
     setCodexTasks(await window.lumen.codex.listTasks());
     setActiveTaskId(t.id);
     return t.id;
-  }, []);
+  }, [settings?.coworkEngine]);
 
   const handleDeleteCodexTask = useCallback(async (id: string) => {
     await window.lumen.codex.deleteTask(id);
@@ -238,10 +242,17 @@ export function App() {
         e.preventDefault();
         setSidebarOpen((prev) => !prev);
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+      if (e.key === "Escape" && settingsOpen) {
+        setSettingsOpen(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [settingsOpen]);
 
   const userScrolledUp = useRef(false);
 
@@ -511,154 +522,139 @@ export function App() {
   const activeEndpoint = settings.llamaEndpoints.find((endpoint) => endpoint.url === settings.llamaUrl);
   const configuredModels = settings.llamaModels.filter((model) => !activeEndpoint || model.endpointId === activeEndpoint.id);
   const activeModel = settings.llamaModels.find((model) => model.name === settings.model && (!activeEndpoint || model.endpointId === activeEndpoint.id));
-  const reasoningControl = activeModel?.reasoningControl ?? "effort";
-  const openModelConfiguration = () => {
-    setSettingsPage("models");
-    setSettingsOpen(true);
-  };
+  const reasoningControl = activeModel?.reasoningControl ?? detectReasoningControl(settings.model);
 
   return (
-    <div className={`app ${!sidebarOpen ? "sidebar-collapsed" : ""}`}>
-      {sidebarOpen ? (
-        <>
-          <Sidebar
-            mode={mode}
-            onModeChange={setMode}
-            chats={chats}
-            activeId={activeId}
-            query={query}
-            searchRef={searchRef}
-            onQuery={(q) => {
-              setQuery(q);
-              void refreshChats(q);
-            }}
-            onSelect={(id) => {
-              if (streaming && activeId && id !== activeId) {
-                void window.lumen.chat.stop(activeId);
-                setStreaming(false);
+    <>
+      <div className={`app ${!sidebarOpen ? "sidebar-collapsed" : ""}`}>
+        <Sidebar
+          mode={mode}
+          onModeChange={setMode}
+          chats={chats}
+          activeId={activeId}
+          query={query}
+          searchRef={searchRef}
+          collapsed={!sidebarOpen}
+          onQuery={(q) => {
+            setQuery(q);
+            void refreshChats(q);
+          }}
+          onSelect={(id) => {
+            if (streaming && activeId && id !== activeId) {
+              void window.lumen.chat.stop(activeId);
+              setStreaming(false);
+            }
+            void openChat(id);
+          }}
+          onNew={() => void newChat()}
+          onDelete={async (id) => {
+            if (!window.confirm("Delete this chat? This cannot be undone.")) return;
+            await window.lumen.chats.delete(id);
+            const list = query.trim() ? await window.lumen.chats.search(query) : await window.lumen.chats.list();
+            setChats(list);
+            if (id === activeId) {
+              setStreaming(false);
+              if (list[0]) await openChat(list[0].id);
+              else {
+                chatLoad.current += 1;
+                setActiveId(null);
+                setMessages([]);
+                nextWelcomePrompt();
               }
-              void openChat(id);
-            }}
-            onNew={() => void newChat()}
-            onDelete={async (id) => {
-              if (!window.confirm("Delete this chat? This cannot be undone.")) return;
-              await window.lumen.chats.delete(id);
-              const list = query.trim() ? await window.lumen.chats.search(query) : await window.lumen.chats.list();
-              setChats(list);
-              if (id === activeId) {
-                setStreaming(false);
-                if (list[0]) await openChat(list[0].id);
-                else {
-                  chatLoad.current += 1;
-                  setActiveId(null);
-                  setMessages([]);
-                  nextWelcomePrompt();
-                }
-              }
-            }}
-            onSettings={() => setSettingsOpen(true)}
-            onToggleSidebar={() => setSidebarOpen(false)}
-            account={account}
-            accountBusy={accountBusy}
-            onGoogleLogin={() => void runAccountAction("login")}
-            onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
-            onGoogleLogout={() => void runAccountAction("logout")}
-            onGoogleSync={() => void runAccountAction("sync")}
-            codexTasks={codexTasks}
-            activeTaskId={activeTaskId}
-            onSelectCodexTask={setActiveTaskId}
-            onNewCodexTask={() => void handleNewCodexTask()}
-            onDeleteCodexTask={(id) => void handleDeleteCodexTask(id)}
-          />
-          <div className="v-line" />
-        </>
-      ) : null}
-      <section className="main">
-        <div className="mode-pane" hidden={mode !== "code"}>
-          <CodexView
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-            activeTaskId={activeTaskId}
-            tasks={codexTasks}
-            onSelectTask={setActiveTaskId}
-            onNewTask={handleNewCodexTask}
-            onDeleteTask={handleDeleteCodexTask}
-            model={settings.model}
-            models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
-            effort={effort}
-            onModel={(m) => void patchSettings({ model: m })}
-            onEffort={setEffort}
-            reasoningControl={reasoningControl}
-            onConfigure={openModelConfiguration}
-          />
-        </div>
-        <div className="mode-pane" hidden={mode !== "chat"}>
-            <header className="main-top">
-              {!sidebarOpen && (
-                <button
-                  className="icon-btn ghost-icon sidebar-toggle-btn"
-                  type="button"
-                  title="Expand sidebar (⌘B)"
-                  aria-label="Expand sidebar"
-                  onClick={() => setSidebarOpen(true)}
-                >
-                  <IconSidebar size={16} />
-                </button>
-              )}
-            </header>
-            <div className="thread" ref={threadRef} onScroll={handleScroll}>
-              <div className="thread-inner">
-                {visible.length === 0 ? (
-                  <div className="empty">
-                    <h1>Lumen</h1>
-                    <p>{welcomePrompt}</p>
-                  </div>
-                ) : (
-                  visible.map((m, i) => (
-                    <MessageView
-                      key={m.id}
-                      message={m}
-                      streaming={streaming && i === visible.length - 1 && m.role === "assistant"}
-                      onRegenerate={m.role === "assistant" && i === visible.length - 1 ? regenerate : undefined}
-                      onEdit={m.role === "user" ? (id, text, atts) => void handleEditMessage(id, text, atts) : undefined}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-            <Composer
-              value={draft}
+            }
+          }}
+          onSettings={() => setSettingsOpen(true)}
+          onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+          account={account}
+          accountBusy={accountBusy}
+          onGoogleLogin={() => void runAccountAction("login")}
+          onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
+          onGoogleLogout={() => void runAccountAction("logout")}
+          onGoogleSync={() => void runAccountAction("sync")}
+          codexTasks={codexTasks}
+          activeTaskId={activeTaskId}
+          onSelectCodexTask={setActiveTaskId}
+          onNewCodexTask={() => void handleNewCodexTask()}
+          onDeleteCodexTask={(id) => void handleDeleteCodexTask(id)}
+        />
+        <div className="v-line" />
+        <section className="main">
+          <div className="mode-pane" hidden={mode !== "code"}>
+            <CodexView
+              sidebarOpen={sidebarOpen}
+              onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+              activeTaskId={activeTaskId}
+              tasks={codexTasks}
+              onSelectTask={setActiveTaskId}
+              onNewTask={handleNewCodexTask}
+              onDeleteTask={handleDeleteCodexTask}
               model={settings.model}
               models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
               effort={effort}
-              webSearch={webSearch}
-              streaming={streaming}
-              attachments={attachments}
-              onChange={setDraft}
               onModel={(m) => void patchSettings({ model: m })}
               onEffort={setEffort}
               reasoningControl={reasoningControl}
-              onConfigure={openModelConfiguration}
-              onWebSearch={setWebSearch}
-              onSend={() => void send()}
-              onStop={() => activeId && void window.lumen.chat.stop(activeId)}
-              onAttach={(files) => setAttachments((prev) => [...prev, ...files])}
-              onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
+              engine={settings.coworkEngine}
+              onEngine={(engine) => {
+                void patchSettings({ coworkEngine: engine });
+                setActiveTaskId(null);
+              }}
             />
-        </div>
-        {settingsOpen && (
-          <SettingsPanel
-            settings={settings}
-            initialPage={settingsPage}
-            onChange={patchSettings}
-            onClose={() => { setSettingsOpen(false); setSettingsPage("general"); }}
-            onDeleteAllMemories={async () => {
-              await window.lumen.memory.clear();
-            }}
-            onDeleteAllChats={deleteAllChats}
-          />
-        )}
-      </section>
-    </div>
+          </div>
+          <div className="mode-pane" hidden={mode !== "chat"}>
+              <div className="thread" ref={threadRef} onScroll={handleScroll}>
+                <div className="thread-inner">
+                  {visible.length === 0 ? (
+                    <div className="empty">
+                      <h1>Lumen</h1>
+                      <p>{welcomePrompt}</p>
+                    </div>
+                  ) : (
+                    visible.map((m, i) => (
+                      <MessageView
+                        key={m.id}
+                        message={m}
+                        streaming={streaming && i === visible.length - 1 && m.role === "assistant"}
+                        onRegenerate={m.role === "assistant" && i === visible.length - 1 ? regenerate : undefined}
+                        onEdit={m.role === "user" ? (id, text, atts) => void handleEditMessage(id, text, atts) : undefined}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
+              <Composer
+                value={draft}
+                model={settings.model}
+                models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
+                effort={effort}
+                webSearch={webSearch}
+                streaming={streaming}
+                attachments={attachments}
+                onChange={setDraft}
+                onModel={(m) => void patchSettings({ model: m })}
+                onEffort={setEffort}
+                reasoningControl={reasoningControl}
+                onWebSearch={setWebSearch}
+                onSend={() => void send()}
+                onStop={() => activeId && void window.lumen.chat.stop(activeId)}
+                onAttach={(files) => setAttachments((prev) => [...prev, ...files])}
+                onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
+              />
+          </div>
+        </section>
+      </div>
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          initialPage={settingsPage}
+          onChange={patchSettings}
+          onClose={() => { setSettingsOpen(false); setSettingsPage("general"); }}
+          onDeleteAllMemories={async () => {
+            await window.lumen.memory.clear();
+          }}
+          onDeleteAllChats={deleteAllChats}
+        />
+      )}
+    </>
   );
 }

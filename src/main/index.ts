@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, globalShortcut, nativeTheme } from "electron";
 import { registerIpc } from "./ipc";
 import { registerTerminalIpc } from "./terminal";
-import { registerCodexIpc } from "./codex-agent";
+import { registerCodexIpc, shutdownCodexRuntime } from "./codex-agent";
 import { initDb, flushDb, closeDb, setAfterPersist } from "./db";
 import { getSettings } from "./store";
 import { ensureLocalLlama } from "./models";
@@ -150,6 +150,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     stopScreenshotWatch();
+    shutdownCodexRuntime();
     setAfterPersist(null);
     cancelGoogleSync();
     closeDb();
