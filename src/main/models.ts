@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
+import { app } from "electron";
 import type { LlamaStatus, Settings } from "@shared/types";
 
 const DEFAULT_DIR = join(homedir(), "models");
@@ -60,6 +61,15 @@ export function discoverLocal(modelsDir = DEFAULT_DIR): {
 
 function origin(url: string): string {
   return url.replace(/\/v1\/?$/, "").replace(/\/$/, "");
+}
+
+function bundledRuntimeScript(): string | null {
+  const name = process.platform === "win32" ? "start-llama.ps1" : "start-llama.sh";
+  const candidates = [
+    join(process.resourcesPath, "runtime", name),
+    join(app.getAppPath(), "resources", "runtime", name)
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || null;
 }
 
 export function isManagedLocalLlamaUrl(url: string): boolean {
@@ -128,27 +138,33 @@ export async function probeLlama(settings: Settings): Promise<LlamaStatus> {
 
 export function startLocalLlama(settings: Settings, mmproj?: string | null): void {
   const found = discoverLocal(settings.modelsDir || DEFAULT_DIR);
-  const script = found.startScript;
+  const script = bundledRuntimeScript() || found.startScript;
+  const model = found.ggufs[0];
   const env = {
     ...process.env,
-    HOME: homedir(),
     LLAMA_HOST: "127.0.0.1",
     LLAMA_PORT: "18082",
-    LLAMA_ALIAS: settings.model || "Qwen3.8-27B"
+    LLAMA_CTX: "16384",
+    LLAMA_PARALLEL: "1",
+    LLAMA_ALIAS: settings.model || "Qwen3.8-27B",
+    LLAMA_LOG_DIR: join(settings.modelsDir || DEFAULT_DIR, "logs"),
+    ...(model ? { LLAMA_MODEL: model } : {})
   } as NodeJS.ProcessEnv;
   const projector = mmproj || "";
   if (projector) env.LLAMA_MMPROJ = projector;
   if (found.ggufs[0]) env.LLAMA_MODEL = found.ggufs[0];
   if (script) {
     if (process.platform === "win32") {
-      spawn("cmd.exe", ["/c", script], { env, detached: true, stdio: "ignore" }).unref();
+      spawn(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+        { env, detached: true, stdio: "ignore" }
+      ).unref();
     } else {
-      const shellBin = process.env.SHELL || "/bin/sh";
-      spawn(shellBin, [script], { env, detached: true, stdio: "ignore" }).unref();
+      spawn("/bin/sh", [script], { env, detached: true, stdio: "ignore" }).unref();
     }
     return;
   }
-  const model = found.ggufs[0];
   if (!model) return;
   const args = [
     "-m",
@@ -158,9 +174,21 @@ export function startLocalLlama(settings: Settings, mmproj?: string | null): voi
     "-ngl",
     "999",
     "-c",
-    "8192",
+    "16384",
     "-np",
     "1",
+    "-b",
+    "2048",
+    "-ub",
+    "2048",
+    "-t",
+    "5",
+    "-fa",
+    "on",
+    "-ctk",
+    "q4_0",
+    "-ctv",
+    "q4_0",
     "--jinja",
     "--reasoning",
     "auto",

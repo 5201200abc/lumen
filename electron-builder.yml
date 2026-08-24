@@ -16,6 +16,8 @@ files:
 extraResources:
   - from: node_modules/sql.js/dist/sql-wasm.wasm
     to: sql-wasm.wasm
+  - from: resources/runtime
+    to: runtime
 mac:
   category: public.app-category.productivity
   icon: resources/icon.icns

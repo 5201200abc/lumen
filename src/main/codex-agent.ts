@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { execFile, spawn, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -12,6 +12,8 @@ import { getSettings } from "./store";
 const tasks = new Map<string, CodexTask>();
 const messages = new Map<string, CodexMessage[]>();
 const activeProcesses = new Map<string, ChildProcess>();
+let bridgeProcess: ChildProcess | null = null;
+let bridgeStartup: Promise<void> | null = null;
 
 const homeDir = process.env.HOME || os.homedir();
 const launchCwd = process.env.PWD;
@@ -34,6 +36,68 @@ function getClaudeBin(): string {
   const binary = `${homeDir}/.local/bin/claude`;
   if (fs.existsSync(binary)) return binary;
   return "claude";
+}
+
+function runtimeResource(name: string): string | null {
+  const candidates = [
+    path.join(process.resourcesPath, "runtime", name),
+    path.join(app.getAppPath(), "resources", "runtime", name)
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+async function bridgeReady(): Promise<boolean> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 800);
+  try {
+    const response = await fetch("http://127.0.0.1:18084/health", { signal: abort.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function startClaudeBridge(): Promise<void> {
+  // A user's existing bridge may serve active Cowork sessions. Never replace it.
+  if (await bridgeReady()) return;
+  const script = runtimeResource("claude-bridge.mjs");
+  if (!script) throw new Error("The bundled Cowork bridge is missing from this installation.");
+  const settings = getSettings();
+  bridgeProcess = spawn(process.execPath, [script], {
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      LLAMA_URL: settings.llamaUrl,
+      LLAMA_API_KEY: settings.llamaApiKey,
+      LLAMA_MODEL_ALIAS: settings.model,
+      CLAUDE_BRIDGE_HOST: "127.0.0.1",
+      CLAUDE_BRIDGE_PORT: "18084"
+    },
+    detached: false,
+    stdio: "ignore"
+  });
+  bridgeProcess.once("exit", () => {
+    bridgeProcess = null;
+  });
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (await bridgeReady()) return;
+  }
+  bridgeProcess?.kill();
+  bridgeProcess = null;
+  throw new Error("The bundled Cowork bridge could not start on port 18084.");
+}
+
+async function ensureClaudeBridge(): Promise<void> {
+  if (await bridgeReady()) return;
+  if (!bridgeStartup) {
+    bridgeStartup = startClaudeBridge().finally(() => {
+      bridgeStartup = null;
+    });
+  }
+  await bridgeStartup;
 }
 
 async function workspaceInfo(rawPath?: string): Promise<WorkspaceInfo> {
@@ -119,6 +183,7 @@ export function registerCodexIpc(): void {
 
   ipcMain.handle("codex:run", async (event, { taskId, prompt, attachments = [], cwd, effort, model }: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: string; model?: string }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
+    await ensureClaudeBridge();
     const resolvedCwd = resolveWorkingDir(cwd || defaultCwd);
     const coworkInstructions = getSettings().coworkInstructions.trim();
     const reasoningDiscipline =
