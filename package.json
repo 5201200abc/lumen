@@ -5,7 +5,10 @@
   "description": "Minimal desktop AI chat & Codex agent for local models",
   "main": "out/main/index.js",
   "type": "module",
-  "author": "mfordjody",
+  "author": {
+    "name": "5201200abc",
+    "email": "5201200abc@gmail.com"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=22.12.0"
