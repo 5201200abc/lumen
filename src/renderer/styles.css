@@ -498,6 +498,25 @@ select {
   gap: 8px;
 }
 
+.thought.is-complete summary::after {
+  content: "›";
+  margin-left: 1px;
+  font-size: 17px;
+  line-height: 0.8;
+  transform: translateY(-0.5px);
+  transition: transform 140ms ease;
+}
+
+.thought.is-complete[open] summary::after {
+  transform: rotate(90deg) translateX(-0.5px);
+}
+
+.thought summary:focus-visible {
+  outline: 1px solid var(--muted);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 .spin {
   width: 11px;
   height: 11px;
@@ -520,7 +539,7 @@ select {
 
 .thought pre {
   margin: 0;
-  padding: 2px 0 8px 19px;
+  padding: 5px 0 8px;
   max-height: 240px;
   overflow: auto;
   color: var(--muted);

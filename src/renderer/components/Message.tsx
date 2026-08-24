@@ -10,6 +10,13 @@ type Props = {
   onRegenerate?: () => void;
 };
 
+function formatDuration(sec: number): string {
+  const wholeSeconds = Math.max(0, Math.floor(sec));
+  if (wholeSeconds < 60) return `${wholeSeconds}s`;
+  const minutes = Math.floor(wholeSeconds / 60);
+  return `${minutes}m ${wholeSeconds % 60}s`;
+}
+
 export function MessageView({ message, streaming, onRegenerate }: Props) {
   const [seconds, setSeconds] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -51,6 +58,7 @@ export function MessageView({ message, streaming, onRegenerate }: Props) {
   const activelyThinking = Boolean(streaming && message.phase === "thinking");
   const showThought = Boolean(activelyThinking || (thinking && !streaming));
   const showLiveStatus = Boolean(streaming && !activelyThinking && message.statusText);
+  const workedLabel = `Worked for ${formatDuration(message.durationSeconds ?? 0)}`;
 
   if (!streaming && !showThought && !message.content) return null;
 
@@ -85,17 +93,16 @@ export function MessageView({ message, streaming, onRegenerate }: Props) {
           <span>{message.statusText}</span>
         </div>
       ) : null}
-      {!streaming && message.durationSeconds ? (
-        <div className="worked-status">Worked for {message.durationSeconds}s</div>
-      ) : null}
       {showThought ? (
-        <details className="thought" open={activelyThinking}>
+        <details className={`thought ${activelyThinking ? "is-thinking" : "is-complete"}`} open={activelyThinking || undefined}>
           <summary>
             {activelyThinking ? <span className="spin" /> : null}
-            <span>{activelyThinking ? `Thinking ${seconds}s` : "Reasoning"}</span>
+            <span>{activelyThinking ? `Thinking ${formatDuration(seconds)}` : workedLabel}</span>
           </summary>
           {visibleThinking ? <pre>{visibleThinking}</pre> : null}
         </details>
+      ) : !streaming && message.durationSeconds ? (
+        <div className="worked-status">{workedLabel}</div>
       ) : null}
       {activelyThinking && message.introText ? (
         <p className="assistant-intro">{message.introText}</p>
