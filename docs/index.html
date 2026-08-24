@@ -7,12 +7,26 @@
   <meta name="description" content="Lumen — 本地开源模型对话与 Cowork 智能体桌面应用。" />
   <link rel="icon" type="image/png" href="icon.png" />
 
-  <!-- Distinctive High-Aesthetic Typography -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-
   <style>
+    @font-face {
+      font-family: "Lumen CJK";
+      src: local("FZSongKeBenXiuKaiS-R-GB"),
+           local("方正宋刻本秀楷简体"),
+           url("fonts/LXGWWenKaiLite-Light.ttf") format("truetype");
+      unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
+      font-style: normal;
+      font-weight: 300;
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "Maple Mono";
+      src: url("fonts/MapleMono-Light.ttf.woff2") format("woff2");
+      font-style: normal;
+      font-weight: 300;
+      font-display: swap;
+    }
+
     :root {
       color-scheme: dark light;
       --bg: #09090b;
@@ -28,9 +42,9 @@
       --primary-fg: #09090b;
       --accent-glow: rgba(234, 158, 98, 0.35);
       --accent-copper: #e59a68;
-      --font-display: "Cinzel", "Playfair Display", "Songti SC", "STSong", serif;
-      --font-body: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+      --font-display: "Lumen CJK", "Maple Mono", sans-serif;
+      --font-body: "Lumen CJK", "Maple Mono", sans-serif;
+      --font-mono: "Maple Mono", monospace;
       --blur-strength: 28px;
     }
 
