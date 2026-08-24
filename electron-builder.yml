@@ -33,18 +33,9 @@ dmg:
 win:
   icon: resources/icon.png
   target:
-    - target: nsis
-      arch:
-        - x64
-        - arm64
-    - target: portable
-      arch:
-        - x64
-        - arm64
-    - target: zip
-      arch:
-        - x64
-        - arm64
+    - nsis
+    - portable
+    - zip
   artifactName: "${productName}-${version}-windows-${arch}.${ext}"
 nsis:
   oneClick: false
@@ -60,20 +51,8 @@ linux:
   category: Utility
   icon: resources/icon.png
   target:
-    - target: AppImage
-      arch:
-        - x64
-        - arm64
-    - target: deb
-      arch:
-        - x64
-        - arm64
-    - target: rpm
-      arch:
-        - x64
-        - arm64
-    - target: tar.gz
-      arch:
-        - x64
-        - arm64
+    - AppImage
+    - deb
+    - rpm
+    - tar.gz
   artifactName: "${productName}-${version}-linux-${arch}.${ext}"
