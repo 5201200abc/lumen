@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { Attachment, Effort } from "@shared/types";
+import type { Attachment, Effort, ReasoningControl } from "@shared/types";
 import { IconArrowUp, IconGlobe, IconStop } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 import { AttachmentAddButton, AttachmentList, readDroppedFiles } from "./AttachmentControls";
@@ -15,6 +15,8 @@ type Props = {
   onChange: (v: string) => void;
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
+  reasoningControl: ReasoningControl;
+  onConfigure: () => void;
   onWebSearch: (v: boolean) => void;
   onSend: () => void;
   onStop: () => void;
@@ -83,6 +85,8 @@ export function Composer(props: Props) {
               effort={props.effort}
               onModel={props.onModel}
               onEffort={props.onEffort}
+              reasoningControl={props.reasoningControl}
+              onConfigure={props.onConfigure}
             />
             {props.streaming ? (
               <button className="send stop" type="button" onClick={props.onStop} aria-label="停止生成" title="停止生成">

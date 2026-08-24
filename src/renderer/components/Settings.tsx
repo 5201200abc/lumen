@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Language, Settings } from "@shared/types";
+import type { Language, ReasoningControl, Settings } from "@shared/types";
 import { IconTrash } from "./icons";
 
 type Page = "general" | "models" | "instructions" | "data";
@@ -10,11 +10,12 @@ type Props = {
   onClose: () => void;
   onDeleteAllMemories?: () => Promise<void>;
   onDeleteAllChats: () => Promise<boolean>;
+  initialPage?: Page;
 };
 
 const COPY = {
   en: {
-    settings: "Settings", back: "Back", general: "General", models: "Models",
+    settings: "Settings", back: "Back to app", general: "General", models: "Models",
     instructions: "Instructions", data: "Data", language: "Language",
     languageHelp: "Choose the interface language.", fontSize: "Font size",
     fontHelp: "Small is the current and minimum size.", theme: "Theme",
@@ -23,9 +24,11 @@ const COPY = {
     modelList: "Model list", modelHelp: "Models listed here are available in Chat and Cowork.",
     addLlama: "Add Llama", addModel: "Add model", active: "Active", use: "Use",
     name: "Name", url: "API URL", modelName: "Model name", apiKeys: "API keys",
+    server: "Llama server", reasoning: "Reasoning", effortLevels: "Effort levels",
+    thinkingToggle: "Thinking on / off", noThinking: "No thinking control",
     custom: "Custom instructions", customHelp: "Separate guidance for Chat and tool-using Cowork sessions.",
     chatCustom: "Chat custom instructions", coworkCustom: "Cowork custom instructions",
-    rule: "Model rule style", modify: "Modify", saveLock: "Save & lock",
+    rule: "Model rule style", modify: "Modify", lock: "Lock", saveLock: "Save & lock",
     protected: "Style rule protected",
     protectedHelp: "Includes concise reasoning and loop prevention. Modify only to change output style.",
     memory: "Memory", deleteMemory: "Delete all memory", deleteChat: "Delete all chat",
@@ -33,16 +36,18 @@ const COPY = {
     save: "Save", saved: "Saved", saving: "Saving", unsaved: "Unsaved changes"
   },
   zh: {
-    settings: "设置", back: "返回", general: "通用", models: "模型", instructions: "指令",
+    settings: "设置", back: "返回应用", general: "通用", models: "模型", instructions: "指令",
     data: "数据", language: "语言", languageHelp: "选择界面显示语言。", fontSize: "字体大小",
     fontHelp: "小号是当前字号，也是最低值。", theme: "主题", small: "小 · 13px",
     medium: "中 · 15px", large: "大 · 17px", llama: "Llama 列表",
     llamaHelp: "保存多个兼容 OpenAI 的 Llama 服务，并选择当前服务。", modelList: "模型列表",
     modelHelp: "这里的模型可在 Chat 和 Cowork 中选择。", addLlama: "新增 Llama", addModel: "新增模型",
     active: "当前", use: "使用", name: "名称", url: "API 地址", modelName: "模型名称",
+    server: "Llama 服务", reasoning: "思考能力", effortLevels: "思考强度级别",
+    thinkingToggle: "仅开启 / 关闭思考", noThinking: "无思考控制",
     apiKeys: "API 密钥", custom: "自定义指令", customHelp: "分别设置 Chat 和使用工具的 Cowork 指令。",
     chatCustom: "Chat 自定义指令", coworkCustom: "Cowork 自定义指令", rule: "模型规则风格",
-    modify: "修改", saveLock: "保存并锁定", protected: "规则已保护",
+    modify: "修改", lock: "锁定", saveLock: "保存并锁定", protected: "规则已保护",
     protectedHelp: "包含简洁推理和防止循环的规则，仅在需要改变输出风格时修改。",
     memory: "记忆", deleteMemory: "删除全部记忆", deleteChat: "删除全部对话",
     dataHelp: "这些操作会影响本地数据和下一次 Google 备份。", save: "保存",
@@ -52,7 +57,7 @@ const COPY = {
 
 export function SettingsPanel(props: Props) {
   const s = props.settings;
-  const [page, setPage] = useState<Page>("general");
+  const [page, setPage] = useState<Page>(props.initialPage ?? "general");
   const [chatInstructions, setChatInstructions] = useState(s.chatInstructions);
   const [coworkInstructions, setCoworkInstructions] = useState(s.coworkInstructions);
   const [rule, setRule] = useState(s.systemPrompt);
@@ -60,7 +65,11 @@ export function SettingsPanel(props: Props) {
   const [saving, setSaving] = useState<Action | null>(null);
   const [saved, setSaved] = useState<Action | null>(null);
   const [error, setError] = useState("");
-  const [newModel, setNewModel] = useState("");
+  const [newModel, setNewModel] = useState({
+    name: "",
+    endpointId: s.llamaEndpoints.find((endpoint) => endpoint.url === s.llamaUrl)?.id || s.llamaEndpoints[0]?.id || "",
+    reasoningControl: "effort" as ReasoningControl
+  });
   const [newLlama, setNewLlama] = useState({ name: "", url: "http://127.0.0.1:18082/v1" });
   const [adding, setAdding] = useState<"model" | "llama" | null>(null);
   const t = COPY[s.language];
@@ -97,10 +106,16 @@ export function SettingsPanel(props: Props) {
     props.onClose();
   };
   const addModel = async () => {
-    const model = newModel.trim();
-    if (!model) return;
-    if (await patch({ modelCatalog: [...new Set([...s.modelCatalog, model])], model })) {
-      setNewModel(""); setAdding(null);
+    const name = newModel.name.trim();
+    if (!name || !newModel.endpointId) return;
+    const model = { id: crypto.randomUUID(), name, endpointId: newModel.endpointId, reasoningControl: newModel.reasoningControl };
+    const endpoint = s.llamaEndpoints.find((item) => item.id === model.endpointId);
+    if (await patch({
+      llamaModels: [...s.llamaModels.filter((item) => item.name !== name), model],
+      model: name,
+      ...(endpoint ? { llamaUrl: endpoint.url } : {})
+    })) {
+      setNewModel((value) => ({ ...value, name: "" })); setAdding(null);
     }
   };
   const addLlama = async () => {
@@ -131,7 +146,7 @@ export function SettingsPanel(props: Props) {
         </aside>
 
         <main className="settings-content">
-          <header><span>Lumen</span><h3>{nav.find((item) => item.id === page)?.label}</h3></header>
+          <header><h3>{nav.find((item) => item.id === page)?.label}</h3></header>
 
           {page === "general" && <div className="settings-page">
             <div className="setting-row"><div><strong>{t.language}</strong><small>{t.languageHelp}</small></div>
@@ -156,18 +171,34 @@ export function SettingsPanel(props: Props) {
               <div className="settings-list-head"><div><h4>{t.llama}</h4><p>{t.llamaHelp}</p></div><button title={t.addLlama} type="button" onClick={() => setAdding(adding === "llama" ? null : "llama")}>＋</button></div>
               {s.llamaEndpoints.map((endpoint) => <div className="model-list-row" key={endpoint.id}>
                 <div><strong>{endpoint.name}</strong><small>{endpoint.url}</small></div>
-                <div className="row-actions">{s.llamaUrl === endpoint.url ? <span>{t.active}</span> : <button type="button" onClick={() => void patch({ llamaUrl: endpoint.url })}>{t.use}</button>}
-                  <button type="button" aria-label={`Delete ${endpoint.name}`} disabled={s.llamaUrl === endpoint.url || s.llamaEndpoints.length === 1} onClick={() => void patch({ llamaEndpoints: s.llamaEndpoints.filter((item) => item.id !== endpoint.id) })}>×</button></div>
+                <div className="row-actions">{s.llamaUrl === endpoint.url ? <span>{t.active}</span> : <button type="button" onClick={() => {
+                  const firstModel = s.llamaModels.find((model) => model.endpointId === endpoint.id);
+                  void patch({ llamaUrl: endpoint.url, ...(firstModel ? { model: firstModel.name } : {}) });
+                }}>{t.use}</button>}
+                  <button type="button" aria-label={`Delete ${endpoint.name}`} disabled={s.llamaUrl === endpoint.url || s.llamaEndpoints.length === 1 || s.llamaModels.some((model) => model.endpointId === endpoint.id)} onClick={() => void patch({ llamaEndpoints: s.llamaEndpoints.filter((item) => item.id !== endpoint.id) })}>×</button></div>
               </div>)}
               {adding === "llama" && <div className="inline-add"><input autoFocus placeholder={t.name} value={newLlama.name} onChange={(e) => setNewLlama((v) => ({ ...v, name: e.target.value }))}/><input placeholder={t.url} value={newLlama.url} onChange={(e) => setNewLlama((v) => ({ ...v, url: e.target.value }))}/><button type="button" onClick={() => void addLlama()}>{t.save}</button></div>}
             </section>
             <section className="settings-list">
               <div className="settings-list-head"><div><h4>{t.modelList}</h4><p>{t.modelHelp}</p></div><button title={t.addModel} type="button" onClick={() => setAdding(adding === "model" ? null : "model")}>＋</button></div>
-              {s.modelCatalog.map((model) => <div className="model-list-row" key={model}><strong>{model}</strong>
-                <div className="row-actions">{s.model === model ? <span>{t.active}</span> : <button type="button" onClick={() => void patch({ model })}>{t.use}</button>}
-                  <button type="button" aria-label={`Delete ${model}`} disabled={s.modelCatalog.length === 1} onClick={() => void patch({ modelCatalog: s.modelCatalog.filter((item) => item !== model) })}>×</button></div>
-              </div>)}
-              {adding === "model" && <div className="inline-add single"><input autoFocus placeholder={t.modelName} value={newModel} onChange={(e) => setNewModel(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void addModel()}/><button type="button" onClick={() => void addModel()}>{t.save}</button></div>}
+              {s.llamaModels.map((model) => {
+                const endpoint = s.llamaEndpoints.find((item) => item.id === model.endpointId);
+                const reasoningLabel = model.reasoningControl === "effort" ? t.effortLevels : model.reasoningControl === "toggle" ? t.thinkingToggle : t.noThinking;
+                return <div className="model-list-row" key={model.id}><div><strong>{model.name}</strong><small>{endpoint?.name || t.server} · {reasoningLabel}</small></div>
+                  <div className="row-actions">{s.model === model.name && s.llamaUrl === endpoint?.url ? <span>{t.active}</span> : <button type="button" onClick={() => void patch({ model: model.name, ...(endpoint ? { llamaUrl: endpoint.url } : {}) })}>{t.use}</button>}
+                    <button type="button" aria-label={`Delete ${model.name}`} disabled={s.llamaModels.length === 1} onClick={() => void patch({ llamaModels: s.llamaModels.filter((item) => item.id !== model.id) })}>×</button></div>
+                </div>;
+              })}
+              {adding === "model" && <div className="inline-add model-add">
+                <input autoFocus placeholder={t.modelName} value={newModel.name} onChange={(e) => setNewModel((value) => ({ ...value, name: e.target.value }))}/>
+                <select aria-label={t.server} value={newModel.endpointId} onChange={(e) => setNewModel((value) => ({ ...value, endpointId: e.target.value }))}>
+                  {s.llamaEndpoints.map((endpoint) => <option key={endpoint.id} value={endpoint.id}>{endpoint.name}</option>)}
+                </select>
+                <select aria-label={t.reasoning} value={newModel.reasoningControl} onChange={(e) => setNewModel((value) => ({ ...value, reasoningControl: e.target.value as ReasoningControl }))}>
+                  <option value="effort">{t.effortLevels}</option><option value="toggle">{t.thinkingToggle}</option><option value="none">{t.noThinking}</option>
+                </select>
+                <button type="button" onClick={() => void addModel()}>{t.save}</button>
+              </div>}
             </section>
             <section className="settings-list">
               <div className="settings-list-head"><div><h4>{t.apiKeys}</h4></div></div>
@@ -181,14 +212,63 @@ export function SettingsPanel(props: Props) {
             <div className="page-intro"><h4>{t.custom}</h4><p>{t.customHelp}</p></div>
             <label className="field prompt"><span>{t.chatCustom}</span><textarea value={chatInstructions} onChange={(e) => { setChatInstructions(e.target.value); setSaved(null); }} placeholder="How should Chat respond, format answers, or address you?"/><span className="field-action-row"><small>{saved === "chat" ? t.saved : chatInstructions !== s.chatInstructions ? t.unsaved : ""}</small><button className="settings-save" type="button" disabled={saving !== null || chatInstructions === s.chatInstructions} onClick={() => void run("chat", () => props.onChange({ chatInstructions }))}>{saving === "chat" ? t.saving : t.save}</button></span></label>
             <label className="field prompt"><span>{t.coworkCustom}</span><textarea value={coworkInstructions} onChange={(e) => { setCoworkInstructions(e.target.value); setSaved(null); }} placeholder="Project rules, preferred workflow, verification requirements"/><span className="field-action-row"><small>{saved === "cowork" ? t.saved : coworkInstructions !== s.coworkInstructions ? t.unsaved : ""}</small><button className="settings-save" type="button" disabled={saving !== null || coworkInstructions === s.coworkInstructions} onClick={() => void run("cowork", () => props.onChange({ coworkInstructions }))}>{saving === "cowork" ? t.saving : t.save}</button></span></label>
-            <label className={`field prompt rule-field ${ruleEditable ? "editing" : "locked"}`}><span className="rule-label-row"><span>{t.rule}</span>{!ruleEditable ? <button type="button" className="text-button" onClick={() => window.confirm("Changing this rule alters the model's voice and output style. Continue?") && setRuleEditable(true)}>{t.modify}</button> : <button type="button" className="text-button" disabled={saving !== null} onClick={() => void run("rule", () => props.onChange({ systemPrompt: rule })).then((ok) => ok && setRuleEditable(false))}>{saving === "rule" ? t.saving : t.saveLock}</button>}</span><div className="locked-rule-wrap"><textarea value={rule} readOnly={!ruleEditable} onChange={(e) => setRule(e.target.value)} tabIndex={ruleEditable ? 0 : -1}/>{!ruleEditable && <div className="rule-lock-note"><span>{t.protected}</span><small>{t.protectedHelp}</small></div>}</div></label>
+            <label className={`field prompt rule-field ${ruleEditable ? "editing" : "locked"}`}>
+              <span className="rule-label-row">
+                <span>{t.rule}</span>
+                {!ruleEditable ? (
+                  <button type="button" className="text-button" onClick={() => window.confirm("Changing this rule alters the model's voice and output style. Continue?") && setRuleEditable(true)}>
+                    {t.modify}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => {
+                      if (rule === s.systemPrompt || window.confirm("Discard changes and lock?")) {
+                        setRule(s.systemPrompt);
+                        setRuleEditable(false);
+                      }
+                    }}
+                  >
+                    {t.lock}
+                  </button>
+                )}
+              </span>
+              <div className="locked-rule-wrap">
+                <textarea
+                  value={rule}
+                  readOnly={!ruleEditable}
+                  onChange={(e) => { setRule(e.target.value); setSaved(null); }}
+                  tabIndex={ruleEditable ? 0 : -1}
+                />
+                {!ruleEditable && (
+                  <div className="rule-lock-note">
+                    <span>{t.protected}</span>
+                    <small>{t.protectedHelp}</small>
+                  </div>
+                )}
+              </div>
+              {ruleEditable && (
+                <span className="field-action-row">
+                  <small>{saved === "rule" ? t.saved : rule !== s.systemPrompt ? t.unsaved : ""}</small>
+                  <button
+                    className="settings-save"
+                    type="button"
+                    disabled={saving !== null || rule === s.systemPrompt}
+                    onClick={() => void run("rule", () => props.onChange({ systemPrompt: rule })).then((ok) => ok && setRuleEditable(false))}
+                  >
+                    {saving === "rule" ? t.saving : t.save}
+                  </button>
+                </span>
+              )}
+            </label>
           </div>}
 
           {page === "data" && <div className="settings-page">
-            <div className="page-intro"><p>{t.dataHelp}</p></div>
             <div className="danger-row"><span>{t.memory}</span><button className={`toggle ${s.memoryEnabled ? "on" : ""}`} type="button" aria-label={t.memory} aria-pressed={s.memoryEnabled} onClick={() => void patch({ memoryEnabled: !s.memoryEnabled })}><i /></button></div>
             <div className="danger-row"><span>{t.deleteMemory}</span><button className="icon-btn ghost-icon danger-icon" type="button" disabled={saving !== null} aria-label={t.deleteMemory} onClick={() => { if (window.confirm("Delete all memory? This cannot be undone.")) void run("memory", async () => { if (!props.onDeleteAllMemories) throw new Error("Memory deletion is unavailable."); await props.onDeleteAllMemories(); }); }}><IconTrash /></button></div>
             <div className="danger-row"><span>{t.deleteChat}</span><button className="icon-btn ghost-icon danger-icon" type="button" disabled={saving !== null} aria-label={t.deleteChat} onClick={() => void run("chats", props.onDeleteAllChats)}><IconTrash /></button></div>
+            <p className="data-note">{t.dataHelp}</p>
           </div>}
           {error && <div className="settings-error" role="alert">{error}</div>}
         </main>

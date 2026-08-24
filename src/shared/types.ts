@@ -1,5 +1,12 @@
 // Exact values supported by Qwen3.8's chat template.
 export type Effort = "low" | "medium" | "xhigh";
+export type ReasoningControl = "effort" | "toggle" | "none";
+export type LlamaModel = {
+  id: string;
+  name: string;
+  endpointId: string;
+  reasoningControl: ReasoningControl;
+};
 export type Theme = "system" | "light" | "dark";
 export type Language = "en" | "zh";
 export type FontSize = "small" | "medium" | "large";
@@ -22,6 +29,7 @@ export type Settings = {
   language: Language;
   fontSize: FontSize;
   modelCatalog: string[];
+  llamaModels: LlamaModel[];
   llamaEndpoints: Array<{
     id: string;
     name: string;

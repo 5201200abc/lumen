@@ -78,9 +78,10 @@ class ThinkSplitter {
   }
 }
 
-function effortParams(effort: Effort): {
-  reasoning_effort: Effort;
-} {
+function effortParams(settings: Settings, effort: Effort): Record<string, Effort | boolean> {
+  const control = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl ?? "effort";
+  if (control === "none") return {};
+  if (control === "toggle") return { enable_thinking: effort !== "low" };
   return { reasoning_effort: effort };
 }
 
@@ -197,7 +198,7 @@ export async function streamChat(opts: {
   const { settings, handlers, abort } = opts;
   const plan = planChatRequest(opts.userText, opts.webSearch);
   const effectiveEffort: Effort = plan.enableThinking ? opts.effort : "low";
-  const params = effortParams(effectiveEffort);
+  const params = effortParams(settings, effectiveEffort);
   let searchBlock = "";
   if (plan.useWeb && opts.userText.trim()) {
     if (settings.tavilyApiKey) {

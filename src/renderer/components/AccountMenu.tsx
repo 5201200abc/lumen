@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { GoogleAccount } from "@shared/types";
-import { IconChevronDown, IconGear } from "./icons";
+import { IconGear } from "./icons";
 
 type Props = {
   account: GoogleAccount;
@@ -74,7 +74,6 @@ export function AccountMenu(props: Props) {
           >
             <span className="account-row-icon"><IconGear size={17} /></span>
             <span>Settings</span>
-            <kbd>⌘,</kbd>
           </button>
           {props.account.connected ? (
             <button type="button" className="account-menu-row logout-row" onClick={props.onLogout} disabled={props.busy}>
@@ -96,7 +95,6 @@ export function AccountMenu(props: Props) {
           <strong>{label}</strong>
           {props.account.connected ? <small>Google backup on</small> : null}
         </span>
-        <span className="account-chevron"><IconChevronDown size={14} /></span>
       </button>
     </div>
   );

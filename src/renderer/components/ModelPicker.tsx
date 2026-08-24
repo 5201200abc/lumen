@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Effort } from "@shared/types";
+import type { Effort, ReasoningControl } from "@shared/types";
+import { IconGear } from "./icons";
 
 type Page = "root" | "model" | "effort";
 
@@ -27,6 +28,8 @@ type Props = {
   effort: Effort;
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
+  reasoningControl?: ReasoningControl;
+  onConfigure?: () => void;
 };
 
 export function ModelPicker(props: Props) {
@@ -74,7 +77,11 @@ export function ModelPicker(props: Props) {
         }}
       >
         <span className="picker-model-name">{props.model}</span>
-        <span className="picker-effort-tag">{effortLabel(props.effort)}</span>
+        {props.reasoningControl !== "none" && (
+          <span className="picker-effort-tag">
+            {props.reasoningControl === "toggle" ? (props.effort === "low" ? "thinking off" : "thinking on") : effortLabel(props.effort)}
+          </span>
+        )}
         <svg className={`chev ${open ? "up" : ""}`} width="10" height="10" viewBox="0 0 10 10" fill="none">
           <path d="M2 3.5 L5 6.5 L8 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
         </svg>
@@ -90,13 +97,20 @@ export function ModelPicker(props: Props) {
                   <Chevron />
                 </span>
               </button>
-              <button className="picker-row" type="button" onClick={() => setPage("effort")}>
-                <span>Effort</span>
-                <span className="picker-val">
-                  {effortLabel(props.effort)}
-                  <Chevron />
-                </span>
-              </button>
+              {props.reasoningControl !== "none" && (
+                <button className="picker-row" type="button" onClick={() => setPage("effort")}>
+                  <span>{props.reasoningControl === "toggle" ? "Thinking" : "Effort"}</span>
+                  <span className="picker-val">
+                    {props.reasoningControl === "toggle" ? (props.effort === "low" ? "Off" : "On") : effortLabel(props.effort)}
+                    <Chevron />
+                  </span>
+                </button>
+              )}
+              {props.onConfigure && (
+                <button className="picker-row picker-configuration" type="button" onClick={() => { setOpen(false); props.onConfigure?.(); }}>
+                  <span>Configuration</span><IconGear size={13} />
+                </button>
+              )}
             </>
           )}
           {page === "model" && (
@@ -125,7 +139,9 @@ export function ModelPicker(props: Props) {
               <button className="picker-row back" type="button" onClick={() => setPage("root")}>
                 <span>Effort</span>
               </button>
-              {EFFORTS.map((e) => (
+              {(props.reasoningControl === "toggle"
+                ? [{ id: "low" as Effort, label: "Off" }, { id: "xhigh" as Effort, label: "On" }]
+                : EFFORTS).map((e) => (
                 <button
                   key={e.id}
                   className={`picker-row sub ${e.id === props.effort ? "active" : ""}`}

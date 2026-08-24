@@ -1,6 +1,6 @@
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import type { Conversation, CodexTask, GoogleAccount } from "@shared/types";
-import { IconPlus, IconTrash } from "./icons";
+import { IconCompose, IconSearch, IconSidebar, IconTrash } from "./icons";
 import { AccountMenu } from "./AccountMenu";
 
 type Props = {
@@ -14,6 +14,7 @@ type Props = {
   onNew: () => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
+  onToggleSidebar?: () => void;
   account: GoogleAccount;
   accountBusy: boolean;
   onGoogleLogin: () => void;
@@ -35,11 +36,12 @@ function time(ts: number): string {
 }
 
 export function Sidebar(props: Props) {
+  const [searchOpen, setSearchOpen] = useState(false);
+
   return (
     <aside className="sidebar">
       <div className="drag" />
       <div className="side-top-bar">
-        <div className="brand">Lumen</div>
         <div className="segmented-tabs" role="tablist">
           <button
             type="button"
@@ -60,20 +62,71 @@ export function Sidebar(props: Props) {
             Cowork
           </button>
         </div>
+
+        <div className="side-top-actions">
+          {props.mode === "chat" && (
+            <button
+              className={`icon-btn ghost-icon side-action-btn ${searchOpen ? "active" : ""}`}
+              type="button"
+              title="Search (搜索对话)"
+              aria-label="Search"
+              onClick={() => {
+                setSearchOpen((prev) => {
+                  const next = !prev;
+                  if (!next) props.onQuery("");
+                  else setTimeout(() => props.searchRef.current?.focus(), 50);
+                  return next;
+                });
+              }}
+            >
+              <IconSearch size={15} />
+            </button>
+          )}
+          {props.onToggleSidebar && (
+            <button
+              className="icon-btn ghost-icon side-action-btn"
+              type="button"
+              title="Collapse sidebar (⌘B)"
+              aria-label="Collapse sidebar"
+              onClick={props.onToggleSidebar}
+            >
+              <IconSidebar size={15} />
+            </button>
+          )}
+        </div>
       </div>
+
       {props.mode === "chat" ? (
         <>
-          <div className="side-tools">
-            <input
-              ref={props.searchRef}
-              placeholder="搜索对话"
-              value={props.query}
-              onChange={(e) => props.onQuery(e.target.value)}
-            />
-            <button className="icon-btn plus" type="button" onClick={props.onNew} title="新对话 ⌘N">
-              <IconPlus />
-            </button>
-          </div>
+          {searchOpen && (
+            <div className="side-search-bar">
+              <input
+                ref={props.searchRef}
+                placeholder="搜索对话..."
+                value={props.query}
+                onChange={(e) => props.onQuery(e.target.value)}
+                autoFocus
+              />
+              {props.query ? (
+                <button
+                  type="button"
+                  className="side-search-clear"
+                  onClick={() => {
+                    props.onQuery("");
+                    props.searchRef.current?.focus();
+                  }}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          )}
+
+          <button className="new-chat-btn" type="button" onClick={props.onNew} title="New chat (⌘N)">
+            <IconCompose size={16} />
+            <span>New chat</span>
+          </button>
+
           <div className="chats">
             {props.chats.map((c) => (
               <div
@@ -99,13 +152,23 @@ export function Sidebar(props: Props) {
                 </button>
               </div>
             ))}
+            {props.chats.length === 0 && (
+              <div className="empty-tasks-hint">暂无历史会话</div>
+            )}
           </div>
         </>
       ) : (
         <>
-          <div className="side-tools">
-            <div className="codex-side-header-title">任务列表</div>
-          </div>
+          <button
+            className="new-chat-btn"
+            type="button"
+            onClick={() => props.onNewCodexTask && props.onNewCodexTask()}
+            title="New task (⌘N)"
+          >
+            <IconCompose size={16} />
+            <span>New task</span>
+          </button>
+
           <div className="chats">
             {(props.codexTasks || []).map((t) => (
               <div
@@ -132,11 +195,12 @@ export function Sidebar(props: Props) {
               </div>
             ))}
             {(!props.codexTasks || props.codexTasks.length === 0) && (
-              <div className="empty-tasks-hint">暂无历史</div>
+              <div className="empty-tasks-hint">暂无历史会话</div>
             )}
           </div>
         </>
       )}
+
       <div className="side-foot">
         <AccountMenu
           account={props.account}

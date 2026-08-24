@@ -150,7 +150,8 @@ function convertAnthropicToOpenAI(body) {
   }
 
   const headerEffort = (body.effort || process.env.CLAUDE_EFFORT || "medium").toLowerCase();
-  const enableThinking = headerEffort === "xhigh";
+  const reasoningControl = process.env.LLAMA_REASONING_CONTROL || "effort";
+  const enableThinking = headerEffort !== "low";
   const temp = headerEffort === "low" ? 0.3 : headerEffort === "xhigh" ? 0.85 : (body.temperature ?? 0.7);
 
   const payload = {
@@ -158,12 +159,15 @@ function convertAnthropicToOpenAI(body) {
     messages,
     stream: Boolean(body.stream),
     temperature: temp,
-    max_tokens: body.max_tokens ?? 4096,
-    enable_thinking: enableThinking,
-    chat_template_kwargs: {
-      enable_thinking: enableThinking
-    }
+    max_tokens: body.max_tokens ?? 4096
   };
+
+  if (reasoningControl === "effort") {
+    payload.reasoning_effort = headerEffort;
+  } else if (reasoningControl === "toggle") {
+    payload.enable_thinking = enableThinking;
+    payload.chat_template_kwargs = { enable_thinking: enableThinking };
+  }
 
   if (tools) payload.tools = tools;
   if (tool_choice) payload.tool_choice = tool_choice;

@@ -2,7 +2,7 @@ import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Effort, FontSize, Language, Settings, Theme } from "@shared/types";
+import type { Effort, FontSize, Language, LlamaModel, Settings, Theme } from "@shared/types";
 import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
 const DEFAULT_MODELS_DIR = join(homedir(), "models");
@@ -24,6 +24,7 @@ type Disk = {
   language: Language;
   fontSize: FontSize;
   modelCatalog: string[];
+  llamaModels: LlamaModel[];
   llamaEndpoints: Array<{ id: string; name: string; url: string }>;
 };
 
@@ -44,6 +45,7 @@ const store = new Store<Disk>({
     language: "en",
     fontSize: "small",
     modelCatalog: ["Qwen3.8-27B"],
+    llamaModels: [],
     llamaEndpoints: [{ id: "local", name: "Local llama", url: "http://127.0.0.1:18082/v1" }]
   }
 });
@@ -81,6 +83,17 @@ export function getSettings(): Settings {
   const normalizedEndpoints = endpoints.some((endpoint) => endpoint.url === activeUrl)
     ? endpoints
     : [{ id: "active", name: "Current Llama", url: activeUrl }, ...endpoints];
+  const catalog = [...new Set([...(store.get("modelCatalog") || []), store.get("model")].filter(Boolean))];
+  const storedModels = store.get("llamaModels") || [];
+  const activeEndpoint = normalizedEndpoints.find((endpoint) => endpoint.url === activeUrl) || normalizedEndpoints[0];
+  const llamaModels = storedModels.length
+    ? storedModels
+    : catalog.map((name, index) => ({
+        id: index === 0 ? "default-model" : `legacy-model-${index}`,
+        name,
+        endpointId: activeEndpoint?.id || "local",
+        reasoningControl: "effort" as const
+      }));
   return {
     llamaUrl: activeUrl,
     llamaApiKey: decryptLocalSecret(store.get("llamaApiKeyEnc")),
@@ -96,7 +109,8 @@ export function getSettings(): Settings {
     coworkInstructions: store.get("coworkInstructions"),
     language: store.get("language") || "en",
     fontSize: store.get("fontSize") || "small",
-    modelCatalog: [...new Set([...(store.get("modelCatalog") || []), store.get("model")].filter(Boolean))],
+    modelCatalog: catalog,
+    llamaModels,
     llamaEndpoints: normalizedEndpoints
   };
 }
@@ -155,6 +169,25 @@ export function setSettings(patch: Partial<Settings>): Settings {
       throw new Error("Every model must have a valid name.");
     }
   }
+  if (patch.llamaModels !== undefined) {
+    if (!Array.isArray(patch.llamaModels) || patch.llamaModels.length > 100) {
+      throw new Error("Model list must contain no more than 100 models.");
+    }
+    const endpointIds = new Set((patch.llamaEndpoints || getSettings().llamaEndpoints).map((endpoint) => endpoint.id));
+    for (const model of patch.llamaModels) {
+      if (
+        !model ||
+        typeof model.id !== "string" ||
+        typeof model.name !== "string" ||
+        !model.name.trim() ||
+        model.name.length > 200 ||
+        !endpointIds.has(model.endpointId) ||
+        !["effort", "toggle", "none"].includes(model.reasoningControl)
+      ) {
+        throw new Error("Every model must have a valid name, Llama server, and reasoning control.");
+      }
+    }
+  }
   if (patch.llamaEndpoints !== undefined) {
     if (!Array.isArray(patch.llamaEndpoints) || patch.llamaEndpoints.length > 20) {
       throw new Error("Llama list must contain no more than 20 endpoints.");
@@ -178,6 +211,10 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.language !== undefined) store.set("language", patch.language);
   if (patch.fontSize !== undefined) store.set("fontSize", patch.fontSize);
   if (patch.modelCatalog !== undefined) store.set("modelCatalog", [...new Set(patch.modelCatalog.map((model) => model.trim()))]);
+  if (patch.llamaModels !== undefined) {
+    store.set("llamaModels", patch.llamaModels.map((model) => ({ ...model, name: model.name.trim() })));
+    store.set("modelCatalog", [...new Set(patch.llamaModels.map((model) => model.name.trim()))]);
+  }
   if (patch.llamaEndpoints !== undefined) {
     store.set("llamaEndpoints", patch.llamaEndpoints.map((endpoint) => ({
       id: endpoint.id,

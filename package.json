@@ -1,7 +1,7 @@
 {
   "name": "lumen",
   "productName": "Lumen",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Minimal desktop AI chat & Codex agent for local models",
   "main": "out/main/index.js",
   "type": "module",

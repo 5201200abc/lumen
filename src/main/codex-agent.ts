@@ -14,6 +14,7 @@ const messages = new Map<string, CodexMessage[]>();
 const activeProcesses = new Map<string, ChildProcess>();
 let bridgeProcess: ChildProcess | null = null;
 let bridgeStartup: Promise<void> | null = null;
+let bridgeConfig = "";
 
 const homeDir = process.env.HOME || os.homedir();
 const launchCwd = process.env.PWD;
@@ -59,12 +60,12 @@ async function bridgeReady(): Promise<boolean> {
   }
 }
 
-async function startClaudeBridge(): Promise<void> {
+async function startClaudeBridge(settings = getSettings()): Promise<void> {
   // A user's existing bridge may serve active Cowork sessions. Never replace it.
   if (await bridgeReady()) return;
   const script = runtimeResource("claude-bridge.mjs");
   if (!script) throw new Error("The bundled Cowork bridge is missing from this installation.");
-  const settings = getSettings();
+  const reasoningControl = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl ?? "effort";
   bridgeProcess = spawn(process.execPath, [script], {
     env: {
       ...process.env,
@@ -72,6 +73,7 @@ async function startClaudeBridge(): Promise<void> {
       LLAMA_URL: settings.llamaUrl,
       LLAMA_API_KEY: settings.llamaApiKey,
       LLAMA_MODEL_ALIAS: settings.model,
+      LLAMA_REASONING_CONTROL: reasoningControl,
       CLAUDE_BRIDGE_HOST: "127.0.0.1",
       CLAUDE_BRIDGE_PORT: "18084"
     },
@@ -80,7 +82,9 @@ async function startClaudeBridge(): Promise<void> {
   });
   bridgeProcess.once("exit", () => {
     bridgeProcess = null;
+    bridgeConfig = "";
   });
+  bridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}`;
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (await bridgeReady()) return;
@@ -91,9 +95,20 @@ async function startClaudeBridge(): Promise<void> {
 }
 
 async function ensureClaudeBridge(): Promise<void> {
+  const settings = getSettings();
+  const reasoningControl = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl ?? "effort";
+  const wantedConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}`;
+  if (bridgeProcess && bridgeConfig !== wantedConfig) {
+    bridgeProcess.kill();
+    for (let attempt = 0; attempt < 20 && await bridgeReady(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    bridgeProcess = null;
+    bridgeConfig = "";
+  }
   if (await bridgeReady()) return;
   if (!bridgeStartup) {
-    bridgeStartup = startClaudeBridge().finally(() => {
+    bridgeStartup = startClaudeBridge(settings).finally(() => {
       bridgeStartup = null;
     });
   }

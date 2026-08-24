@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Attachment, CodexMessage, CodexTask, CodexToolCall, Effort, WorkspaceInfo } from "@shared/types";
-import { MarkdownView } from "../lib/markdown";
+import type { Attachment, CodexMessage, CodexTask, CodexToolCall, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
+import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
 import { toolActivity, toolDescription } from "@shared/cowork-status";
@@ -15,11 +15,14 @@ import {
   IconLaptop,
   IconPencil,
   IconSearch,
+  IconSidebar,
   IconStop,
   IconTerminal
 } from "./icons";
 
 type Props = {
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
   activeTaskId: string | null;
   tasks: CodexTask[];
   onSelectTask: (taskId: string) => void;
@@ -30,6 +33,8 @@ type Props = {
   effort: Effort;
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
+  reasoningControl: ReasoningControl;
+  onConfigure: () => void;
 };
 
 const COWORK_WELCOME_PROMPTS = [
@@ -132,12 +137,13 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
 
   const copy = async (): Promise<void> => {
     if (!message.content) return;
+    const text = stripMarkdown(message.content);
     try {
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(message.content);
+        await navigator.clipboard.writeText(text);
       } else {
         const fallback = document.createElement("textarea");
-        fallback.value = message.content;
+        fallback.value = text;
         fallback.style.position = "fixed";
         fallback.style.opacity = "0";
         document.body.appendChild(fallback);
@@ -449,7 +455,19 @@ export function CodexView(props: Props) {
   return (
     <div className="codex-view">
       {/* Top Header Bar */}
-      <header className="main-top" />
+      <header className="main-top">
+        {!props.sidebarOpen && props.onToggleSidebar && (
+          <button
+            className="icon-btn ghost-icon sidebar-toggle-btn"
+            type="button"
+            title="Expand sidebar (⌘B)"
+            aria-label="Expand sidebar"
+            onClick={props.onToggleSidebar}
+          >
+            <IconSidebar size={16} />
+          </button>
+        )}
+      </header>
 
       {/* Main Conversation Thread */}
       <div className="codex-thread" ref={threadRef} onScroll={handleScroll}>
@@ -462,12 +480,33 @@ export function CodexView(props: Props) {
           ) : (
             messages.map((m) => {
               if (m.role === "user") {
+                const images = (m.attachments || []).filter(
+                  (f) => (f.kind === "image" || f.mime?.startsWith("image/")) && f.dataUrl
+                );
+                const otherFiles = (m.attachments || []).filter(
+                  (f) => !((f.kind === "image" || f.mime?.startsWith("image/")) && f.dataUrl)
+                );
                 return (
                   <div key={m.id} className="turn user-turn">
-                    <div className="user-bubble">
-                      <AttachmentList attachments={m.attachments || []} />
-                      <div className="user-text">{m.content}</div>
-                    </div>
+                    {images.length > 0 && (
+                      <div className="user-attachments">
+                        {images.map((file) => (
+                          <div key={file.id} className="user-image-card" title={file.name}>
+                            <img src={file.dataUrl} alt={file.name} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {otherFiles.length > 0 && (
+                      <div className="user-attachments">
+                        <AttachmentList attachments={otherFiles} />
+                      </div>
+                    )}
+                    {m.content ? (
+                      <div className="user-bubble">
+                        <div className="user-text">{m.content}</div>
+                      </div>
+                    ) : null}
                   </div>
                 );
               }
@@ -544,6 +583,8 @@ export function CodexView(props: Props) {
                 effort={props.effort}
                 onModel={props.onModel}
                 onEffort={props.onEffort}
+                reasoningControl={props.reasoningControl}
+                onConfigure={props.onConfigure}
               />
               {running ? (
                 <button

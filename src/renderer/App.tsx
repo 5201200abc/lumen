@@ -4,6 +4,7 @@ import { MessageView } from "./components/Message";
 import { SettingsPanel } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { CodexView } from "./components/CodexView";
+import { IconSidebar } from "./components/icons";
 import type { Attachment, ChatMessage, Conversation, CodexTask, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 
@@ -25,6 +26,7 @@ function applyPreferences(settings: Pick<Settings, "theme" | "language" | "fontS
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [mode, setMode] = useState<"chat" | "code">("chat");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [chats, setChats] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -35,6 +37,7 @@ export function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<"general" | "models">("general");
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [account, setAccount] = useState<GoogleAccount>({ configured: false, connected: false });
   const [accountBusy, setAccountBusy] = useState(false);
@@ -229,6 +232,17 @@ export function App() {
     return () => off.forEach((fn) => fn());
   }, [activeId, newChat, refreshChats]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "b" || e.key === "\\")) {
+        e.preventDefault();
+        setSidebarOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const userScrolledUp = useRef(false);
 
   const handleScroll = () => {
@@ -264,6 +278,79 @@ export function App() {
     const plan = planChatRequest(content, webSearch);
     setDraft("");
     setAttachments([]);
+    setStreaming(true);
+    const user: ChatMessage = {
+      id: "tmp-user",
+      conversationId,
+      role: "user",
+      content,
+      thinking: "",
+      attachments: files,
+      createdAt: Date.now()
+    };
+    const assistant: ChatMessage = {
+      id: "tmp-asst",
+      conversationId,
+      role: "assistant",
+      content: "",
+      thinking: "",
+      attachments: [],
+      createdAt: Date.now() + 1,
+      phase: "preparing",
+      introText: plan.action,
+      statusText: plan.useWeb ? "Preparing web search" : "Preparing the request"
+    };
+    setMessages((prev) => [...prev, user, assistant]);
+    try {
+      const ids = await window.lumen.chat.send({
+        conversationId,
+        content,
+        attachments: files,
+        effort,
+        webSearch
+      });
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id === "tmp-user") return { ...m, id: ids.userId };
+          if (m.id === "tmp-asst") return { ...m, id: ids.assistantId };
+          return m;
+        })
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setStreaming(false);
+      if (message === "生成已停止") {
+        setMessages((prev) => prev.filter((m) => m.id !== "tmp-user" && m.id !== "tmp-asst"));
+        return;
+      }
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === "tmp-asst"
+            ? { ...m, content: `Generation failed: ${message}` }
+            : m
+        )
+      );
+    }
+  };
+
+  const handleEditMessage = async (
+    _messageId: string,
+    content: string,
+    files: Attachment[] = []
+  ): Promise<void> => {
+    if (streaming) return;
+    if (!content.trim() && files.length === 0) return;
+    userScrolledUp.current = false;
+    let conversationId = activeId;
+    if (!conversationId) {
+      const created = await window.lumen.chats.create();
+      conversationId = created.id;
+      chatLoad.current += 1;
+      setQuery("");
+      setChats(await window.lumen.chats.list());
+      setActiveId(created.id);
+    }
+    const plan = planChatRequest(content, webSearch);
     setStreaming(true);
     const user: ChatMessage = {
       id: "tmp-user",
@@ -421,75 +508,104 @@ export function App() {
   const visible = useMemo(() => messages, [messages]);
 
   if (!settings) return null;
+  const activeEndpoint = settings.llamaEndpoints.find((endpoint) => endpoint.url === settings.llamaUrl);
+  const configuredModels = settings.llamaModels.filter((model) => !activeEndpoint || model.endpointId === activeEndpoint.id);
+  const activeModel = settings.llamaModels.find((model) => model.name === settings.model && (!activeEndpoint || model.endpointId === activeEndpoint.id));
+  const reasoningControl = activeModel?.reasoningControl ?? "effort";
+  const openModelConfiguration = () => {
+    setSettingsPage("models");
+    setSettingsOpen(true);
+  };
 
   return (
-    <div className="app">
-      <Sidebar
-        mode={mode}
-        onModeChange={setMode}
-        chats={chats}
-        activeId={activeId}
-        query={query}
-        searchRef={searchRef}
-        onQuery={(q) => {
-          setQuery(q);
-          void refreshChats(q);
-        }}
-        onSelect={(id) => {
-          if (streaming && activeId && id !== activeId) {
-            void window.lumen.chat.stop(activeId);
-            setStreaming(false);
-          }
-          void openChat(id);
-        }}
-        onNew={() => void newChat()}
-        onDelete={async (id) => {
-          if (!window.confirm("Delete this chat? This cannot be undone.")) return;
-          await window.lumen.chats.delete(id);
-          const list = query.trim() ? await window.lumen.chats.search(query) : await window.lumen.chats.list();
-          setChats(list);
-          if (id === activeId) {
-            setStreaming(false);
-            if (list[0]) await openChat(list[0].id);
-            else {
-              chatLoad.current += 1;
-              setActiveId(null);
-              setMessages([]);
-              nextWelcomePrompt();
-            }
-          }
-        }}
-        onSettings={() => setSettingsOpen(true)}
-        account={account}
-        accountBusy={accountBusy}
-        onGoogleLogin={() => void runAccountAction("login")}
-        onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
-        onGoogleLogout={() => void runAccountAction("logout")}
-        onGoogleSync={() => void runAccountAction("sync")}
-        codexTasks={codexTasks}
-        activeTaskId={activeTaskId}
-        onSelectCodexTask={setActiveTaskId}
-        onNewCodexTask={() => void handleNewCodexTask()}
-        onDeleteCodexTask={(id) => void handleDeleteCodexTask(id)}
-      />
-      <div className="v-line" />
+    <div className={`app ${!sidebarOpen ? "sidebar-collapsed" : ""}`}>
+      {sidebarOpen ? (
+        <>
+          <Sidebar
+            mode={mode}
+            onModeChange={setMode}
+            chats={chats}
+            activeId={activeId}
+            query={query}
+            searchRef={searchRef}
+            onQuery={(q) => {
+              setQuery(q);
+              void refreshChats(q);
+            }}
+            onSelect={(id) => {
+              if (streaming && activeId && id !== activeId) {
+                void window.lumen.chat.stop(activeId);
+                setStreaming(false);
+              }
+              void openChat(id);
+            }}
+            onNew={() => void newChat()}
+            onDelete={async (id) => {
+              if (!window.confirm("Delete this chat? This cannot be undone.")) return;
+              await window.lumen.chats.delete(id);
+              const list = query.trim() ? await window.lumen.chats.search(query) : await window.lumen.chats.list();
+              setChats(list);
+              if (id === activeId) {
+                setStreaming(false);
+                if (list[0]) await openChat(list[0].id);
+                else {
+                  chatLoad.current += 1;
+                  setActiveId(null);
+                  setMessages([]);
+                  nextWelcomePrompt();
+                }
+              }
+            }}
+            onSettings={() => setSettingsOpen(true)}
+            onToggleSidebar={() => setSidebarOpen(false)}
+            account={account}
+            accountBusy={accountBusy}
+            onGoogleLogin={() => void runAccountAction("login")}
+            onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
+            onGoogleLogout={() => void runAccountAction("logout")}
+            onGoogleSync={() => void runAccountAction("sync")}
+            codexTasks={codexTasks}
+            activeTaskId={activeTaskId}
+            onSelectCodexTask={setActiveTaskId}
+            onNewCodexTask={() => void handleNewCodexTask()}
+            onDeleteCodexTask={(id) => void handleDeleteCodexTask(id)}
+          />
+          <div className="v-line" />
+        </>
+      ) : null}
       <section className="main">
         <div className="mode-pane" hidden={mode !== "code"}>
           <CodexView
+            sidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
             activeTaskId={activeTaskId}
             tasks={codexTasks}
             onSelectTask={setActiveTaskId}
             onNewTask={handleNewCodexTask}
             onDeleteTask={handleDeleteCodexTask}
             model={settings.model}
-            models={[...new Set([...settings.modelCatalog, ...(status?.models || []), settings.model])]}
+            models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
             effort={effort}
             onModel={(m) => void patchSettings({ model: m })}
             onEffort={setEffort}
+            reasoningControl={reasoningControl}
+            onConfigure={openModelConfiguration}
           />
         </div>
         <div className="mode-pane" hidden={mode !== "chat"}>
-            <header className="main-top" />
+            <header className="main-top">
+              {!sidebarOpen && (
+                <button
+                  className="icon-btn ghost-icon sidebar-toggle-btn"
+                  type="button"
+                  title="Expand sidebar (⌘B)"
+                  aria-label="Expand sidebar"
+                  onClick={() => setSidebarOpen(true)}
+                >
+                  <IconSidebar size={16} />
+                </button>
+              )}
+            </header>
             <div className="thread" ref={threadRef} onScroll={handleScroll}>
               <div className="thread-inner">
                 {visible.length === 0 ? (
@@ -504,6 +620,7 @@ export function App() {
                       message={m}
                       streaming={streaming && i === visible.length - 1 && m.role === "assistant"}
                       onRegenerate={m.role === "assistant" && i === visible.length - 1 ? regenerate : undefined}
+                      onEdit={m.role === "user" ? (id, text, atts) => void handleEditMessage(id, text, atts) : undefined}
                     />
                   ))
                 )}
@@ -512,7 +629,7 @@ export function App() {
             <Composer
               value={draft}
               model={settings.model}
-              models={[...new Set([...settings.modelCatalog, ...(status?.models || []), settings.model])]}
+              models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
               effort={effort}
               webSearch={webSearch}
               streaming={streaming}
@@ -520,6 +637,8 @@ export function App() {
               onChange={setDraft}
               onModel={(m) => void patchSettings({ model: m })}
               onEffort={setEffort}
+              reasoningControl={reasoningControl}
+              onConfigure={openModelConfiguration}
               onWebSearch={setWebSearch}
               onSend={() => void send()}
               onStop={() => activeId && void window.lumen.chat.stop(activeId)}
@@ -530,8 +649,9 @@ export function App() {
         {settingsOpen && (
           <SettingsPanel
             settings={settings}
+            initialPage={settingsPage}
             onChange={patchSettings}
-            onClose={() => setSettingsOpen(false)}
+            onClose={() => { setSettingsOpen(false); setSettingsPage("general"); }}
             onDeleteAllMemories={async () => {
               await window.lumen.memory.clear();
             }}
