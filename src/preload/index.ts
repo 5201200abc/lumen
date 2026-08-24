@@ -11,7 +11,9 @@ import type {
   StreamDelta,
   StreamDone,
   CodexMessage,
-  CodexTask
+  CodexTask,
+  GoogleAccount,
+  WorkspaceInfo
 } from "@shared/types";
 
 type Unlisten = () => void;
@@ -26,6 +28,12 @@ const api = {
   settings: {
     get: (): Promise<Settings> => ipcRenderer.invoke("settings:get"),
     set: (patch: Partial<Settings>): Promise<Settings> => ipcRenderer.invoke("settings:set", patch)
+  },
+  google: {
+    status: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:status"),
+    login: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:login"),
+    logout: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:logout"),
+    sync: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:sync")
   },
   models: {
     status: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:status"),
@@ -79,6 +87,7 @@ const api = {
   },
   codex: {
     getHome: (): Promise<string> => ipcRenderer.invoke("codex:getHome"),
+    workspaceInfo: (cwd?: string): Promise<WorkspaceInfo> => ipcRenderer.invoke("codex:workspaceInfo", cwd),
     listTasks: (): Promise<CodexTask[]> => ipcRenderer.invoke("codex:listTasks"),
     createTask: (opts?: { title?: string; cwd?: string }): Promise<CodexTask> => ipcRenderer.invoke("codex:createTask", opts || {}),
     getMessages: (taskId: string): Promise<CodexMessage[]> => ipcRenderer.invoke("codex:getMessages", taskId),

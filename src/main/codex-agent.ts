@@ -1,18 +1,23 @@
 import { BrowserWindow, dialog, ipcMain } from "electron";
-import { spawn, type ChildProcess } from "child_process";
+import { execFile, spawn, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import readline from "readline";
-import type { CodexMessage, CodexTask, CodexToolCall } from "@shared/types";
+import type { CodexMessage, CodexTask, CodexToolCall, WorkspaceInfo } from "@shared/types";
 import { generateConversationTitle } from "./title";
+import { getSettings } from "./store";
 
 const tasks = new Map<string, CodexTask>();
 const messages = new Map<string, CodexMessage[]>();
 const activeProcesses = new Map<string, ChildProcess>();
 
 const homeDir = process.env.HOME || os.homedir();
-let defaultCwd = homeDir;
+const launchCwd = process.env.PWD;
+let defaultCwd =
+  launchCwd && launchCwd !== "/" && fs.existsSync(launchCwd)
+    ? path.resolve(launchCwd)
+    : homeDir;
 
 function resolveWorkingDir(rawPath?: string): string {
   if (!rawPath || rawPath === "~" || rawPath.trim() === "") return homeDir;
@@ -30,8 +35,27 @@ function getClaudeBin(): string {
   return "claude";
 }
 
+async function workspaceInfo(rawPath?: string): Promise<WorkspaceInfo> {
+  const cwd = resolveWorkingDir(rawPath);
+  const branch = await new Promise<string | null>((resolve) => {
+    execFile(
+      "git",
+      ["-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD"],
+      { timeout: 2500, encoding: "utf8" },
+      (error, stdout) => resolve(error ? null : stdout.trim() || null)
+    );
+  });
+  return {
+    cwd,
+    name: path.basename(cwd) || cwd,
+    branch,
+    location: "Local"
+  };
+}
+
 export function registerCodexIpc(): void {
-  ipcMain.handle("codex:getHome", () => homeDir);
+  ipcMain.handle("codex:getHome", () => defaultCwd);
+  ipcMain.handle("codex:workspaceInfo", (_event, cwd?: string) => workspaceInfo(cwd));
 
   ipcMain.handle("codex:listTasks", () => {
     return Array.from(tasks.values()).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -95,6 +119,10 @@ export function registerCodexIpc(): void {
   ipcMain.handle("codex:run", async (event, { taskId, prompt, cwd, effort, model }: { taskId: string; prompt: string; cwd?: string; effort?: string; model?: string }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const resolvedCwd = resolveWorkingDir(cwd || defaultCwd);
+    const coworkInstructions = getSettings().coworkInstructions.trim();
+    const effectivePrompt = coworkInstructions
+      ? `<custom_instructions>\n${coworkInstructions}\n</custom_instructions>\n\n${prompt}`
+      : prompt;
 
     let task = tasks.get(taskId);
     if (!task) {
@@ -172,7 +200,7 @@ export function registerCodexIpc(): void {
       "--output-format",
       "stream-json",
       "-p",
-      prompt
+      effectivePrompt
     ];
 
     try {

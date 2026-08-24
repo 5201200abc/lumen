@@ -18,6 +18,9 @@ type Disk = {
   memoryEnabled: boolean;
   theme: Theme;
   modelsDir: string;
+  chatInstructions: string;
+  coworkInstructions: string;
+  googleClientId: string;
 };
 
 const store = new Store<Disk>({
@@ -30,7 +33,10 @@ const store = new Store<Disk>({
     defaultEffort: "xhigh",
     memoryEnabled: true,
     theme: "system",
-    modelsDir: DEFAULT_MODELS_DIR
+    modelsDir: DEFAULT_MODELS_DIR,
+    chatInstructions: "",
+    coworkInstructions: "",
+    googleClientId: ""
   }
 });
 
@@ -89,17 +95,66 @@ export function getSettings(): Settings {
     theme: store.get("theme"),
     modelsDir: store.get("modelsDir") || DEFAULT_MODELS_DIR,
     systemPrompt: readSystemPrompt(),
-    systemPromptPath: SYSTEM_PROMPT_PATH
+    systemPromptPath: SYSTEM_PROMPT_PATH,
+    chatInstructions: store.get("chatInstructions"),
+    coworkInstructions: store.get("coworkInstructions"),
+    googleClientId: store.get("googleClientId")
   };
 }
 
 export function setSettings(patch: Partial<Settings>): Settings {
+  if (patch.llamaUrl !== undefined) {
+    let url: URL;
+    try {
+      url = new URL(patch.llamaUrl.trim());
+    } catch {
+      throw new Error("Llama API URL must be a valid http or https URL.");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("Llama API URL must use http or https.");
+    }
+  }
+  if (patch.model !== undefined && !patch.model.trim()) {
+    throw new Error("Model cannot be empty.");
+  }
+  if (patch.model !== undefined && patch.model.length > 200) {
+    throw new Error("Model name is too long.");
+  }
+  if (
+    patch.googleClientId !== undefined &&
+    patch.googleClientId.trim() &&
+    !/^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$/.test(patch.googleClientId.trim())
+  ) {
+    throw new Error("Google OAuth Client ID must end with .apps.googleusercontent.com.");
+  }
+  if (patch.chatInstructions !== undefined && patch.chatInstructions.length > 20_000) {
+    throw new Error("Chat custom instructions cannot exceed 20,000 characters.");
+  }
+  if (patch.coworkInstructions !== undefined && patch.coworkInstructions.length > 20_000) {
+    throw new Error("Cowork custom instructions cannot exceed 20,000 characters.");
+  }
+  if (patch.systemPrompt !== undefined && patch.systemPrompt.length > 100_000) {
+    throw new Error("Model rule style cannot exceed 100,000 characters.");
+  }
+  if (
+    patch.defaultEffort !== undefined &&
+    !["low", "medium", "xhigh"].includes(patch.defaultEffort)
+  ) {
+    throw new Error("Default effort must be low, medium, or xhigh.");
+  }
+  if (patch.theme !== undefined && !["system", "light", "dark"].includes(patch.theme)) {
+    throw new Error("Theme must be system, light, or dark.");
+  }
+
   if (patch.llamaUrl !== undefined) store.set("llamaUrl", patch.llamaUrl.trim());
   if (patch.model !== undefined) store.set("model", patch.model.trim());
   if (patch.defaultEffort !== undefined) store.set("defaultEffort", normalizeEffort(patch.defaultEffort));
   if (patch.memoryEnabled !== undefined) store.set("memoryEnabled", patch.memoryEnabled);
   if (patch.theme !== undefined) store.set("theme", patch.theme);
   if (patch.modelsDir !== undefined) store.set("modelsDir", patch.modelsDir.trim());
+  if (patch.chatInstructions !== undefined) store.set("chatInstructions", patch.chatInstructions);
+  if (patch.coworkInstructions !== undefined) store.set("coworkInstructions", patch.coworkInstructions);
+  if (patch.googleClientId !== undefined) store.set("googleClientId", patch.googleClientId.trim());
   if (patch.llamaApiKey !== undefined) store.set("llamaApiKeyEnc", encrypt(patch.llamaApiKey.trim()));
   if (patch.tavilyApiKey !== undefined) store.set("tavilyApiKeyEnc", encrypt(patch.tavilyApiKey.trim()));
   if (patch.systemPrompt !== undefined) writeSystemPrompt(patch.systemPrompt);

@@ -10,7 +10,9 @@ import type {
   StreamDelta,
   StreamDone,
   CodexMessage,
-  CodexTask
+  CodexTask,
+  GoogleAccount,
+  WorkspaceInfo
 } from "@shared/types";
 
 type Unlisten = () => void;
@@ -19,6 +21,12 @@ interface LumenAPI {
   settings: {
     get: () => Promise<Settings>;
     set: (patch: Partial<Settings>) => Promise<Settings>;
+  };
+  google: {
+    status: () => Promise<GoogleAccount>;
+    login: () => Promise<GoogleAccount>;
+    logout: () => Promise<GoogleAccount>;
+    sync: () => Promise<GoogleAccount>;
   };
   models: {
     status: () => Promise<LlamaStatus>;
@@ -68,6 +76,7 @@ interface LumenAPI {
   };
   codex: {
     getHome: () => Promise<string>;
+    workspaceInfo: (cwd?: string) => Promise<WorkspaceInfo>;
     listTasks: () => Promise<CodexTask[]>;
     createTask: (opts?: { title?: string; cwd?: string }) => Promise<CodexTask>;
     getMessages: (taskId: string) => Promise<CodexMessage[]>;

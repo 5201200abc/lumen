@@ -2,11 +2,12 @@ import { app, BrowserWindow, Menu, globalShortcut, nativeTheme } from "electron"
 import { registerIpc } from "./ipc";
 import { registerTerminalIpc } from "./terminal";
 import { registerCodexIpc } from "./codex-agent";
-import { initDb, flushDb, closeDb } from "./db";
+import { initDb, flushDb, closeDb, setAfterPersist } from "./db";
 import { getSettings } from "./store";
 import { ensureLocalLlama } from "./models";
 import { startScreenshotWatch, stopScreenshotWatch, captureInteractive } from "./screenshot";
 import { applyTheme, createWindow } from "./window";
+import { cancelGoogleSync, scheduleGoogleSync } from "./google-auth";
 
 app.setName("Lumen");
 
@@ -108,6 +109,7 @@ function buildMenu(): void {
 
 async function ready(): Promise<void> {
   await initDb();
+  setAfterPersist(scheduleGoogleSync);
   const settings = getSettings();
   applyTheme(settings.theme);
   registerIpc();
@@ -144,6 +146,8 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     stopScreenshotWatch();
+    setAfterPersist(null);
+    cancelGoogleSync();
     closeDb();
     globalShortcut.unregisterAll();
   });

@@ -14,6 +14,26 @@ export type Settings = {
   modelsDir: string;
   systemPrompt: string;
   systemPromptPath: string;
+  chatInstructions: string;
+  coworkInstructions: string;
+  googleClientId: string;
+};
+
+export type GoogleAccount = {
+  configured: boolean;
+  connected: boolean;
+  name?: string;
+  email?: string;
+  picture?: string;
+  lastSyncedAt?: number;
+  error?: string;
+};
+
+export type WorkspaceInfo = {
+  cwd: string;
+  name: string;
+  branch: string | null;
+  location: "Local";
 };
 
 export type Conversation = {

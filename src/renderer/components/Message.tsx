@@ -10,14 +10,16 @@ type Props = {
 };
 
 export function MessageView({ message, streaming, onRegenerate }: Props) {
-  const [seconds, setSeconds] = useState(0);
+  const [seconds, setSeconds] = useState(() =>
+    streaming ? Math.max(0, Math.floor((Date.now() - message.createdAt) / 1000)) : 0
+  );
   const [copied, setCopied] = useState(false);
   const copyReset = useRef<number | null>(null);
 
   useEffect(() => {
     if (!streaming) return;
-    const t0 = Date.now();
-    setSeconds(0);
+    const t0 = message.createdAt;
+    setSeconds(Math.max(0, Math.floor((Date.now() - t0) / 1000)));
     const id = window.setInterval(() => {
       setSeconds(Math.floor((Date.now() - t0) / 1000));
     }, 200);
@@ -82,7 +84,7 @@ export function MessageView({ message, streaming, onRegenerate }: Props) {
         <details className="thought" open={Boolean(streaming)}>
           <summary>
             {streaming ? <span className="spin" /> : null}
-            <span>{streaming ? `Thinking ${seconds}s` : `Thought for ${seconds || 1}s`}</span>
+            <span>{streaming ? `Thinking ${seconds}s` : seconds > 0 ? `Thought for ${seconds}s` : "Thought complete"}</span>
           </summary>
           <pre>{thinking || (streaming ? "" : "")}</pre>
         </details>

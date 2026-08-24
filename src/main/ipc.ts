@@ -21,6 +21,7 @@ import { maybeRemember } from "./memory";
 import { captureInteractive, markClipboard } from "./screenshot";
 import { applyTheme } from "./window";
 import { generateConversationTitle } from "./title";
+import { googleLogin, googleLogout, googleStatus, googleSync } from "./google-auth";
 
 const aborts = new Map<string, AbortController>();
 
@@ -50,7 +51,7 @@ async function beginStream(opts: {
   const abort = new AbortController();
   aborts.set(opts.conversationId, abort);
 
-  let userId = crypto.randomUUID();
+  let userId: string = crypto.randomUUID();
   if (opts.insertUser) {
     insertMessage({
       id: userId,
@@ -174,6 +175,10 @@ export function registerIpc(): void {
     applyTheme(next.theme);
     return next;
   });
+  ipcMain.handle("google:status", () => googleStatus());
+  ipcMain.handle("google:login", () => googleLogin());
+  ipcMain.handle("google:logout", () => googleLogout());
+  ipcMain.handle("google:sync", () => googleSync());
 
   ipcMain.handle("models:status", async () => probeLlama(getSettings()));
   ipcMain.handle("models:ensure", async () => ensureLocalLlama(getSettings(), false));

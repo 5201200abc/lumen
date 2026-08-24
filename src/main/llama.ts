@@ -157,6 +157,9 @@ export async function streamChat(opts: {
   const mem = settings.memoryEnabled ? memoryBlock(opts.userText) : "";
   const system = [
     settings.systemPrompt.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。",
+    settings.chatInstructions.trim()
+      ? `Follow these user-provided custom instructions for Chat:\n${settings.chatInstructions.trim()}`
+      : "",
     mem,
     searchBlock ? `全网检索结果：\n${searchBlock}` : ""
   ]

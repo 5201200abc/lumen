@@ -4,7 +4,7 @@ import { MessageView } from "./components/Message";
 import { SettingsPanel } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { CodexView } from "./components/CodexView";
-import type { Attachment, ChatMessage, Conversation, CodexTask, Effort, LlamaStatus, Settings } from "@shared/types";
+import type { Attachment, ChatMessage, Conversation, CodexTask, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
 
 const WELCOME_PROMPTS = ["What are we going to do?", "What would you like to talk about?"] as const;
 
@@ -29,6 +29,8 @@ export function App() {
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [status, setStatus] = useState<LlamaStatus | null>(null);
+  const [account, setAccount] = useState<GoogleAccount>({ configured: false, connected: false });
+  const [accountBusy, setAccountBusy] = useState(false);
   const [welcomePrompt, setWelcomePrompt] = useState<(typeof WELCOME_PROMPTS)[number]>(WELCOME_PROMPTS[0]);
 
   // Codex state
@@ -41,6 +43,7 @@ export function App() {
   const booted = useRef(false);
   const chatLoad = useRef(0);
   const welcomeIndex = useRef(0);
+  const settingsWrite = useRef<Promise<void>>(Promise.resolve());
 
   const nextWelcomePrompt = useCallback(() => {
     setWelcomePrompt(WELCOME_PROMPTS[welcomeIndex.current % WELCOME_PROMPTS.length]);
@@ -109,6 +112,7 @@ export function App() {
       setSettings(s);
       setEffort(s.defaultEffort);
       applyTheme(s.theme);
+      setAccount(await window.lumen.google.status());
       const st = await window.lumen.models.status();
       setStatus(st);
       if (st.model && st.model !== s.model) {
@@ -320,13 +324,36 @@ export function App() {
   };
 
   const patchSettings = async (patch: Partial<Settings>): Promise<void> => {
-    const next = await window.lumen.settings.set(patch);
-    setSettings(next);
-    applyTheme(next.theme);
+    setSettings((current) => (current ? { ...current, ...patch } : current));
+    if (patch.theme !== undefined) applyTheme(patch.theme);
+    if (patch.defaultEffort !== undefined) setEffort(patch.defaultEffort);
+
+    const write = settingsWrite.current.then(async () => {
+      await window.lumen.settings.set(patch);
+      if (patch.googleClientId !== undefined) {
+        setAccount(await window.lumen.google.status());
+      }
+    });
+    settingsWrite.current = write.catch(() => undefined);
+    await write;
   };
 
-  const deleteAllChats = async (): Promise<void> => {
-    if (!window.confirm("Delete all chat? This cannot be undone.")) return;
+  const runAccountAction = async (action: "login" | "logout" | "sync"): Promise<void> => {
+    setAccountBusy(true);
+    try {
+      setAccount(await window.lumen.google[action]());
+    } catch (error) {
+      setAccount((current) => ({
+        ...current,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const deleteAllChats = async (): Promise<boolean> => {
+    if (!window.confirm("Delete all chat? This cannot be undone.")) return false;
     if (streaming && activeId) await window.lumen.chat.stop(activeId);
     await window.lumen.chats.clear();
     chatLoad.current += 1;
@@ -338,6 +365,7 @@ export function App() {
     setDraft("");
     setAttachments([]);
     nextWelcomePrompt();
+    return true;
   };
 
   const visible = useMemo(() => messages, [messages]);
@@ -382,6 +410,11 @@ export function App() {
           }
         }}
         onSettings={() => setSettingsOpen(true)}
+        account={account}
+        accountBusy={accountBusy}
+        onGoogleLogin={() => void runAccountAction("login")}
+        onGoogleLogout={() => void runAccountAction("logout")}
+        onGoogleSync={() => void runAccountAction("sync")}
         codexTasks={codexTasks}
         activeTaskId={activeTaskId}
         onSelectCodexTask={setActiveTaskId}
@@ -390,7 +423,7 @@ export function App() {
       />
       <div className="v-line" />
       <section className="main">
-        {mode === "code" ? (
+        <div className="mode-pane" hidden={mode !== "code"}>
           <CodexView
             activeTaskId={activeTaskId}
             tasks={codexTasks}
@@ -403,8 +436,8 @@ export function App() {
             onModel={(m) => void patchSettings({ model: m })}
             onEffort={setEffort}
           />
-        ) : (
-          <>
+        </div>
+        <div className="mode-pane" hidden={mode !== "chat"}>
             <header className="main-top" />
             <div className="thread" ref={threadRef} onScroll={handleScroll}>
               <div className="thread-inner">
@@ -442,16 +475,18 @@ export function App() {
               onAttach={(files) => setAttachments((prev) => [...prev, ...files])}
               onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
             />
-          </>
-        )}
+        </div>
       </section>
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
-          onChange={(p) => void patchSettings(p)}
+          account={account}
+          onChange={patchSettings}
           onClose={() => setSettingsOpen(false)}
-          onDeleteAllMemories={() => void window.lumen.memory.clear()}
-          onDeleteAllChats={() => void deleteAllChats()}
+          onDeleteAllMemories={async () => {
+            await window.lumen.memory.clear();
+          }}
+          onDeleteAllChats={deleteAllChats}
         />
       )}
     </div>

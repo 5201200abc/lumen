@@ -1,0 +1,316 @@
+import { createHash, randomBytes } from "node:crypto";
+import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { safeStorage, shell } from "electron";
+import Store from "electron-store";
+import type { GoogleAccount } from "@shared/types";
+import { databasePath, flushDb } from "./db";
+import { getSettings } from "./store";
+
+type AuthDisk = {
+  refreshTokenEnc: string;
+  accessTokenEnc: string;
+  expiresAt: number;
+  name: string;
+  email: string;
+  picture: string;
+  driveFileId: string;
+  lastSyncedAt: number;
+  clientId: string;
+};
+
+const authStore = new Store<AuthDisk>({
+  name: "google-auth",
+  defaults: {
+    refreshTokenEnc: "",
+    accessTokenEnc: "",
+    expiresAt: 0,
+    name: "",
+    email: "",
+    picture: "",
+    driveFileId: "",
+    lastSyncedAt: 0,
+    clientId: ""
+  }
+});
+
+let syncTimer: NodeJS.Timeout | null = null;
+let syncInFlight: Promise<GoogleAccount> | null = null;
+let suppressScheduledSync = false;
+
+function secureStorageAvailable(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  return process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text";
+}
+
+function encrypt(value: string): string {
+  if (!value || !secureStorageAvailable()) return "";
+  return safeStorage.encryptString(value).toString("base64");
+}
+
+function decrypt(value: string): string {
+  if (!value || !secureStorageAvailable()) return "";
+  try {
+    return safeStorage.decryptString(Buffer.from(value, "base64"));
+  } catch {
+    return "";
+  }
+}
+
+function clientId(): string {
+  return getSettings().googleClientId || process.env.LUMEN_GOOGLE_CLIENT_ID || "";
+}
+
+export function googleStatus(error?: string): GoogleAccount {
+  const connected =
+    authStore.get("clientId") === clientId() &&
+    Boolean(decrypt(authStore.get("refreshTokenEnc")) || decrypt(authStore.get("accessTokenEnc")));
+  return {
+    configured: Boolean(clientId()),
+    connected,
+    name: authStore.get("name") || undefined,
+    email: authStore.get("email") || undefined,
+    picture: authStore.get("picture") || undefined,
+    lastSyncedAt: authStore.get("lastSyncedAt") || undefined,
+    error
+  };
+}
+
+async function tokenRequest(body: URLSearchParams): Promise<Record<string, any>> {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+  const json = (await response.json()) as Record<string, any>;
+  if (!response.ok) throw new Error(json.error_description || json.error || `Google token HTTP ${response.status}`);
+  return json;
+}
+
+async function accessToken(): Promise<string> {
+  const cached = decrypt(authStore.get("accessTokenEnc"));
+  if (cached && authStore.get("expiresAt") > Date.now() + 60_000) return cached;
+  const refresh = decrypt(authStore.get("refreshTokenEnc"));
+  if (!refresh) throw new Error("Google 登录已失效，请重新登录");
+  let json: Record<string, any>;
+  try {
+    json = await tokenRequest(
+      new URLSearchParams({
+        client_id: clientId(),
+        refresh_token: refresh,
+        grant_type: "refresh_token"
+      })
+    );
+  } catch (error) {
+    authStore.set("accessTokenEnc", "");
+    authStore.set("refreshTokenEnc", "");
+    throw error;
+  }
+  const token = String(json.access_token || "");
+  authStore.set("accessTokenEnc", encrypt(token));
+  authStore.set("expiresAt", Date.now() + Number(json.expires_in || 3600) * 1000);
+  return token;
+}
+
+export async function googleLogin(): Promise<GoogleAccount> {
+  const id = clientId();
+  if (!id) {
+    return googleStatus("请先在 Settings > Account 中配置 Google OAuth Desktop Client ID");
+  }
+  if (!secureStorageAvailable()) {
+    return googleStatus("系统安全存储不可用，无法安全保存 Google 登录令牌");
+  }
+  if (authStore.get("clientId") && authStore.get("clientId") !== id) {
+    authStore.clear();
+  }
+
+  const verifier = randomBytes(48).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const state = randomBytes(24).toString("hex");
+
+  const result = await new Promise<{ code: string; redirectUri: string }>((resolve, reject) => {
+    const server = createServer((request, response) => {
+      const url = new URL(request.url || "/", "http://127.0.0.1");
+      if (url.pathname !== "/oauth2/callback") {
+        response.writeHead(404).end();
+        return;
+      }
+      if (url.searchParams.get("state") !== state) {
+        response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Invalid OAuth state.");
+        server.close();
+        reject(new Error("Google OAuth state 校验失败"));
+        return;
+      }
+      const error = url.searchParams.get("error");
+      const code = url.searchParams.get("code");
+      if (error || !code) {
+        response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Google sign-in was cancelled.");
+        server.close();
+        reject(new Error(error || "Google 登录已取消"));
+        return;
+      }
+      response
+        .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+        .end("<!doctype html><meta charset=utf-8><title>Lumen</title><body style='font:16px system-ui;padding:40px'>Google account connected. You can return to Lumen.</body>");
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close();
+      resolve({ code, redirectUri: `http://127.0.0.1:${port}/oauth2/callback` });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const redirectUri = `http://127.0.0.1:${port}/oauth2/callback`;
+      const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      authUrl.search = new URLSearchParams({
+        client_id: id,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: "openid email profile https://www.googleapis.com/auth/drive.appdata",
+        access_type: "offline",
+        prompt: "consent",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        state
+      }).toString();
+      void shell.openExternal(authUrl.toString()).catch((error) => {
+        server.close();
+        reject(new Error(`无法打开系统浏览器：${error instanceof Error ? error.message : String(error)}`));
+      });
+    });
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("Google 登录超时"));
+    }, 180_000);
+    server.on("close", () => clearTimeout(timeout));
+    server.on("error", reject);
+  });
+
+  const tokens = await tokenRequest(
+    new URLSearchParams({
+      client_id: id,
+      code: result.code,
+      code_verifier: verifier,
+      redirect_uri: result.redirectUri,
+      grant_type: "authorization_code"
+    })
+  );
+  authStore.set("accessTokenEnc", encrypt(String(tokens.access_token || "")));
+  if (tokens.refresh_token) authStore.set("refreshTokenEnc", encrypt(String(tokens.refresh_token)));
+  authStore.set("expiresAt", Date.now() + Number(tokens.expires_in || 3600) * 1000);
+  authStore.set("clientId", id);
+
+  let profile: { name?: string; email?: string; picture?: string };
+  try {
+    const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` }
+    });
+    if (!profileResponse.ok) throw new Error(`Google profile HTTP ${profileResponse.status}`);
+    profile = (await profileResponse.json()) as { name?: string; email?: string; picture?: string };
+  } catch (error) {
+    authStore.clear();
+    throw error;
+  }
+  authStore.set("name", profile.name || "");
+  authStore.set("email", profile.email || "");
+  authStore.set("picture", profile.picture || "");
+  return googleSync();
+}
+
+async function findDriveFile(token: string): Promise<string> {
+  const known = authStore.get("driveFileId");
+  if (known) return known;
+  const query = new URL("https://www.googleapis.com/drive/v3/files");
+  query.search = new URLSearchParams({
+    spaces: "appDataFolder",
+    q: "name = 'lumen-backup.sqlite' and trashed = false",
+    fields: "files(id,name,modifiedTime)",
+    pageSize: "1"
+  }).toString();
+  const response = await fetch(query, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error(`Google Drive lookup HTTP ${response.status}`);
+  const json = (await response.json()) as { files?: Array<{ id: string }> };
+  const id = json.files?.[0]?.id || "";
+  if (id) authStore.set("driveFileId", id);
+  return id;
+}
+
+export function googleSync(): Promise<GoogleAccount> {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = (async () => {
+    try {
+      suppressScheduledSync = true;
+      flushDb();
+      suppressScheduledSync = false;
+      const token = await accessToken();
+      const bytes = readFileSync(databasePath());
+      const fileId = await findDriveFile(token);
+      let response: Response;
+      if (fileId) {
+        response = await fetch(
+          `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/x-sqlite3"
+            },
+            body: bytes
+          }
+        );
+      } else {
+        const boundary = `lumen-${randomBytes(12).toString("hex")}`;
+        const metadata = JSON.stringify({ name: "lumen-backup.sqlite", parents: ["appDataFolder"] });
+        const prefix = Buffer.from(
+          `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
+            `--${boundary}\r\nContent-Type: application/x-sqlite3\r\n\r\n`
+        );
+        const suffix = Buffer.from(`\r\n--${boundary}--`);
+        response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": `multipart/related; boundary=${boundary}`
+          },
+          body: Buffer.concat([prefix, bytes, suffix])
+        });
+      }
+      const json = (await response.json().catch(() => ({}))) as { id?: string; error?: { message?: string } };
+      if (!response.ok) throw new Error(json.error?.message || `Google Drive upload HTTP ${response.status}`);
+      if (json.id) authStore.set("driveFileId", json.id);
+      authStore.set("lastSyncedAt", Date.now());
+      return googleStatus();
+    } catch (error) {
+      suppressScheduledSync = false;
+      return googleStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      syncInFlight = null;
+    }
+  })();
+  return syncInFlight;
+}
+
+export function scheduleGoogleSync(): void {
+  if (suppressScheduledSync) return;
+  if (!googleStatus().connected) return;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => void googleSync(), 2500);
+}
+
+export function cancelGoogleSync(): void {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = null;
+}
+
+export async function googleLogout(): Promise<GoogleAccount> {
+  cancelGoogleSync();
+  const token = decrypt(authStore.get("accessTokenEnc"));
+  if (token) {
+    await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" }
+    }).catch(() => undefined);
+  }
+  authStore.clear();
+  return googleStatus();
+}

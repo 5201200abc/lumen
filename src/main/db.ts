@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
 let persistTimer: NodeJS.Timeout | null = null;
+let afterPersist: (() => void) | null = null;
 
 function wasmPath(): string {
   if (app.isPackaged) return join(process.resourcesPath, "sql-wasm.wasm");
@@ -25,6 +26,15 @@ function dbPath(): string {
 function persist(): void {
   if (!db) return;
   writeFileSync(dbPath(), Buffer.from(db.export()));
+  afterPersist?.();
+}
+
+export function setAfterPersist(handler: (() => void) | null): void {
+  afterPersist = handler;
+}
+
+export function databasePath(): string {
+  return dbPath();
 }
 
 function schedulePersist(): void {

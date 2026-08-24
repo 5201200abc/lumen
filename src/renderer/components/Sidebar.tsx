@@ -1,6 +1,7 @@
 import type { RefObject } from "react";
-import type { Conversation, CodexTask } from "@shared/types";
-import { IconGear, IconPlus, IconTrash } from "./icons";
+import type { Conversation, CodexTask, GoogleAccount } from "@shared/types";
+import { IconPlus, IconTrash } from "./icons";
+import { AccountMenu } from "./AccountMenu";
 
 type Props = {
   mode: "chat" | "code";
@@ -13,6 +14,11 @@ type Props = {
   onNew: () => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
+  account: GoogleAccount;
+  accountBusy: boolean;
+  onGoogleLogin: () => void;
+  onGoogleLogout: () => void;
+  onGoogleSync: () => void;
   searchRef: RefObject<HTMLInputElement | null>;
   // Codex task props
   codexTasks?: CodexTask[];
@@ -131,9 +137,14 @@ export function Sidebar(props: Props) {
         </>
       )}
       <div className="side-foot">
-        <button className="icon-btn ghost-icon" type="button" onClick={props.onSettings} title="设置 ⌘,">
-          <IconGear />
-        </button>
+        <AccountMenu
+          account={props.account}
+          busy={props.accountBusy}
+          onLogin={props.onGoogleLogin}
+          onLogout={props.onGoogleLogout}
+          onSync={props.onGoogleSync}
+          onSettings={props.onSettings}
+        />
       </div>
     </aside>
   );
