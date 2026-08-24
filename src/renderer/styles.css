@@ -1,19 +1,19 @@
-/* Permanently embed 方正聚珍新仿 as the primary Chinese font for CJK glyphs */
 @font-face {
   font-family: "Lumen CJK";
-  src: local("FZJuZhenXinFangS-R-GB"),
-       local("方正聚珍新仿简体"),
-       local("FZJuZhenXinFang-R-GB"),
-       local("方正聚珍新仿_GBK"),
-       local("FZJuZhenXinFang"),
-       local("方正聚珍新仿"),
-       local("FZJuZhenXinFangS-B-GB"),
-       local("方正聚珍新仿 粗"),
-       local("LXGW WenKai"),
-       local("霞鹜文楷");
+  src: local("FZSongKeBenXiuKaiS-R-GB"),
+       local("方正宋刻本秀楷简体"),
+       url("./assets/fonts/LXGWWenKaiLite-Light.ttf") format("truetype");
   unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF;
   font-style: normal;
-  font-weight: 100 900;
+  font-weight: 300;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Maple Mono";
+  src: url("./assets/fonts/MapleMono-Light.ttf.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300;
   font-display: swap;
 }
 
@@ -31,7 +31,8 @@
   --user-fg: #44271a;
   --sidebar: 252px;
   --radius: 7px;
-  --font: "Lumen CJK", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "SF Mono", Inter, "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+  --font: "Lumen CJK", "Maple Mono", sans-serif;
+  --base-font-size: 13px;
 }
 
 :root[data-theme="dark"] {
@@ -62,7 +63,7 @@ body,
 
 body {
   font-family: var(--font);
-  font-size: 13px;
+  font-size: var(--base-font-size);
   line-height: 1.5;
   color: var(--fg);
   background: transparent;
@@ -71,6 +72,10 @@ body {
   overflow: hidden;
   user-select: none;
 }
+
+:root[data-font-size="small"] { --base-font-size: 13px; }
+:root[data-font-size="medium"] { --base-font-size: 15px; }
+:root[data-font-size="large"] { --base-font-size: 17px; }
 
 button,
 input,
@@ -2137,6 +2142,265 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.settings-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--bg-chat);
+}
+
+.main {
+  position: relative;
+}
+
+.settings-shell {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+}
+
+.settings-nav {
+  padding: 52px 14px 20px;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  overflow: hidden;
+}
+
+.settings-nav .settings-back {
+  border: 0;
+  background: transparent;
+  justify-content: flex-start;
+  padding: 0 8px;
+}
+
+.settings-nav h2 {
+  margin: 28px 10px 12px;
+  font-size: 19px;
+  font-weight: 550;
+  letter-spacing: -0.03em;
+}
+
+.settings-nav nav {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-nav nav button {
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav nav button:hover,
+.settings-nav nav button.active {
+  color: var(--fg);
+  background: var(--fill-strong);
+}
+
+.settings-content {
+  min-width: 0;
+  overflow-y: auto;
+  position: relative;
+}
+
+.settings-content > header {
+  height: 94px;
+  padding: 29px 40px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-content > header span {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.settings-content > header h3 {
+  margin: 3px 0 0;
+  font-size: 19px;
+  font-weight: 540;
+  letter-spacing: -0.025em;
+}
+
+.settings-page {
+  width: min(760px, calc(100% - 64px));
+  margin: 0 auto;
+  padding: 26px 0 48px;
+}
+
+.setting-row {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.setting-row > div,
+.model-list-row > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.setting-row strong,
+.model-list-row strong {
+  font-size: 12.5px;
+  font-weight: 520;
+}
+
+.setting-row small,
+.model-list-row small {
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.setting-row select {
+  min-width: 150px;
+}
+
+.settings-list {
+  margin-bottom: 28px;
+}
+
+.settings-list-head {
+  min-height: 54px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-list-head h4,
+.page-intro h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 580;
+}
+
+.settings-list-head p,
+.page-intro p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.settings-list-head > button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--fill);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.model-list-row {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.row-actions span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.row-actions button,
+.inline-add button {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--fill);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.row-actions button:last-child {
+  width: 26px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.inline-add {
+  display: grid;
+  grid-template-columns: 0.6fr 1fr auto;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.inline-add.single {
+  grid-template-columns: 1fr auto;
+}
+
+.inline-add input,
+.compact-field input,
+.compact-field select,
+.setting-row select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--fill);
+  outline: none;
+}
+
+.compact-field {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.compact-field > span {
+  font-size: 11.5px;
+}
+
+.settings-page .field.prompt {
+  margin-top: 22px;
+}
+
+.settings-page .field.prompt textarea {
+  min-height: 116px;
+}
+
+.page-intro {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 760px) {
+  .settings-shell { grid-template-columns: 190px minmax(0, 1fr); }
+  .settings-content > header { padding-left: 24px; padding-right: 24px; }
+  .settings-page { width: calc(100% - 40px); }
 }
 
 @media (max-width: 920px) {

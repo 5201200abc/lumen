@@ -241,13 +241,13 @@ export async function streamChat(opts: {
     .join("\n\n");
 
   const currentUser = userContent(
-    trimToTokens(opts.userText, 4200),
+    trimToTokens(opts.userText, 3200),
     opts.attachments.slice(0, 24),
     opts.vision
   );
   const historyBudget = Math.max(
     0,
-    Math.min(4800, 11_500 - estimateTokens(system) - contentTokens(currentUser) - 800)
+    Math.min(3600, 9_200 - estimateTokens(system) - contentTokens(currentUser) - 700)
   );
   const messages: OpenAIMessage[] = [
     { role: "system", content: system },
@@ -273,16 +273,18 @@ export async function streamChat(opts: {
         min_p: 0.0,
         presence_penalty: 0.0,
         repetition_penalty: 1.05,
+        // Keep the prompt under roughly 9k tokens so a 16k server has a
+        // dedicated completion budget and does not cut off the final answer.
         max_tokens:
           plan.kind === "arithmetic"
             ? 128
             : plan.enableThinking
               ? effectiveEffort === "low"
-                ? 1024
+                ? 3072
                 : effectiveEffort === "medium"
-                  ? 2048
-                  : 3072
-              : 1536,
+                  ? 4608
+                  : 6144
+              : 4096,
         reasoning_effort: params.reasoning_effort,
         chat_template_kwargs: {
           enable_thinking: plan.enableThinking,

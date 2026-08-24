@@ -1,6 +1,8 @@
 // Exact values supported by Qwen3.8's chat template.
 export type Effort = "low" | "medium" | "xhigh";
 export type Theme = "system" | "light" | "dark";
+export type Language = "en" | "zh";
+export type FontSize = "small" | "medium" | "large";
 export type Role = "user" | "assistant" | "system";
 export type ChatPhase = "preparing" | "searching" | "thinking" | "answering" | "done" | "error";
 
@@ -17,6 +19,14 @@ export type Settings = {
   systemPromptPath: string;
   chatInstructions: string;
   coworkInstructions: string;
+  language: Language;
+  fontSize: FontSize;
+  modelCatalog: string[];
+  llamaEndpoints: Array<{
+    id: string;
+    name: string;
+    url: string;
+  }>;
 };
 
 export type GoogleAccount = {

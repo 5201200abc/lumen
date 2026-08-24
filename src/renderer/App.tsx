@@ -16,6 +16,12 @@ function applyTheme(theme: Settings["theme"]): void {
   document.documentElement.dataset.theme = dark ? "dark" : "light";
 }
 
+function applyPreferences(settings: Pick<Settings, "theme" | "language" | "fontSize">): void {
+  applyTheme(settings.theme);
+  document.documentElement.lang = settings.language === "zh" ? "zh-CN" : "en";
+  document.documentElement.dataset.fontSize = settings.fontSize;
+}
+
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [mode, setMode] = useState<"chat" | "code">("chat");
@@ -114,7 +120,7 @@ export function App() {
       const s = await window.lumen.settings.get();
       setSettings(s);
       setEffort(s.defaultEffort);
-      applyTheme(s.theme);
+      applyPreferences(s);
       setAccount(await window.lumen.google.status());
       const st = await window.lumen.models.status();
       setStatus(st);
@@ -357,7 +363,10 @@ export function App() {
 
   const patchSettings = async (patch: Partial<Settings>): Promise<void> => {
     setSettings((current) => (current ? { ...current, ...patch } : current));
-    if (patch.theme !== undefined) applyTheme(patch.theme);
+    if (patch.theme !== undefined || patch.language !== undefined || patch.fontSize !== undefined) {
+      const next = { ...settings!, ...patch };
+      applyPreferences(next);
+    }
     if (patch.defaultEffort !== undefined) setEffort(patch.defaultEffort);
 
     const write = settingsWrite.current.then(async () => {
@@ -473,7 +482,7 @@ export function App() {
             onNewTask={handleNewCodexTask}
             onDeleteTask={handleDeleteCodexTask}
             model={settings.model}
-            models={status?.models?.length ? status.models : [settings.model]}
+            models={[...new Set([...settings.modelCatalog, ...(status?.models || []), settings.model])]}
             effort={effort}
             onModel={(m) => void patchSettings({ model: m })}
             onEffort={setEffort}
@@ -503,7 +512,7 @@ export function App() {
             <Composer
               value={draft}
               model={settings.model}
-              models={status?.models?.length ? status.models : [settings.model]}
+              models={[...new Set([...settings.modelCatalog, ...(status?.models || []), settings.model])]}
               effort={effort}
               webSearch={webSearch}
               streaming={streaming}
@@ -518,18 +527,18 @@ export function App() {
               onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
             />
         </div>
+        {settingsOpen && (
+          <SettingsPanel
+            settings={settings}
+            onChange={patchSettings}
+            onClose={() => setSettingsOpen(false)}
+            onDeleteAllMemories={async () => {
+              await window.lumen.memory.clear();
+            }}
+            onDeleteAllChats={deleteAllChats}
+          />
+        )}
       </section>
-      {settingsOpen && (
-        <SettingsPanel
-          settings={settings}
-          onChange={patchSettings}
-          onClose={() => setSettingsOpen(false)}
-          onDeleteAllMemories={async () => {
-            await window.lumen.memory.clear();
-          }}
-          onDeleteAllChats={deleteAllChats}
-        />
-      )}
     </div>
   );
 }

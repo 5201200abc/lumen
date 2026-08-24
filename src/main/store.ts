@@ -2,7 +2,7 @@ import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Effort, Settings, Theme } from "@shared/types";
+import type { Effort, FontSize, Language, Settings, Theme } from "@shared/types";
 import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
 const DEFAULT_MODELS_DIR = join(homedir(), "models");
@@ -21,6 +21,10 @@ type Disk = {
   chatInstructions: string;
   coworkInstructions: string;
   googleClientId: string;
+  language: Language;
+  fontSize: FontSize;
+  modelCatalog: string[];
+  llamaEndpoints: Array<{ id: string; name: string; url: string }>;
 };
 
 const store = new Store<Disk>({
@@ -36,7 +40,11 @@ const store = new Store<Disk>({
     modelsDir: DEFAULT_MODELS_DIR,
     chatInstructions: "",
     coworkInstructions: "",
-    googleClientId: ""
+    googleClientId: "",
+    language: "en",
+    fontSize: "small",
+    modelCatalog: ["Qwen3.8-27B"],
+    llamaEndpoints: [{ id: "local", name: "Local llama", url: "http://127.0.0.1:18082/v1" }]
   }
 });
 
@@ -68,8 +76,13 @@ function normalizeEffort(value: string | undefined): Effort {
 
 export function getSettings(): Settings {
   seedTavily();
+  const activeUrl = store.get("llamaUrl");
+  const endpoints = store.get("llamaEndpoints") || [];
+  const normalizedEndpoints = endpoints.some((endpoint) => endpoint.url === activeUrl)
+    ? endpoints
+    : [{ id: "active", name: "Current Llama", url: activeUrl }, ...endpoints];
   return {
-    llamaUrl: store.get("llamaUrl"),
+    llamaUrl: activeUrl,
     llamaApiKey: decryptLocalSecret(store.get("llamaApiKeyEnc")),
     model: store.get("model"),
     tavilyApiKey: decryptLocalSecret(store.get("tavilyApiKeyEnc")),
@@ -80,7 +93,11 @@ export function getSettings(): Settings {
     systemPrompt: readSystemPrompt(),
     systemPromptPath: SYSTEM_PROMPT_PATH,
     chatInstructions: store.get("chatInstructions"),
-    coworkInstructions: store.get("coworkInstructions")
+    coworkInstructions: store.get("coworkInstructions"),
+    language: store.get("language") || "en",
+    fontSize: store.get("fontSize") || "small",
+    modelCatalog: [...new Set([...(store.get("modelCatalog") || []), store.get("model")].filter(Boolean))],
+    llamaEndpoints: normalizedEndpoints
   };
 }
 
@@ -124,12 +141,50 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.theme !== undefined && !["system", "light", "dark"].includes(patch.theme)) {
     throw new Error("Theme must be system, light, or dark.");
   }
+  if (patch.language !== undefined && !["en", "zh"].includes(patch.language)) {
+    throw new Error("Language must be English or Chinese.");
+  }
+  if (patch.fontSize !== undefined && !["small", "medium", "large"].includes(patch.fontSize)) {
+    throw new Error("Font size must be small, medium, or large.");
+  }
+  if (patch.modelCatalog !== undefined) {
+    if (!Array.isArray(patch.modelCatalog) || patch.modelCatalog.length > 50) {
+      throw new Error("Model list must contain no more than 50 models.");
+    }
+    if (patch.modelCatalog.some((model) => typeof model !== "string" || !model.trim() || model.length > 200)) {
+      throw new Error("Every model must have a valid name.");
+    }
+  }
+  if (patch.llamaEndpoints !== undefined) {
+    if (!Array.isArray(patch.llamaEndpoints) || patch.llamaEndpoints.length > 20) {
+      throw new Error("Llama list must contain no more than 20 endpoints.");
+    }
+    for (const endpoint of patch.llamaEndpoints) {
+      if (!endpoint || typeof endpoint.id !== "string" || typeof endpoint.name !== "string" || typeof endpoint.url !== "string") {
+        throw new Error("Every Llama endpoint must have an id, name, and URL.");
+      }
+      const url = new URL(endpoint.url.trim());
+      if (!["http:", "https:"].includes(url.protocol) || !endpoint.name.trim()) {
+        throw new Error("Every Llama endpoint must have a valid name and http or https URL.");
+      }
+    }
+  }
 
   if (patch.llamaUrl !== undefined) store.set("llamaUrl", patch.llamaUrl.trim());
   if (patch.model !== undefined) store.set("model", patch.model.trim());
   if (patch.defaultEffort !== undefined) store.set("defaultEffort", normalizeEffort(patch.defaultEffort));
   if (patch.memoryEnabled !== undefined) store.set("memoryEnabled", patch.memoryEnabled);
   if (patch.theme !== undefined) store.set("theme", patch.theme);
+  if (patch.language !== undefined) store.set("language", patch.language);
+  if (patch.fontSize !== undefined) store.set("fontSize", patch.fontSize);
+  if (patch.modelCatalog !== undefined) store.set("modelCatalog", [...new Set(patch.modelCatalog.map((model) => model.trim()))]);
+  if (patch.llamaEndpoints !== undefined) {
+    store.set("llamaEndpoints", patch.llamaEndpoints.map((endpoint) => ({
+      id: endpoint.id,
+      name: endpoint.name.trim(),
+      url: endpoint.url.trim()
+    })));
+  }
   if (patch.modelsDir !== undefined) store.set("modelsDir", patch.modelsDir.trim());
   if (patch.chatInstructions !== undefined) store.set("chatInstructions", patch.chatInstructions);
   if (patch.coworkInstructions !== undefined) store.set("coworkInstructions", patch.coworkInstructions);
