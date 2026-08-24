@@ -8,6 +8,7 @@ import { ensureLocalLlama } from "./models";
 import { startScreenshotWatch, stopScreenshotWatch, captureInteractive } from "./screenshot";
 import { applyTheme, createWindow } from "./window";
 import { cancelGoogleSync, scheduleGoogleSync } from "./google-auth";
+import { registerAttachmentIpc } from "./attachments";
 
 app.setName("Lumen");
 
@@ -115,6 +116,7 @@ async function ready(): Promise<void> {
   registerIpc();
   registerTerminalIpc();
   registerCodexIpc();
+  registerAttachmentIpc();
   win = createWindow();
   startScreenshotWatch(getWin);
   buildMenu();

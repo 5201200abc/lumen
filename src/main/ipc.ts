@@ -21,7 +21,7 @@ import { maybeRemember } from "./memory";
 import { captureInteractive, markClipboard } from "./screenshot";
 import { applyTheme } from "./window";
 import { generateConversationTitle } from "./title";
-import { googleLogin, googleLogout, googleStatus, googleSync } from "./google-auth";
+import { cancelGoogleLogin, googleLogin, googleLogout, googleStatus, googleSync } from "./google-auth";
 
 const aborts = new Map<string, AbortController>();
 
@@ -193,6 +193,7 @@ export function registerIpc(): void {
   });
   ipcMain.handle("google:status", () => googleStatus());
   ipcMain.handle("google:login", () => googleLogin());
+  ipcMain.handle("google:cancelLogin", () => cancelGoogleLogin());
   ipcMain.handle("google:logout", () => googleLogout());
   ipcMain.handle("google:sync", () => googleSync());
 

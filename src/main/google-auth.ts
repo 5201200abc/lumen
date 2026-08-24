@@ -41,6 +41,7 @@ const authStore = new Store<AuthDisk>({
 let syncTimer: NodeJS.Timeout | null = null;
 let syncInFlight: Promise<GoogleAccount> | null = null;
 let suppressScheduledSync = false;
+let activeLoginCancel: (() => void) | null = null;
 
 function encrypt(value: string): string {
   return encryptLocalSecret(value);
@@ -157,12 +158,21 @@ export async function googleLogin(): Promise<GoogleAccount> {
   if (authStore.get("clientId") && authStore.get("clientId") !== id) {
     authStore.clear();
   }
+  activeLoginCancel?.();
 
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("hex");
 
   const result = await new Promise<{ code: string; redirectUri: string }>((resolve, reject) => {
+    let settled = false;
+    const finish = (operation: () => void) => {
+      if (settled) return;
+      settled = true;
+      activeLoginCancel = null;
+      server.close();
+      operation();
+    };
     const server = createServer((request, response) => {
       const url = new URL(request.url || "/", "http://127.0.0.1");
       if (url.pathname !== "/oauth2/callback") {
@@ -171,16 +181,14 @@ export async function googleLogin(): Promise<GoogleAccount> {
       }
       if (url.searchParams.get("state") !== state) {
         response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Invalid OAuth state.");
-        server.close();
-        reject(new Error("Google OAuth state validation failed."));
+        finish(() => reject(new Error("Google OAuth state validation failed.")));
         return;
       }
       const error = url.searchParams.get("error");
       const code = url.searchParams.get("code");
       if (error || !code) {
         response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Google sign-in was cancelled.");
-        server.close();
-        reject(new Error(error || "Google sign-in was cancelled."));
+        finish(() => reject(new Error(error || "Google sign-in was cancelled.")));
         return;
       }
       response
@@ -188,9 +196,9 @@ export async function googleLogin(): Promise<GoogleAccount> {
         .end("<!doctype html><meta charset=utf-8><title>Lumen</title><body style='font:16px system-ui;padding:40px'>Google account connected. You can return to Lumen.</body>");
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
-      server.close();
-      resolve({ code, redirectUri: `http://127.0.0.1:${port}/oauth2/callback` });
+      finish(() => resolve({ code, redirectUri: `http://127.0.0.1:${port}/oauth2/callback` }));
     });
+    activeLoginCancel = () => finish(() => reject(new Error("Google sign-in was cancelled.")));
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
@@ -208,16 +216,14 @@ export async function googleLogin(): Promise<GoogleAccount> {
         state
       }).toString();
       void openGoogleLogin(authUrl.toString()).catch((error) => {
-        server.close();
-        reject(new Error(`Could not open Chrome: ${error instanceof Error ? error.message : String(error)}`));
+        finish(() => reject(new Error(`Could not open Chrome: ${error instanceof Error ? error.message : String(error)}`)));
       });
     });
     const timeout = setTimeout(() => {
-      server.close();
-      reject(new Error("Google sign-in timed out."));
-    }, 180_000);
+      finish(() => reject(new Error("Google sign-in timed out.")));
+    }, 20_000);
     server.on("close", () => clearTimeout(timeout));
-    server.on("error", reject);
+    server.on("error", (error) => finish(() => reject(error)));
   });
 
   const tokens = await tokenRequest(
@@ -249,6 +255,12 @@ export async function googleLogin(): Promise<GoogleAccount> {
   authStore.set("email", profile.email || "");
   authStore.set("picture", profile.picture || "");
   return googleSync();
+}
+
+export function cancelGoogleLogin(): boolean {
+  if (!activeLoginCancel) return false;
+  activeLoginCancel();
+  return true;
 }
 
 async function findDriveFile(token: string): Promise<string> {

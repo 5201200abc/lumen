@@ -6,6 +6,7 @@ type Props = {
   account: GoogleAccount;
   busy: boolean;
   onLogin: () => void;
+  onCancelLogin: () => void;
   onLogout: () => void;
   onSync: () => void;
   onSettings: () => void;
@@ -54,9 +55,13 @@ export function AccountMenu(props: Props) {
               ) : null}
             </button>
           ) : (
-            <button type="button" className="account-menu-row google-login-row" onClick={props.onLogin} disabled={props.busy}>
+            <button
+              type="button"
+              className="account-menu-row google-login-row"
+              onClick={props.busy ? props.onCancelLogin : props.onLogin}
+            >
               <span className="google-g">G</span>
-              <span>{props.busy ? "Connecting…" : "Continue with Google"}</span>
+              <span>{props.busy ? "Cancel sign-in" : "Continue with Google"}</span>
             </button>
           )}
           <button

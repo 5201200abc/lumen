@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CodexMessage, CodexTask, CodexToolCall, Effort, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CodexMessage, CodexTask, CodexToolCall, Effort, WorkspaceInfo } from "@shared/types";
 import { MarkdownView } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
 import { toolActivity, toolDescription } from "@shared/cowork-status";
+import { AttachmentAddButton, AttachmentList, readDroppedFiles } from "./AttachmentControls";
 import {
   IconArrowUp,
   IconCheck,
@@ -13,7 +14,6 @@ import {
   IconFolder,
   IconLaptop,
   IconPencil,
-  IconPlus,
   IconSearch,
   IconStop,
   IconTerminal
@@ -200,6 +200,7 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
 export function CodexView(props: Props) {
   const [messages, setMessages] = useState<CodexMessage[]>([]);
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [running, setRunning] = useState(false);
   const [cwd, setCwd] = useState<string>("");
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
@@ -368,8 +369,9 @@ export function CodexView(props: Props) {
   }, [messages, running]);
 
   const handleSend = async (textToSend?: string) => {
-    const text = textToSend || prompt;
-    if (!text.trim() || running) return;
+    const text = (textToSend || prompt).trim() || (attachments.length ? "Review the attached files." : "");
+    if (!text || running) return;
+    const files = attachments;
     userScrolledUp.current = false;
 
     let taskId = props.activeTaskId;
@@ -378,6 +380,7 @@ export function CodexView(props: Props) {
     }
 
     setPrompt("");
+    setAttachments([]);
     setRunning(true);
 
     const userMsg: CodexMessage = {
@@ -385,6 +388,7 @@ export function CodexView(props: Props) {
       taskId,
       role: "user",
       content: text,
+      attachments: files,
       createdAt: Date.now()
     };
 
@@ -407,6 +411,7 @@ export function CodexView(props: Props) {
       const res = await window.lumen.codex.run({
         taskId,
         prompt: text,
+        attachments: files,
         cwd,
         effort: props.effort,
         model: props.model
@@ -460,6 +465,7 @@ export function CodexView(props: Props) {
                 return (
                   <div key={m.id} className="turn user-turn">
                     <div className="user-bubble">
+                      <AttachmentList attachments={m.attachments || []} />
                       <div className="user-text">{m.content}</div>
                     </div>
                   </div>
@@ -473,7 +479,22 @@ export function CodexView(props: Props) {
 
       {/* Bottom Composer Box */}
       <div className="composer-wrap">
-        <div className="composer">
+        <div
+          className="composer"
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.currentTarget.classList.add("drop");
+          }}
+          onDragLeave={(event) => event.currentTarget.classList.remove("drop")}
+          onDrop={async (event) => {
+            event.preventDefault();
+            event.currentTarget.classList.remove("drop");
+            if (event.dataTransfer.files.length) {
+              const dropped = await readDroppedFiles(event.dataTransfer.files);
+              setAttachments((current) => [...current, ...dropped]);
+            }
+          }}
+        >
           <div className="workspace-meta" aria-label="Current workspace">
             <button type="button" className="workspace-item workspace-directory" onClick={() => void selectWorkspace()} title={workspace?.cwd || cwd}>
               <IconFolder size={14} />
@@ -488,6 +509,10 @@ export function CodexView(props: Props) {
               <span>{workspace?.branch || "No Git"}</span>
             </span>
           </div>
+          <AttachmentList
+            attachments={attachments}
+            onRemove={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
+          />
           <textarea
             ref={areaRef}
             rows={2}
@@ -502,15 +527,11 @@ export function CodexView(props: Props) {
           />
           <div className="composer-bar">
             <div className="left-tools">
-              <button
-                className="icon-chip"
-                type="button"
-                onClick={() => void props.onNewTask()}
-                title="新建任务"
-                aria-label="新建任务"
-              >
-                <IconPlus />
-              </button>
+              <AttachmentAddButton
+                attachments={attachments}
+                onAdd={(files) => setAttachments((current) => [...current, ...files])}
+                onRemove={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
+              />
             </div>
             <div className="right-tools">
               {/* Context Window Usage Gauge Ring */}
@@ -538,7 +559,7 @@ export function CodexView(props: Props) {
                 <button
                   className="send"
                   type="button"
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() && attachments.length === 0}
                   onClick={() => void handleSend()}
                   aria-label="发送"
                   title="发送"

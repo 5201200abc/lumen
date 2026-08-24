@@ -100,15 +100,31 @@ function compactImage(dataUrl: string): string {
 
 function userContent(text: string, attachments: Attachment[], vision: boolean): string | OpenAIPart[] {
   if (!attachments.length) return text;
-  if (!vision) {
-    return `${text}\n\n[${attachments.length} image attachment(s): vision is unavailable because llama-server has no mmproj loaded.]`;
-  }
+  const images = attachments.filter((file) => file.kind === "image" && file.dataUrl).slice(0, 3);
+  const files = attachments.filter((file) => file.kind !== "image").slice(0, 24);
+  const fileDetails = files
+    .map((file) => {
+      const label = file.relativePath || file.name;
+      return file.text
+        ? `<file name="${label}">\n${trimToTokens(file.text, 1200)}\n</file>`
+        : `- ${label}${file.path ? ` (${file.path})` : ""} [binary content is not directly readable by this chat model]`;
+    })
+    .join("\n\n");
+  const fileBlock = files.length
+    ? `Attached files:\n${trimToTokens(fileDetails, 5200)}`
+    : "";
+  const imageNote =
+    images.length && !vision
+      ? `${images.length} image attachment(s) added, but vision is unavailable because llama-server has no mmproj loaded.`
+      : "";
+  const combinedText = [text, fileBlock, imageNote].filter(Boolean).join("\n\n");
+  if (!images.length || !vision) return combinedText;
   const parts: OpenAIPart[] = [];
-  if (text.trim()) parts.push({ type: "text", text });
-  for (const file of attachments) {
-    parts.push({ type: "image_url", image_url: { url: compactImage(file.dataUrl) } });
+  if (combinedText.trim()) parts.push({ type: "text", text: combinedText });
+  for (const file of images) {
+    parts.push({ type: "image_url", image_url: { url: compactImage(file.dataUrl!) } });
   }
-  if (!text.trim()) parts.unshift({ type: "text", text: "Describe these images." });
+  if (!combinedText.trim()) parts.unshift({ type: "text", text: "Describe these images." });
   return parts;
 }
 
@@ -149,7 +165,7 @@ function historyMessages(history: ChatMessage[], vision: boolean, budget: number
     if (item.role === "system") continue;
     const content =
       item.role === "user"
-        ? userContent(trimToTokens(item.content, 2400), item.attachments.slice(0, 3), vision)
+        ? userContent(trimToTokens(item.content, 2400), item.attachments.slice(0, 8), vision)
         : trimToTokens(item.content, 2400);
     if (item.role === "assistant" && !item.content.trim()) continue;
     const cost = contentTokens(content) + 12;
@@ -226,7 +242,7 @@ export async function streamChat(opts: {
 
   const currentUser = userContent(
     trimToTokens(opts.userText, 4200),
-    opts.attachments.slice(0, 3),
+    opts.attachments.slice(0, 24),
     opts.vision
   );
   const historyBudget = Math.max(

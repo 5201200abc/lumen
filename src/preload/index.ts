@@ -32,6 +32,7 @@ const api = {
   google: {
     status: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:status"),
     login: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:login"),
+    cancelLogin: (): Promise<boolean> => ipcRenderer.invoke("google:cancelLogin"),
     logout: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:logout"),
     sync: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:sync")
   },
@@ -94,7 +95,7 @@ const api = {
     deleteTask: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:deleteTask", taskId),
     selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("codex:selectDirectory"),
     stop: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:stop", taskId),
-    run: (opts: { taskId: string; prompt: string; cwd?: string; effort?: Effort; model?: string }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
+    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
       ipcRenderer.invoke("codex:run", opts),
     onEvent: (fn: (event: any) => void): Unlisten => on("codex:event", fn)
   },
@@ -104,6 +105,10 @@ const api = {
     onSearch: (fn: () => void): Unlisten => on("ui:search", fn),
     onStop: (fn: () => void): Unlisten => on("ui:stop", fn),
     onTheme: (fn: (dark: boolean) => void): Unlisten => on("ui:theme", fn)
+  },
+  attachments: {
+    pickFiles: (): Promise<Attachment[]> => ipcRenderer.invoke("attachments:pickFiles"),
+    pickFolder: (): Promise<Attachment[]> => ipcRenderer.invoke("attachments:pickFolder")
   }
 };
 

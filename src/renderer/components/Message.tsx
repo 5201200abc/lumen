@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "@shared/types";
 import { IconCheck, IconCopy, IconRefresh } from "./icons";
 import { MarkdownView } from "../lib/markdown";
+import { AttachmentList } from "./AttachmentControls";
 
 type Props = {
   message: ChatMessage;
@@ -35,13 +36,7 @@ export function MessageView({ message, streaming, onRegenerate }: Props) {
     return (
       <div className="turn user-turn">
         <div className="user-bubble">
-          {message.attachments.length > 0 && (
-            <div className="thumbs">
-              {message.attachments.map((a) => (
-                <img key={a.id} src={a.dataUrl} alt={a.name} />
-              ))}
-            </div>
-          )}
+          <AttachmentList attachments={message.attachments} />
           {message.content ? <div className="user-text">{message.content}</div> : null}
         </div>
       </div>

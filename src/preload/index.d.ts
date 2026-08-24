@@ -25,6 +25,7 @@ interface LumenAPI {
   google: {
     status: () => Promise<GoogleAccount>;
     login: () => Promise<GoogleAccount>;
+    cancelLogin: () => Promise<boolean>;
     logout: () => Promise<GoogleAccount>;
     sync: () => Promise<GoogleAccount>;
   };
@@ -83,7 +84,7 @@ interface LumenAPI {
     deleteTask: (taskId: string) => Promise<boolean>;
     selectDirectory: () => Promise<string | null>;
     stop: (taskId: string) => Promise<boolean>;
-    run: (opts: { taskId: string; prompt: string; cwd?: string; effort?: Effort; model?: string }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
+    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
     onEvent: (fn: (event: any) => void) => Unlisten;
   };
   ui: {
@@ -92,6 +93,10 @@ interface LumenAPI {
     onSearch: (fn: () => void) => Unlisten;
     onStop: (fn: () => void) => Unlisten;
     onTheme: (fn: (dark: boolean) => void) => Unlisten;
+  };
+  attachments: {
+    pickFiles: () => Promise<Attachment[]>;
+    pickFolder: () => Promise<Attachment[]>;
   };
 }
 

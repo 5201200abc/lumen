@@ -47,7 +47,12 @@ export type Attachment = {
   id: string;
   mime: string;
   name: string;
-  dataUrl: string;
+  dataUrl?: string;
+  path?: string;
+  relativePath?: string;
+  size?: number;
+  kind?: "image" | "text" | "document" | "file";
+  text?: string;
 };
 
 export type ChatMessage = {
@@ -123,6 +128,7 @@ export type CodexMessage = {
   taskId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  attachments?: Attachment[];
   toolCalls?: CodexToolCall[];
   status?: "streaming" | "done" | "error";
   contextUsed?: number;

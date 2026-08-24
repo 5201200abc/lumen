@@ -45,6 +45,8 @@ export function App() {
   const chatLoad = useRef(0);
   const welcomeIndex = useRef(0);
   const settingsWrite = useRef<Promise<void>>(Promise.resolve());
+  const accountAction = useRef<"login" | "logout" | "sync" | null>(null);
+  const loginStartedAt = useRef(0);
 
   const nextWelcomePrompt = useCallback(() => {
     setWelcomePrompt(WELCOME_PROMPTS[welcomeIndex.current % WELCOME_PROMPTS.length]);
@@ -366,6 +368,8 @@ export function App() {
   };
 
   const runAccountAction = async (action: "login" | "logout" | "sync"): Promise<void> => {
+    accountAction.current = action;
+    if (action === "login") loginStartedAt.current = Date.now();
     setAccountBusy(true);
     try {
       setAccount(await window.lumen.google[action]());
@@ -375,9 +379,19 @@ export function App() {
         error: error instanceof Error ? error.message : String(error)
       }));
     } finally {
+      accountAction.current = null;
       setAccountBusy(false);
     }
   };
+
+  useEffect(() => {
+    const cancelAbandonedLogin = () => {
+      if (accountAction.current !== "login" || Date.now() - loginStartedAt.current < 1500) return;
+      void window.lumen.google.cancelLogin();
+    };
+    window.addEventListener("focus", cancelAbandonedLogin);
+    return () => window.removeEventListener("focus", cancelAbandonedLogin);
+  }, []);
 
   const deleteAllChats = async (): Promise<boolean> => {
     if (!window.confirm("Delete all chat? This cannot be undone.")) return false;
@@ -440,6 +454,7 @@ export function App() {
         account={account}
         accountBusy={accountBusy}
         onGoogleLogin={() => void runAccountAction("login")}
+        onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
         onGoogleLogout={() => void runAccountAction("logout")}
         onGoogleSync={() => void runAccountAction("sync")}
         codexTasks={codexTasks}

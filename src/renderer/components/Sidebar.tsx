@@ -17,6 +17,7 @@ type Props = {
   account: GoogleAccount;
   accountBusy: boolean;
   onGoogleLogin: () => void;
+  onGoogleCancelLogin: () => void;
   onGoogleLogout: () => void;
   onGoogleSync: () => void;
   searchRef: RefObject<HTMLInputElement | null>;
@@ -141,6 +142,7 @@ export function Sidebar(props: Props) {
           account={props.account}
           busy={props.accountBusy}
           onLogin={props.onGoogleLogin}
+          onCancelLogin={props.onGoogleCancelLogin}
           onLogout={props.onGoogleLogout}
           onSync={props.onGoogleSync}
           onSettings={props.onSettings}

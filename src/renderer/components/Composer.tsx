@@ -2,6 +2,7 @@ import { useRef } from "react";
 import type { Attachment, Effort } from "@shared/types";
 import { IconArrowUp, IconGlobe, IconStop } from "./icons";
 import { ModelPicker } from "./ModelPicker";
+import { AttachmentAddButton, AttachmentList, readDroppedFiles } from "./AttachmentControls";
 
 type Props = {
   value: string;
@@ -21,29 +22,6 @@ type Props = {
   onRemove: (id: string) => void;
 };
 
-async function readFiles(files: FileList | File[]): Promise<Attachment[]> {
-  const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
-  const attachments = await Promise.all(
-    list.map(
-      (file) =>
-        new Promise<Attachment | null>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () =>
-            resolve({
-              id: crypto.randomUUID(),
-              mime: file.type,
-              name: file.name,
-              dataUrl: String(reader.result)
-            });
-          reader.onerror = () => resolve(null);
-          reader.onabort = () => resolve(null);
-          reader.readAsDataURL(file);
-        })
-    )
-  );
-  return attachments.filter((item): item is Attachment => item !== null);
-}
-
 export function Composer(props: Props) {
   const area = useRef<HTMLTextAreaElement>(null);
 
@@ -59,21 +37,10 @@ export function Composer(props: Props) {
         onDrop={async (e) => {
           e.preventDefault();
           e.currentTarget.classList.remove("drop");
-          if (e.dataTransfer.files.length) props.onAttach(await readFiles(e.dataTransfer.files));
+          if (e.dataTransfer.files.length) props.onAttach(await readDroppedFiles(e.dataTransfer.files));
         }}
       >
-        {props.attachments.length > 0 && (
-          <div className="attach-list">
-            {props.attachments.map((a) => (
-              <div className="attach" key={a.id}>
-                <img src={a.dataUrl} alt={a.name} />
-                <button type="button" onClick={() => props.onRemove(a.id)}>
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <AttachmentList attachments={props.attachments} onRemove={props.onRemove} />
         <textarea
           ref={area}
           rows={2}
@@ -86,7 +53,7 @@ export function Composer(props: Props) {
               .filter((f): f is File => Boolean(f && f.type.startsWith("image/")));
             if (files.length) {
               e.preventDefault();
-              props.onAttach(await readFiles(files));
+              props.onAttach(await readDroppedFiles(files));
             }
           }}
           onKeyDown={(e) => {
@@ -97,6 +64,7 @@ export function Composer(props: Props) {
         />
         <div className="composer-bar">
           <div className="left-tools">
+            <AttachmentAddButton attachments={props.attachments} onAdd={props.onAttach} onRemove={props.onRemove} />
             <button
               className="icon-chip"
               type="button"

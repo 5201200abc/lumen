@@ -4,7 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import readline from "readline";
-import type { CodexMessage, CodexTask, CodexToolCall, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CodexMessage, CodexTask, CodexToolCall, WorkspaceInfo } from "@shared/types";
 import { toolActivity } from "@shared/cowork-status";
 import { generateConversationTitle } from "./title";
 import { getSettings } from "./store";
@@ -117,17 +117,23 @@ export function registerCodexIpc(): void {
     return false;
   });
 
-  ipcMain.handle("codex:run", async (event, { taskId, prompt, cwd, effort, model }: { taskId: string; prompt: string; cwd?: string; effort?: string; model?: string }) => {
+  ipcMain.handle("codex:run", async (event, { taskId, prompt, attachments = [], cwd, effort, model }: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: string; model?: string }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const resolvedCwd = resolveWorkingDir(cwd || defaultCwd);
     const coworkInstructions = getSettings().coworkInstructions.trim();
     const reasoningDiscipline =
       "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach.</reasoning_discipline>";
+    const attachmentBlock = attachments.length
+      ? `<attachments>\n${attachments
+          .map((file) => `- ${file.path || file.name}${file.relativePath ? ` (${file.relativePath})` : ""}`)
+          .join("\n")}\nUse these user-selected local files or folders as task inputs. Read them only as needed.\n</attachments>`
+      : "";
     const effectivePrompt = [
       coworkInstructions
         ? `<custom_instructions>\n${coworkInstructions}\n</custom_instructions>`
         : "",
       reasoningDiscipline,
+      attachmentBlock,
       prompt
     ]
       .filter(Boolean)
@@ -165,6 +171,7 @@ export function registerCodexIpc(): void {
       taskId,
       role: "user",
       content: prompt,
+      attachments,
       createdAt: Date.now()
     };
     taskMessages.push(userMsg);
