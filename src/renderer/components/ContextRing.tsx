@@ -18,8 +18,8 @@ export function ContextRing({ used, total }: Props) {
   const ratio = Math.min(1, current / max);
   const percent = Math.round(ratio * 100);
 
-  const size = 18;
-  const strokeWidth = 2.2;
+  const size = 15;
+  const strokeWidth = 1.8;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - ratio * circumference;

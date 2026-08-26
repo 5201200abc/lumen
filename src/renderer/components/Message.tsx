@@ -7,18 +7,26 @@ import { AttachmentList } from "./AttachmentControls";
 type Props = {
   message: ChatMessage;
   streaming?: boolean;
+  language?: "zh" | "en";
   onRegenerate?: () => void;
   onEdit?: (messageId: string, content: string, attachments?: Attachment[]) => void;
 };
 
-function formatDuration(sec: number): string {
+function formatDuration(sec: number, isZh = false): string {
   const wholeSeconds = Math.max(0, Math.floor(sec));
+  if (isZh) {
+    if (wholeSeconds < 60) return `${wholeSeconds}秒`;
+    const minutes = Math.floor(wholeSeconds / 60);
+    const rem = wholeSeconds % 60;
+    return rem > 0 ? `${minutes}分${rem}秒` : `${minutes}分钟`;
+  }
   if (wholeSeconds < 60) return `${wholeSeconds}s`;
   const minutes = Math.floor(wholeSeconds / 60);
   return `${minutes}m ${wholeSeconds % 60}s`;
 }
 
-export function MessageView({ message, streaming, onRegenerate, onEdit }: Props) {
+export function MessageView({ message, streaming, language, onRegenerate, onEdit }: Props) {
+  const isZh = language === "zh" || (typeof document !== "undefined" && document.documentElement.lang?.startsWith("zh"));
   const [seconds, setSeconds] = useState(0);
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -126,7 +134,7 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
                   setIsEditing(false);
                 }}
               >
-                Cancel
+                {isZh ? "取消" : "Cancel"}
               </button>
               <button
                 type="button"
@@ -137,7 +145,7 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
                   onEdit?.(message.id, draftText, message.attachments);
                 }}
               >
-                Send
+                {isZh ? "发送" : "Send"}
               </button>
             </div>
           </div>
@@ -153,8 +161,8 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
               <button
                 className="icon-btn ghost-icon message-action"
                 type="button"
-                title={copied ? "Copied" : "Copy"}
-                aria-label={copied ? "Copied" : "Copy"}
+                title={copied ? (isZh ? "已复制" : "Copied") : (isZh ? "复制" : "Copy")}
+                aria-label={copied ? (isZh ? "已复制" : "Copied") : (isZh ? "复制" : "Copy")}
                 onClick={() => void copy(message.content)}
               >
                 {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
@@ -164,8 +172,8 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
               <button
                 className="icon-btn ghost-icon message-action"
                 type="button"
-                title="Edit"
-                aria-label="Edit"
+                title={isZh ? "编辑" : "Edit"}
+                aria-label={isZh ? "编辑" : "Edit"}
                 onClick={() => {
                   setDraftText(message.content);
                   setIsEditing(true);
@@ -183,12 +191,19 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
   const thinking = message.thinking.trim();
   const visibleThinking =
     thinking.length > 6000
-      ? `[Earlier reasoning hidden to reduce rendering load]\n\n${thinking.slice(-6000)}`
+      ? (isZh
+          ? `[已隐藏早期思考过程以提高渲染性能]\n\n${thinking.slice(-6000)}`
+          : `[Earlier reasoning hidden to reduce rendering load]\n\n${thinking.slice(-6000)}`)
       : thinking;
   const activelyThinking = Boolean(streaming && message.phase === "thinking");
   const showThought = Boolean(activelyThinking || (thinking && !streaming));
   const showLiveStatus = Boolean(streaming && !activelyThinking && message.statusText);
-  const workedLabel = `Worked for ${formatDuration(message.durationSeconds ?? 0)}`;
+  const workedLabel = isZh
+    ? `已深度思考 ${formatDuration(message.durationSeconds ?? 0, true)}`
+    : `Thought for ${formatDuration(message.durationSeconds ?? 0, false)}`;
+  const thinkingLabel = isZh
+    ? `正在深度思考 ${formatDuration(seconds, true)}`
+    : `Thinking ${formatDuration(seconds, false)}`;
 
   if (!streaming && !showThought && !message.content) return null;
 
@@ -204,7 +219,7 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
         <details className={`thought ${activelyThinking ? "is-thinking" : "is-complete"}`} open={activelyThinking || undefined}>
           <summary>
             {activelyThinking ? <span className="spin" /> : null}
-            <span>{activelyThinking ? `Thinking ${formatDuration(seconds)}` : workedLabel}</span>
+            <span>{activelyThinking ? thinkingLabel : workedLabel}</span>
           </summary>
           {visibleThinking ? <pre>{visibleThinking}</pre> : null}
         </details>
@@ -217,11 +232,23 @@ export function MessageView({ message, streaming, onRegenerate, onEdit }: Props)
       <MarkdownView text={message.content} />
       {!streaming && message.content ? (
         <div className="turn-actions">
-          <button className="icon-btn ghost-icon message-action" type="button" title={copied ? "Copied" : "Copy"} aria-label={copied ? "Copied" : "Copy"} onClick={() => void copy()}>
+          <button
+            className="icon-btn ghost-icon message-action"
+            type="button"
+            title={copied ? (isZh ? "已复制" : "Copied") : (isZh ? "复制" : "Copy")}
+            aria-label={copied ? (isZh ? "已复制" : "Copied") : (isZh ? "复制" : "Copy")}
+            onClick={() => void copy()}
+          >
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
           </button>
           {onRegenerate ? (
-            <button className="icon-btn ghost-icon message-action" type="button" title="Regenerate" aria-label="Regenerate" onClick={onRegenerate}>
+            <button
+              className="icon-btn ghost-icon message-action"
+              type="button"
+              title={isZh ? "重新生成" : "Regenerate"}
+              aria-label={isZh ? "重新生成" : "Regenerate"}
+              onClick={onRegenerate}
+            >
               <IconRefresh size={14} />
             </button>
           ) : null}

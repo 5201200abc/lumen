@@ -3,7 +3,7 @@ import type { Attachment, ChatMessage, Effort, Settings } from "@shared/types";
 import { detectReasoningControl } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 import { memoryBlock } from "./memory";
-import { tavilySearch } from "./search";
+import { deepResearch } from "./research";
 
 export type StreamHandlers = {
   onDelta: (chunk: { thinking?: string; content?: string }) => void;
@@ -85,6 +85,11 @@ function effortParams(settings: Settings, effort: Effort): Record<string, Effort
   if (control === "none") return {};
   if (control === "toggle") return { enable_thinking: effort !== "low" };
   return { reasoning_effort: effort };
+}
+
+function reasoningControl(settings: Settings) {
+  return settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl
+    ?? detectReasoningControl(settings.model);
 }
 
 function compactImage(dataUrl: string): string {
@@ -198,47 +203,51 @@ export async function streamChat(opts: {
   handlers: StreamHandlers;
 }): Promise<void> {
   const { settings, handlers, abort } = opts;
-  const plan = planChatRequest(opts.userText, opts.webSearch);
+  const plan = planChatRequest(opts.userText, opts.webSearch, settings.language);
   const effectiveEffort: Effort = plan.enableThinking ? opts.effort : "low";
+  const control = reasoningControl(settings);
   const params = effortParams(settings, effectiveEffort);
+  const enableThinking =
+    control === "effort"
+      ? plan.enableThinking
+      : control === "toggle"
+        ? plan.enableThinking && effectiveEffort !== "low"
+        : false;
   let searchBlock = "";
   if (plan.useWeb && opts.userText.trim()) {
-    if (settings.tavilyApiKey) {
-      handlers.onStatus({ phase: "searching", text: "Searching the web" });
-      try {
-        const result = await tavilySearch(settings.tavilyApiKey, opts.userText.trim());
-        searchBlock = result.digest;
-      } catch (err) {
-        handlers.onStatus({
-          phase: "preparing",
-          text: `Web search is unavailable; continuing with the local model. ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        });
-      }
-    } else {
-      handlers.onStatus({
-        phase: "preparing",
-        text: "No Tavily API key is configured; continuing with the local model"
+    handlers.onStatus({ phase: "searching", text: settings.language === "zh" ? "正在启动深度研究" : "Starting Deep Research" });
+    try {
+      searchBlock = await deepResearch({
+        settings,
+        question: opts.userText.trim(),
+        effort: effectiveEffort,
+        signal: abort.signal,
+        onStatus: (text) => handlers.onStatus({ phase: "searching", text })
       });
+    } catch (err) {
+      if (abort.signal.aborted) {
+        handlers.onDone({ thinking: "", content: "", stopped: true });
+        return;
+      }
+      handlers.onError(err instanceof Error ? err.message : String(err));
+      return;
     }
   }
 
   const mem = settings.memoryEnabled ? memoryBlock(opts.userText) : "";
+  const modelStyle =
+    settings.systemPrompt.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
   const system = [
-    trimToTokens(
-      settings.systemPrompt.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。",
-      1800
-    ),
+    `<model_style>\n${trimToTokens(modelStyle, 1800)}\n</model_style>`,
     settings.chatInstructions.trim()
-      ? `Follow these user-provided custom instructions for Chat:\n${trimToTokens(settings.chatInstructions.trim(), 1200)}`
+      ? `<custom_instructions mode="chat">\n${trimToTokens(settings.chatInstructions.trim(), 1200)}\n</custom_instructions>`
       : "",
     "Reasoning discipline: solve simple tasks directly, never repeat the same verification or restart an established reasoning path, and answer as soon as the result is established.",
     plan.kind === "arithmetic"
       ? "Arithmetic response rule: return the result directly with at most one short calculation line."
       : "",
     trimToTokens(mem, 1000),
-    searchBlock ? `Web search results:\n${trimToTokens(searchBlock, 2200)}` : ""
+    searchBlock ? `Deep Research material:\n${trimToTokens(searchBlock, 6000)}` : ""
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -286,22 +295,24 @@ export async function streamChat(opts: {
                 ? 3072
                 : effectiveEffort === "medium"
                   ? 4608
-                  : 6144
+                  : effectiveEffort === "high"
+                    ? 5632
+                    : 6144
               : 4096,
         reasoning_effort: params.reasoning_effort,
         chat_template_kwargs: {
-          enable_thinking: plan.enableThinking,
-          preserve_thinking: plan.enableThinking,
+          ...(control !== "none" ? { enable_thinking: enableThinking } : {}),
+          ...(control !== "none" ? { preserve_thinking: enableThinking } : {}),
           reasoning_effort: params.reasoning_effort
         },
-        enable_thinking: plan.enableThinking,
-        preserve_thinking: plan.enableThinking,
+        ...(control !== "none" ? { enable_thinking: enableThinking } : {}),
+        ...(control !== "none" ? { preserve_thinking: enableThinking } : {}),
         reasoning_format: "auto"
       }),
       signal: abort.signal
     });
 
-  handlers.onStatus({ phase: "preparing", text: "The model is processing the request" });
+  handlers.onStatus({ phase: "preparing", text: settings.language === "zh" ? "正在生成回答" : "Generating response" });
   let res: Response;
   try {
     res = await request(messages);
@@ -320,7 +331,10 @@ export async function streamChat(opts: {
       res.status === 400 &&
       /exceed(?:s|_context)|context size|n_ctx/i.test(body)
     ) {
-      handlers.onStatus({ phase: "preparing", text: "The context is long; compressing it and retrying" });
+      handlers.onStatus({
+        phase: "preparing",
+        text: settings.language === "zh" ? "上下文较长，正在自动压缩后重试" : "The context is long; compressing it and retrying"
+      });
       try {
         res = await request([
           { role: "system", content: trimToTokens(system, 2200) },
@@ -391,7 +405,7 @@ export async function streamChat(opts: {
     if (rc) {
       if (phase !== "thinking") {
         phase = "thinking";
-        handlers.onStatus({ phase: "thinking", text: "Thinking" });
+        handlers.onStatus({ phase: "thinking", text: settings.language === "zh" ? "正在深度思考" : "Thinking" });
       }
       reasoning += rc;
       emitDelta();
@@ -400,11 +414,11 @@ export async function streamChat(opts: {
       split.push(cc);
       if (split.thinking && !split.content && phase !== "thinking") {
         phase = "thinking";
-        handlers.onStatus({ phase: "thinking", text: "Thinking" });
+        handlers.onStatus({ phase: "thinking", text: settings.language === "zh" ? "正在深度思考" : "Thinking" });
       }
       if (split.content && phase !== "answering") {
         phase = "answering";
-        handlers.onStatus({ phase: "answering", text: "Writing the answer" });
+        handlers.onStatus({ phase: "answering", text: settings.language === "zh" ? "正在回答" : "Writing" });
       }
       emitDelta();
     }

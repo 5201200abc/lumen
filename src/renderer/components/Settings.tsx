@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Language, ReasoningControl, Settings } from "@shared/types";
+import type { Language, LlamaStatus, Settings } from "@shared/types";
 import { detectReasoningControl, reasoningControlLabel } from "@shared/types";
 import { IconGear, IconTrash } from "./icons";
 
-type Page = "general" | "models" | "apikeys" | "instructions" | "data";
+type Page = "general" | "models" | "research" | "apikeys" | "instructions" | "data";
 type Action = "chat" | "cowork" | "rule" | "memory" | "chats" | "setting";
 type Props = {
   settings: Settings;
@@ -12,25 +12,38 @@ type Props = {
   onDeleteAllMemories?: () => Promise<void>;
   onDeleteAllChats: () => Promise<boolean>;
   initialPage?: Page;
+  onRefreshModels?: () => Promise<void>;
 };
 
 const COPY = {
   en: {
     settings: "Settings", back: "Back to app", general: "General", models: "Models",
-    apiKeys: "API Key",
+    webResearch: "Web Research", apiKeys: "API Key",
     instructions: "Instructions", data: "Data", language: "Language",
     languageHelp: "Choose the interface language.", fontSize: "Font size",
     fontHelp: "Adjust font size.", theme: "Theme",
-    llamaConfig: "Llama configuration", llamaConfigHelp: "Manage multiple OpenAI-compatible Llama servers and endpoints.",
+    modelService: "Local model service", modelServiceHelp: "Persistent llama-server router discovered from its listening port.",
+    servicePort: "Listening port", automaticPort: "Automatic", autoStart: "Start automatically",
+    start: "Start", stop: "Stop", restart: "Restart", running: "Running", stopped: "Stopped",
+    llamaConfig: "Model Configuration", llamaConfigHelp: "Manage the permanent local multi-model router.",
     configure: "Configure",
     active: "Active", use: "Use", name: "Name", url: "API URL",
-    addLlama: "Add Llama endpoint",
+    refreshModels: "Model Refresh",
     defaultEffort: "Default effort", defaultEffortHelp: "Default reasoning strength for models.",
-    low: "Low", mediumLabel: "Medium", xhigh: "High (xhigh)",
-    tavilyTitle: "Tavily API key",
-    tavilyHelp: "Used for real-time web search capability.",
-    tavilyKeys: "Tavily API keys",
-    tavilyKeysHelp: "Configure and manage multiple Tavily search API keys.",
+    low: "Low", mediumLabel: "Medium", high: "High", xhigh: "Extra high (xhigh)",
+    tavilyTitle: "Tavily API",
+    tavilyHelp: "Cloud Search + Extract. Search finds sources; Extract returns clean Markdown from up to 20 URLs.",
+    tavilyKeys: "Tavily API",
+    tavilyKeysHelp: "Configure the cloud Tavily API used by Search and Extract.",
+    cloud: "Cloud", selfHosted: "Self-hosted", pageExtractor: "Page extractor",
+    extractDepth: "Tavily Extract depth",
+    extractDepthHelp: "Advanced handles tables, embedded content, and complex pages more reliably.",
+    basic: "Basic", advanced: "Advanced",
+    firecrawlTitle: "Firecrawl",
+    firecrawlHelp: "Optional self-hosted full-page extractor. Lumen never routes it to Firecrawl Cloud.",
+    firecrawlUrl: "API URL",
+    firecrawlKey: "API key (optional for self-hosted)",
+    firecrawlConfigure: "Configure Firecrawl",
     llamaKeyTitle: "Llama API key",
     llamaKeyHelp: "Optional authorization token for custom llama server.",
     llamaKeys: "Llama API keys",
@@ -54,20 +67,32 @@ const COPY = {
   },
   zh: {
     settings: "设置", back: "返回应用", general: "通用", models: "模型",
-    apiKeys: "API Key",
+    webResearch: "Web Research", apiKeys: "API Key",
     instructions: "指令",
     data: "数据", language: "语言", languageHelp: "选择界面显示语言。", fontSize: "字体大小",
     fontHelp: "调整界面字体大小。", theme: "主题",
-    llamaConfig: "Llama 配置", llamaConfigHelp: "管理并配置多个兼容 OpenAI 的 Llama 服务端点。",
+    modelService: "本地模型服务", modelServiceHelp: "按真实监听端口发现并永久管理 llama-server 路由。",
+    servicePort: "监听端口", automaticPort: "自动分配", autoStart: "自动启动",
+    start: "启动", stop: "停止", restart: "重启", running: "运行中", stopped: "已停止",
+    llamaConfig: "Model Configuration", llamaConfigHelp: "管理永久运行的本地多模型路由服务。",
     configure: "配置",
     active: "当前", use: "使用", name: "名称", url: "API 地址",
-    addLlama: "新增 Llama 端点",
+    refreshModels: "模型刷新",
     defaultEffort: "默认思考强度", defaultEffortHelp: "模型的默认推理/思考强度级别。",
-    low: "低 (low)", mediumLabel: "中 (medium)", xhigh: "高 (xhigh)",
-    tavilyTitle: "Tavily API 密钥",
-    tavilyHelp: "用于实时网络搜索功能。",
-    tavilyKeys: "Tavily API 密钥",
-    tavilyKeysHelp: "配置并管理多个 Tavily 搜索 API 密钥。",
+    low: "低 (low)", mediumLabel: "中 (medium)", high: "高 (high)", xhigh: "极高 (xhigh)",
+    tavilyTitle: "Tavily API",
+    tavilyHelp: "云端 Search + Extract：先找来源，再从最多 20 个 URL 提取清洗后的 Markdown。",
+    tavilyKeys: "Tavily API",
+    tavilyKeysHelp: "配置供 Tavily Search 与 Extract 共用的云端 API。",
+    cloud: "云端", selfHosted: "自托管", pageExtractor: "网页抓取器",
+    extractDepth: "Tavily Extract 深度",
+    extractDepthHelp: "Advanced 更适合表格、嵌入内容与复杂页面。",
+    basic: "Basic", advanced: "Advanced",
+    firecrawlTitle: "Firecrawl",
+    firecrawlHelp: "可选的自托管全文抓取器；Lumen 不会将它指向 Firecrawl Cloud。",
+    firecrawlUrl: "API 地址",
+    firecrawlKey: "API 密钥（自托管可选）",
+    firecrawlConfigure: "配置 Firecrawl",
     llamaKeyTitle: "Llama API 密钥",
     llamaKeyHelp: "用于远程自定义 Llama 服务的授权令牌。",
     llamaKeys: "Llama API 密钥",
@@ -194,19 +219,7 @@ function NumberStepper({
 
   return (
     <div className="number-stepper">
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={clamped}
-        onChange={(e) => {
-          const v = parseInt(e.target.value, 10);
-          if (!isNaN(v)) {
-            onChange(Math.max(min, Math.min(max, v)));
-          }
-        }}
-        aria-label="Font size"
-      />
+      <span className="stepper-value">{clamped}</span>
       <div className="stepper-controls">
         <button
           type="button"
@@ -216,8 +229,8 @@ function NumberStepper({
           tabIndex={-1}
           aria-label="Increase font size"
         >
-          <svg width="7" height="5" viewBox="0 0 7 5" fill="currentColor">
-            <path d="M3.5 0.8L6.5 4.2H0.5L3.5 0.8Z" />
+          <svg width="8" height="5" viewBox="0 0 8 5" fill="currentColor">
+            <path d="M4 0.5L7.5 4.5H0.5L4 0.5Z" />
           </svg>
         </button>
         <button
@@ -228,8 +241,8 @@ function NumberStepper({
           tabIndex={-1}
           aria-label="Decrease font size"
         >
-          <svg width="7" height="5" viewBox="0 0 7 5" fill="currentColor">
-            <path d="M3.5 4.2L0.5 0.8H6.5L3.5 4.2Z" />
+          <svg width="8" height="5" viewBox="0 0 8 5" fill="currentColor">
+            <path d="M4 4.5L0.5 0.5H7.5L4 4.5Z" />
           </svg>
         </button>
       </div>
@@ -247,28 +260,33 @@ export function SettingsPanel(props: Props) {
   const [saving, setSaving] = useState<Action | null>(null);
   const [saved, setSaved] = useState<Action | null>(null);
   const [error, setError] = useState("");
-  const [newLlama, setNewLlama] = useState({ name: "", url: "http://127.0.0.1:18082/v1" });
-  const [newModel, setNewModel] = useState<{
-    name: string;
-    endpointId: string;
-    reasoningControl: ReasoningControl;
-  }>({
-    name: "",
-    endpointId: s.llamaEndpoints[0]?.id || "local",
-    reasoningControl: "none"
-  });
   const [newTavilyKey, setNewTavilyKey] = useState({ name: "", key: "" });
   const [newLlamaKey, setNewLlamaKey] = useState({ name: "", key: "" });
-  const [adding, setAdding] = useState<"llama" | "model" | "tavily" | "llamakey" | null>(null);
+  const [firecrawlDraft, setFirecrawlDraft] = useState({
+    url: s.firecrawlUrl,
+    key: s.firecrawlApiKey
+  });
+  const [adding, setAdding] = useState<"tavily" | "llamakey" | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [llamaStatus, setLlamaStatus] = useState<LlamaStatus | null>(null);
+  const [llamaPortDraft, setLlamaPortDraft] = useState(String(s.llamaPort || ""));
+  const [serviceAction, setServiceAction] = useState<"start" | "stop" | "restart" | null>(null);
   const [showLlamaModal, setShowLlamaModal] = useState(false);
   const [showTavilyModal, setShowTavilyModal] = useState(false);
   const [showLlamaKeyModal, setShowLlamaKeyModal] = useState(false);
+  const [showFirecrawlModal, setShowFirecrawlModal] = useState(false);
   const t = COPY[s?.language === "zh" ? "zh" : "en"] || COPY.en;
+  const activeReasoningEfforts = s.llamaModels.find((model) => model.name === s.model)?.reasoningEfforts;
 
   useEffect(() => setChatInstructions(s.chatInstructions), [s.chatInstructions]);
   useEffect(() => setCoworkInstructions(s.coworkInstructions), [s.coworkInstructions]);
   useEffect(() => setRule(s.systemPrompt), [s.systemPrompt]);
-
+  useEffect(() => setFirecrawlDraft({ url: s.firecrawlUrl, key: s.firecrawlApiKey }), [s.firecrawlUrl, s.firecrawlApiKey]);
+  useEffect(() => setLlamaPortDraft(String(s.llamaPort || "")), [s.llamaPort]);
+  useEffect(() => {
+    if (page !== "general") return;
+    void window.lumen.models.status().then(setLlamaStatus).catch(() => setLlamaStatus(null));
+  }, [page, s.llamaUrl]);
   const dirty = useMemo(() =>
     chatInstructions !== s.chatInstructions ||
     coworkInstructions !== s.coworkInstructions ||
@@ -296,38 +314,6 @@ export function SettingsPanel(props: Props) {
     if (dirty && !window.confirm("Discard unsaved settings changes?")) return;
     props.onClose();
   };
-  const addLlama = async () => {
-    if (!newLlama.name.trim() || !newLlama.url.trim()) return;
-    const endpoint = { id: crypto.randomUUID(), name: newLlama.name.trim(), url: newLlama.url.trim() };
-    if (await patch({ llamaEndpoints: [...s.llamaEndpoints, endpoint], llamaUrl: endpoint.url })) {
-      setNewLlama({ name: "", url: "http://127.0.0.1:18082/v1" }); setAdding(null);
-    }
-  };
-
-  const addModel = async () => {
-    const name = newModel.name.trim();
-    if (!name || !s.llamaEndpoints.some((endpoint) => endpoint.id === newModel.endpointId)) return;
-    const item = {
-      id: crypto.randomUUID(),
-      name,
-      endpointId: newModel.endpointId,
-      reasoningControl: newModel.reasoningControl
-    };
-    const endpoint = s.llamaEndpoints.find((candidate) => candidate.id === item.endpointId);
-    const activate = endpoint?.url === s.llamaUrl;
-    if (await patch({
-      llamaModels: [...s.llamaModels.filter((model) => !(model.endpointId === item.endpointId && model.name === item.name)), item],
-      ...(activate ? { model: item.name } : {})
-    })) {
-      setNewModel({
-        name: "",
-        endpointId: item.endpointId,
-        reasoningControl: "none"
-      });
-      setAdding(null);
-    }
-  };
-
   const deleteModel = async (id: string) => {
     const remaining = s.llamaModels.filter((model) => model.id !== id);
     const deleting = s.llamaModels.find((model) => model.id === id);
@@ -337,6 +323,47 @@ export function SettingsPanel(props: Props) {
       llamaModels: remaining,
       ...(deleting?.name === s.model && replacement ? { model: replacement.name } : {})
     });
+  };
+
+  const refreshModels = async () => {
+    if (!props.onRefreshModels || refreshingModels) return;
+    setRefreshingModels(true);
+    setError("");
+    try {
+      await props.onRefreshModels();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
+
+  const controlModelService = async (action: "start" | "stop" | "restart") => {
+    if (serviceAction) return;
+    setServiceAction(action);
+    setError("");
+    try {
+      const status = action === "stop"
+        ? await window.lumen.models.stop()
+        : action === "restart"
+          ? await window.lumen.models.reconnect()
+          : await window.lumen.models.ensure();
+      setLlamaStatus(status);
+      if (status.port && status.port !== s.llamaPort) await props.onChange({ llamaPort: status.port });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setServiceAction(null);
+    }
+  };
+
+  const saveLlamaPort = async () => {
+    const port = llamaPortDraft.trim() ? Number(llamaPortDraft) : 0;
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      setError("Port must be automatic or between 1 and 65535.");
+      return;
+    }
+    await patch({ llamaPort: port });
   };
 
   const addTavilyKey = async () => {
@@ -398,6 +425,7 @@ export function SettingsPanel(props: Props) {
   const nav: Array<{ id: Page; label: string }> = [
     { id: "general", label: t.general },
     { id: "models", label: t.models },
+    { id: "research", label: t.webResearch },
     { id: "apikeys", label: t.apiKeys },
     { id: "instructions", label: t.instructions },
     { id: "data", label: t.data }
@@ -422,6 +450,56 @@ export function SettingsPanel(props: Props) {
           <header><h3>{nav.find((item) => item.id === page)?.label}</h3></header>
 
           {page === "general" && <div className="settings-page">
+            <div className="setting-row model-service-row">
+              <div>
+                <span className="setting-title-line">
+                  <strong>{t.modelService}</strong>
+                  <i className={`service-state ${llamaStatus?.online ? "online" : ""}`}>
+                    {llamaStatus?.online ? t.running : t.stopped}
+                  </i>
+                </span>
+                <small>
+                  {llamaStatus?.online
+                    ? `${llamaStatus.url}${llamaStatus.pid ? ` · PID ${llamaStatus.pid}` : ""}`
+                    : t.modelServiceHelp}
+                </small>
+              </div>
+              <div className="service-actions">
+                <button type="button" disabled={serviceAction !== null || Boolean(llamaStatus?.online)} onClick={() => void controlModelService("start")}>
+                  {serviceAction === "start" ? "…" : t.start}
+                </button>
+                <button type="button" disabled={serviceAction !== null || !llamaStatus?.online} onClick={() => void controlModelService("restart")}>
+                  {serviceAction === "restart" ? "…" : t.restart}
+                </button>
+                <button type="button" disabled={serviceAction !== null || !llamaStatus?.online} onClick={() => void controlModelService("stop")}>
+                  {serviceAction === "stop" ? "…" : t.stop}
+                </button>
+              </div>
+            </div>
+            <div className="setting-row">
+              <div><strong>{t.servicePort}</strong><small>{t.modelServiceHelp}</small></div>
+              <input
+                className="port-input"
+                inputMode="numeric"
+                value={llamaPortDraft}
+                placeholder={t.automaticPort}
+                onChange={(event) => setLlamaPortDraft(event.target.value.replace(/\D/g, "").slice(0, 5))}
+                onBlur={() => void saveLlamaPort()}
+                onKeyDown={(event) => { if (event.key === "Enter") void saveLlamaPort(); }}
+              />
+            </div>
+            <div className="setting-row">
+              <div><strong>{t.autoStart}</strong><small>{t.modelServiceHelp}</small></div>
+              <button
+                className={`toggle ${s.llamaAutoStart ? "on" : ""}`}
+                type="button"
+                aria-label={t.autoStart}
+                aria-pressed={s.llamaAutoStart}
+                onClick={() => void patch({ llamaAutoStart: !s.llamaAutoStart })}
+              >
+                <i />
+              </button>
+            </div>
             <div className="setting-row">
               <div><strong>{t.language}</strong><small>{t.languageHelp}</small></div>
               <DropdownSelect
@@ -485,10 +563,62 @@ export function SettingsPanel(props: Props) {
                 options={[
                   { value: "low", label: t.low },
                   { value: "medium", label: t.mediumLabel },
+                  { value: "high", label: t.high },
                   { value: "xhigh", label: t.xhigh }
-                ]}
+                ].filter((option) => !activeReasoningEfforts || activeReasoningEfforts.includes(option.value as Settings["defaultEffort"]))}
                 onChange={(val) => void patch({ defaultEffort: val as Settings["defaultEffort"] })}
               />
+            </div>
+          </div>}
+
+          {page === "research" && <div className="settings-page">
+            <div className="setting-row">
+              <div><strong>{t.pageExtractor}</strong><small>{s.researchExtractor === "tavily" ? t.tavilyHelp : t.firecrawlHelp}</small></div>
+              <DropdownSelect
+                value={s.researchExtractor}
+                direction="down"
+                options={[
+                  { value: "tavily", label: t.cloud },
+                  { value: "firecrawl", label: t.selfHosted }
+                ]}
+                onChange={(value) => void patch({ researchExtractor: value as Settings["researchExtractor"] })}
+              />
+            </div>
+            <div className="research-group-heading">{t.cloud}</div>
+            <div className="setting-row">
+              <div>
+                <strong>Tavily Search + Extract</strong>
+              </div>
+            </div>
+            <div className="setting-row">
+              <div><strong>{t.extractDepth}</strong><small>{t.extractDepthHelp}</small></div>
+              <DropdownSelect
+                value={s.tavilyExtractDepth}
+                options={[
+                  { value: "basic", label: t.basic },
+                  { value: "advanced", label: t.advanced }
+                ]}
+                onChange={(value) => void patch({ tavilyExtractDepth: value as Settings["tavilyExtractDepth"] })}
+              />
+            </div>
+            <div className="research-group-heading">{t.selfHosted}</div>
+            <div className="setting-row">
+              <div>
+                <strong>{t.firecrawlTitle}</strong>
+                <small>{s.firecrawlUrl}</small>
+              </div>
+              <button
+                type="button"
+                className="icon-btn ghost-icon"
+                onClick={() => {
+                  setFirecrawlDraft({ url: s.firecrawlUrl, key: s.firecrawlApiKey });
+                  setShowFirecrawlModal(true);
+                }}
+                title={t.firecrawlConfigure}
+                aria-label={t.firecrawlConfigure}
+              >
+                <IconGear size={16} />
+              </button>
             </div>
           </div>}
 
@@ -704,39 +834,8 @@ export function SettingsPanel(props: Props) {
               ))}
             </div>
 
-            {adding === "llama" ? (
-              <div className="inline-add llama-add-form">
-                <input
-                  autoFocus
-                  placeholder={t.name}
-                  value={newLlama.name}
-                  onChange={(e) => setNewLlama((v) => ({ ...v, name: e.target.value }))}
-                />
-                <input
-                  placeholder={t.url}
-                  value={newLlama.url}
-                  onChange={(e) => setNewLlama((v) => ({ ...v, url: e.target.value }))}
-                />
-                <div className="inline-add-btns">
-                  <button type="button" className="text-btn" onClick={() => setAdding(null)}>{t.cancel}</button>
-                  <button type="button" className="primary-btn" onClick={() => void addLlama()}>{t.save}</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                className="add-endpoint-trigger"
-                onClick={() => setAdding("llama")}
-              >
-                <span>＋ {t.addLlama}</span>
-              </button>
-            )}
-
             <div className="llama-model-heading">
-              <div>
-                <h5>{s.language === "zh" ? "模型列表" : "Model list"}</h5>
-                <p>{s.language === "zh" ? "配置一次，Chat 与 Cowork 使用同一模型及思考能力。" : "Configure once. Chat and Cowork share the same model and reasoning capability."}</p>
-              </div>
+              <h5>{s.language === "zh" ? "本地模型" : "Local Model"}</h5>
             </div>
 
             <div className="llama-endpoint-list llama-model-list">
@@ -750,11 +849,6 @@ export function SettingsPanel(props: Props) {
                         <strong>{model.name}</strong>
                         {isActive && <span className="endpoint-active-pill">{t.active}</span>}
                       </div>
-                      <small>{endpoint?.name || model.endpointId}</small>
-                      <div className="endpoint-detected-model">
-                        <span className="reasoning-badge">{reasoningControlLabel(model.reasoningControl, s.language).label}</span>
-                        <span className="shared-model-badge">Chat + Cowork</span>
-                      </div>
                     </div>
                     <div className="endpoint-actions">
                       {!isActive && endpoint && (
@@ -766,71 +860,31 @@ export function SettingsPanel(props: Props) {
                           {t.use}
                         </button>
                       )}
-                      <button
-                        type="button"
-                        className="endpoint-del-btn"
-                        aria-label={`Delete ${model.name}`}
-                        disabled={isActive && s.llamaModels.length === 1}
-                        onClick={() => void deleteModel(model.id)}
-                      >
-                        ×
-                      </button>
+                      {model.source !== "local" && (
+                        <button
+                          type="button"
+                          className="endpoint-del-btn"
+                          aria-label={`Delete ${model.name}`}
+                          disabled={isActive && s.llamaModels.length === 1}
+                          onClick={() => void deleteModel(model.id)}
+                        >
+                          ×
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            {adding === "model" ? (
-              <div className="inline-add llama-add-form model-add-form">
-                <input
-                  autoFocus
-                  placeholder={s.language === "zh" ? "模型名称" : "Model name"}
-                  value={newModel.name}
-                  onChange={(e) => {
-                    const name = e.target.value;
-                    setNewModel((current) => ({
-                      ...current,
-                      name,
-                      reasoningControl: detectReasoningControl(name)
-                    }));
-                  }}
-                />
-                <DropdownSelect
-                  value={newModel.endpointId}
-                  options={s.llamaEndpoints.map((endpoint) => ({ value: endpoint.id, label: endpoint.name }))}
-                  onChange={(endpointId) => setNewModel((current) => ({ ...current, endpointId }))}
-                />
-                <DropdownSelect
-                  value={newModel.reasoningControl}
-                  options={[
-                    { value: "effort", label: reasoningControlLabel("effort", s.language).label },
-                    { value: "toggle", label: reasoningControlLabel("toggle", s.language).label },
-                    { value: "none", label: reasoningControlLabel("none", s.language).label }
-                  ]}
-                  onChange={(reasoningControl) => setNewModel((current) => ({
-                    ...current,
-                    reasoningControl: reasoningControl as ReasoningControl
-                  }))}
-                />
-                <div className="inline-add-btns">
-                  <button type="button" className="text-btn" onClick={() => setAdding(null)}>{t.cancel}</button>
-                  <button type="button" className="primary-btn" onClick={() => void addModel()}>{t.save}</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                className="add-endpoint-trigger"
-                onClick={() => {
-                  const activeEndpoint = s.llamaEndpoints.find((endpoint) => endpoint.url === s.llamaUrl);
-                  setNewModel((current) => ({ ...current, endpointId: activeEndpoint?.id || s.llamaEndpoints[0]?.id || "local" }));
-                  setAdding("model");
-                }}
-              >
-                <span>＋ {s.language === "zh" ? "新增模型" : "Add model"}</span>
-              </button>
-            )}
+            <button
+              type="button"
+              className="refresh-models-trigger"
+              disabled={!props.onRefreshModels || refreshingModels}
+              onClick={() => void refreshModels()}
+            >
+              <span>{refreshingModels ? "…" : "↻"} {t.refreshModels}</span>
+            </button>
           </div>
         </div>
       )}
@@ -918,6 +972,54 @@ export function SettingsPanel(props: Props) {
                 <span>＋ {t.addKey}</span>
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {showFirecrawlModal && (
+        <div className="llama-modal-backdrop" onClick={() => setShowFirecrawlModal(false)}>
+          <div className="llama-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={t.firecrawlConfigure}>
+            <div className="llama-modal-head">
+              <h4>{t.firecrawlConfigure}</h4>
+              <button type="button" className="llama-modal-close" onClick={() => setShowFirecrawlModal(false)} aria-label={t.close}>
+                ✕
+              </button>
+            </div>
+            <p className="llama-modal-desc">{t.firecrawlHelp}</p>
+            <div className="inline-add llama-add-form firecrawl-form">
+              <label className="field">
+                <span>{t.firecrawlUrl}</span>
+                <input
+                  autoFocus
+                  placeholder="http://127.0.0.1:3002"
+                  value={firecrawlDraft.url}
+                  onChange={(e) => setFirecrawlDraft((value) => ({ ...value, url: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>{t.firecrawlKey}</span>
+                <input
+                  type="password"
+                  placeholder="fc-..."
+                  value={firecrawlDraft.key}
+                  onChange={(e) => setFirecrawlDraft((value) => ({ ...value, key: e.target.value }))}
+                />
+              </label>
+              <div className="inline-add-btns">
+                <button type="button" className="text-btn" onClick={() => setShowFirecrawlModal(false)}>{t.cancel}</button>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  disabled={!firecrawlDraft.url.trim()}
+                  onClick={() => void patch({
+                    firecrawlUrl: firecrawlDraft.url,
+                    firecrawlApiKey: firecrawlDraft.key
+                  }).then((ok) => ok && setShowFirecrawlModal(false))}
+                >
+                  {t.save}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

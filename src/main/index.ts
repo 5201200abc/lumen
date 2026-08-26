@@ -123,7 +123,7 @@ async function ready(): Promise<void> {
   nativeTheme.on("updated", () => {
     win?.webContents.send("ui:theme", nativeTheme.shouldUseDarkColors);
   });
-  void ensureLocalLlama(settings);
+  if (settings.llamaAutoStart) void ensureLocalLlama(settings);
   globalShortcut.register("CmdOrCtrl+Shift+S", () => captureInteractive(win));
 }
 

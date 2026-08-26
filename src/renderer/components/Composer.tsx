@@ -67,14 +67,15 @@ export function Composer(props: Props) {
           <div className="left-tools">
             <AttachmentAddButton attachments={props.attachments} onAdd={props.onAttach} onRemove={props.onRemove} />
             <button
-              className="icon-chip"
+              className="research-chip"
               type="button"
               aria-pressed={props.webSearch}
-              aria-label="全网检索"
-              title="全网检索"
+              aria-label="Deep Research"
+        title="Model → Tavily Search → Tavily Extract → cross-check"
               onClick={() => props.onWebSearch(!props.webSearch)}
             >
               <IconGlobe />
+              <span>Research</span>
             </button>
           </div>
           <div className="right-tools">

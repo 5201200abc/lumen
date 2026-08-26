@@ -1,9 +1,10 @@
 import { useState, type RefObject } from "react";
-import type { Conversation, CodexTask, GoogleAccount } from "@shared/types";
+import type { Conversation, CodexTask, GoogleAccount, Language } from "@shared/types";
 import { IconChatBubble, IconCompose, IconLumen, IconSearch, IconSidebar, IconTrash } from "./icons";
 import { AccountMenu } from "./AccountMenu";
 
 type Props = {
+  language?: Language;
   mode: "chat" | "code";
   onModeChange: (m: "chat" | "code") => void;
   chats: Conversation[];
@@ -42,6 +43,7 @@ function time(ts: number): string {
 }
 
 export function Sidebar(props: Props) {
+  const isZh = (props.language ?? "en") === "zh";
   const [searchOpen, setSearchOpen] = useState(false);
 
   if (props.collapsed) {
@@ -54,8 +56,8 @@ export function Sidebar(props: Props) {
               type="button"
               className="collapsed-icon-btn logo-btn"
               onClick={props.onToggleSidebar}
-              title="Expand sidebar (展开侧边栏 ⌘B)"
-              aria-label="Expand sidebar"
+              title={isZh ? "展开侧边栏 (⌘B)" : "Expand sidebar (⌘B)"}
+              aria-label={isZh ? "展开侧边栏" : "Expand sidebar"}
             >
               <IconLumen size={20} />
             </button>
@@ -63,8 +65,8 @@ export function Sidebar(props: Props) {
               type="button"
               className="collapsed-icon-btn"
               onClick={props.mode === "code" ? () => props.onNewCodexTask?.() : props.onNew}
-              title="New chat (新建会话 ⌘N)"
-              aria-label="New chat"
+              title={isZh ? "新建会话 (⌘N)" : "New chat (⌘N)"}
+              aria-label={isZh ? "新建会话" : "New chat"}
             >
               <IconCompose size={17} />
             </button>
@@ -75,8 +77,8 @@ export function Sidebar(props: Props) {
                 props.onToggleSidebar?.();
                 setTimeout(() => props.searchRef.current?.focus(), 50);
               }}
-              title="Search (搜索会话)"
-              aria-label="Search"
+              title={isZh ? "搜索会话 (⌘F)" : "Search (⌘F)"}
+              aria-label={isZh ? "搜索会话" : "Search"}
             >
               <IconSearch size={16} />
             </button>
@@ -87,8 +89,8 @@ export function Sidebar(props: Props) {
                 if (props.mode !== "chat") props.onModeChange("chat");
                 props.onToggleSidebar?.();
               }}
-              title="Chat conversations (聊天会话)"
-              aria-label="Chat conversations"
+              title={isZh ? "聊天会话" : "Chat conversations"}
+              aria-label={isZh ? "聊天会话" : "Chat conversations"}
             >
               <IconChatBubble size={16} />
             </button>
@@ -98,8 +100,8 @@ export function Sidebar(props: Props) {
               type="button"
               className="collapsed-icon-btn avatar-btn"
               onClick={props.onToggleSidebar}
-              title="Expand sidebar (展开侧边栏 ⌘B)"
-              aria-label="Expand sidebar"
+              title={isZh ? "展开侧边栏 (⌘B)" : "Expand sidebar (⌘B)"}
+              aria-label={isZh ? "展开侧边栏" : "Expand sidebar"}
             >
               <span className="account-avatar">{initials(props.account)}</span>
             </button>
@@ -139,8 +141,8 @@ export function Sidebar(props: Props) {
             <button
               className={`icon-btn ghost-icon side-action-btn ${searchOpen ? "active" : ""}`}
               type="button"
-              title="Search (搜索对话)"
-              aria-label="Search"
+              title={isZh ? "搜索会话 (⌘F)" : "Search (⌘F)"}
+              aria-label={isZh ? "搜索会话" : "Search"}
               onClick={() => {
                 setSearchOpen((prev) => {
                   const next = !prev;
@@ -157,8 +159,8 @@ export function Sidebar(props: Props) {
             <button
               className="icon-btn ghost-icon side-action-btn"
               type="button"
-              title="Collapse sidebar (⌘B)"
-              aria-label="Collapse sidebar"
+              title={isZh ? "折叠侧边栏 (⌘B)" : "Collapse sidebar (⌘B)"}
+              aria-label={isZh ? "折叠侧边栏" : "Collapse sidebar"}
               onClick={props.onToggleSidebar}
             >
               <IconSidebar size={15} />
@@ -173,7 +175,7 @@ export function Sidebar(props: Props) {
             <div className="side-search-bar">
               <input
                 ref={props.searchRef}
-                placeholder="搜索对话..."
+                placeholder={isZh ? "搜索历史会话..." : "Search conversations..."}
                 value={props.query}
                 onChange={(e) => props.onQuery(e.target.value)}
                 autoFocus
@@ -193,9 +195,9 @@ export function Sidebar(props: Props) {
             </div>
           )}
 
-          <button className="new-chat-btn" type="button" onClick={props.onNew} title="New chat (⌘N)">
+          <button className="new-chat-btn" type="button" onClick={props.onNew} title={isZh ? "新建会话 (⌘N)" : "New chat (⌘N)"}>
             <IconCompose size={16} />
-            <span>New chat</span>
+            <span>{isZh ? "新建会话" : "New chat"}</span>
           </button>
 
           <div className="chats">
@@ -206,14 +208,14 @@ export function Sidebar(props: Props) {
                 onClick={() => props.onSelect(c.id)}
               >
                 <div>
-                  <div className="title">{c.title || "新对话"}</div>
+                  <div className="title">{c.title || (isZh ? "新对话" : "New Chat")}</div>
                   <div className="meta">{time(c.updatedAt)}</div>
                 </div>
                 <button
                   className="del"
                   type="button"
-                  aria-label={`删除对话：${c.title || "新对话"}`}
-                  title="删除对话"
+                  aria-label={isZh ? `删除对话：${c.title || "新对话"}` : `Delete chat: ${c.title || "New Chat"}`}
+                  title={isZh ? "删除对话" : "Delete chat"}
                   onClick={(e) => {
                     e.stopPropagation();
                     props.onDelete(c.id);
@@ -224,7 +226,7 @@ export function Sidebar(props: Props) {
               </div>
             ))}
             {props.chats.length === 0 && (
-              <div className="empty-tasks-hint">暂无历史会话</div>
+              <div className="empty-tasks-hint">{isZh ? "暂无历史会话" : "No recent chats"}</div>
             )}
           </div>
         </>
@@ -234,10 +236,10 @@ export function Sidebar(props: Props) {
             className="new-chat-btn"
             type="button"
             onClick={() => props.onNewCodexTask && props.onNewCodexTask()}
-            title="New chat (⌘N)"
+            title={isZh ? "新建会话 (⌘N)" : "New chat (⌘N)"}
           >
             <IconCompose size={16} />
-            <span>New chat</span>
+            <span>{isZh ? "新建会话" : "New chat"}</span>
           </button>
 
           <div className="chats">
@@ -248,14 +250,14 @@ export function Sidebar(props: Props) {
                 onClick={() => props.onSelectCodexTask && props.onSelectCodexTask(t.id)}
               >
                 <div>
-                  <div className="title">{t.title || "新会话"}</div>
+                  <div className="title">{t.title || (isZh ? "新会话" : "New Chat")}</div>
                   <div className="meta">{time(t.updatedAt)}</div>
                 </div>
                 <button
                   className="del"
                   type="button"
-                  aria-label={`删除会话：${t.title}`}
-                  title="删除会话"
+                  aria-label={isZh ? `删除会话：${t.title || "新会话"}` : `Delete chat: ${t.title || "New Chat"}`}
+                  title={isZh ? "删除会话" : "Delete chat"}
                   onClick={(e) => {
                     e.stopPropagation();
                     props.onDeleteCodexTask && props.onDeleteCodexTask(t.id);
@@ -266,7 +268,7 @@ export function Sidebar(props: Props) {
               </div>
             ))}
             {(!props.codexTasks || props.codexTasks.length === 0) && (
-              <div className="empty-tasks-hint">暂无历史会话</div>
+              <div className="empty-tasks-hint">{isZh ? "暂无历史会话" : "No recent chats"}</div>
             )}
           </div>
         </>

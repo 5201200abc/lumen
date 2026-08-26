@@ -22,9 +22,11 @@ export function CodeTerminal({ theme }: Props) {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const baseFontSize = parseInt(document.documentElement.dataset.fontSize || "13", 10) || 13;
+
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: baseFontSize,
       fontFamily: '"Lumen CJK", "Macano", "Monaco", "SF Mono", Menlo, monospace',
       lineHeight: 1.4,
       theme: isDark

@@ -39,7 +39,8 @@ const api = {
   models: {
     status: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:status"),
     ensure: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:ensure"),
-    reconnect: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:reconnect")
+    reconnect: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:reconnect"),
+    stop: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:stop")
   },
   chats: {
     list: (): Promise<Conversation[]> => ipcRenderer.invoke("chats:list"),

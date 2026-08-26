@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { CoworkEngine, Effort, ReasoningControl } from "@shared/types";
+import { detectReasoningEfforts } from "@shared/types";
 
 type Page = "root" | "engine" | "model" | "effort";
 
 const EFFORTS: { id: Effort; label: string }[] = [
   { id: "low", label: "low" },
   { id: "medium", label: "medium" },
+  { id: "high", label: "high" },
   { id: "xhigh", label: "xhigh" }
 ];
 
@@ -38,6 +40,7 @@ export function ModelPicker(props: Props) {
   const [pos, setPos] = useState({ right: 0, bottom: 0 });
   const root = useRef<HTMLDivElement>(null);
   const models = props.models.length ? props.models : [props.model];
+  const supportedEfforts = detectReasoningEfforts(props.model);
 
   function place(): void {
     const el = root.current;
@@ -169,7 +172,7 @@ export function ModelPicker(props: Props) {
               </button>
               {(props.reasoningControl === "toggle"
                 ? [{ id: "low" as Effort, label: "Off" }, { id: "xhigh" as Effort, label: "On" }]
-                : EFFORTS).map((e) => (
+                : EFFORTS.filter((effort) => !supportedEfforts || supportedEfforts.includes(effort.id))).map((e) => (
                 <button
                   key={e.id}
                   className={`picker-row sub ${e.id === props.effort ? "active" : ""}`}

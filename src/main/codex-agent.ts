@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { execFile, spawn, type ChildProcess } from "child_process";
+import crypto from "node:crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -8,7 +9,8 @@ import type { Attachment, CodexMessage, CodexTask, CodexToolCall, CoworkEngine, 
 import { detectReasoningControl } from "@shared/types";
 import { toolActivity } from "@shared/cowork-status";
 import { generateConversationTitle } from "./title";
-import { getSettings } from "./store";
+import { getSettings, SYSTEM_PROMPT_PATH } from "./store";
+import { probeLlama } from "./models";
 
 const tasks = new Map<string, CodexTask>();
 const messages = new Map<string, CodexMessage[]>();
@@ -22,6 +24,10 @@ let codexBridgeStartup: Promise<void> | null = null;
 let codexBridgeConfig = "";
 const CLAUDE_BRIDGE_URL = "http://127.0.0.1:18086";
 const CODEX_BRIDGE_URL = "http://127.0.0.1:18085";
+
+function modelStyleHash(style: string): string {
+  return crypto.createHash("sha256").update(style.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。").digest("hex").slice(0, 16);
+}
 
 const homeDir = process.env.HOME || os.homedir();
 const launchCwd = process.env.PWD;
@@ -97,7 +103,8 @@ async function bridgeReady(settings?: Settings): Promise<boolean> {
     return status.bridge === "lumen-claude" &&
       status.backend?.replace(/\/+$/, "") === settings.llamaUrl.replace(/\/+$/, "") &&
       status.model === settings.model &&
-      status.reasoningControl === configured;
+      status.reasoningControl === configured &&
+      status.styleHash === modelStyleHash(settings.systemPrompt);
   } catch {
     return false;
   } finally {
@@ -120,6 +127,8 @@ async function startClaudeBridge(settings = getSettings()): Promise<void> {
       LLAMA_API_KEY: settings.llamaApiKey,
       LLAMA_MODEL_ALIAS: settings.model,
       LLAMA_REASONING_CONTROL: reasoningControl,
+      LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
+      LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
       CLAUDE_BRIDGE_HOST: "127.0.0.1",
       CLAUDE_BRIDGE_PORT: "18086"
     },
@@ -130,7 +139,7 @@ async function startClaudeBridge(settings = getSettings()): Promise<void> {
     bridgeProcess = null;
     bridgeConfig = "";
   });
-  bridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}`;
+  bridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (await bridgeReady(settings)) return;
@@ -144,7 +153,7 @@ async function ensureClaudeBridge(): Promise<void> {
   const settings = getSettings();
   const configured = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl;
   const reasoningControl = configured ?? detectReasoningControl(settings.model);
-  const wantedConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}`;
+  const wantedConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
   if (bridgeProcess && bridgeConfig !== wantedConfig) {
     bridgeProcess.kill();
     for (let attempt = 0; attempt < 20 && await bridgeReady(); attempt += 1) {
@@ -176,7 +185,8 @@ async function codexBridgeReady(settings?: Settings): Promise<boolean> {
     return status.bridge === "lumen-codex" &&
       status.backend?.replace(/\/+$/, "") === settings.llamaUrl.replace(/\/+$/, "") &&
       status.model === settings.model &&
-      status.reasoningControl === configured;
+      status.reasoningControl === configured &&
+      status.styleHash === modelStyleHash(settings.systemPrompt);
   } catch {
     return false;
   } finally {
@@ -199,11 +209,13 @@ async function startCodexBridge(settings = getSettings()): Promise<void> {
       LLAMA_API_KEY: settings.llamaApiKey,
       LLAMA_MODEL_ALIAS: settings.model,
       LLAMA_REASONING_CONTROL: reasoningControl,
+      LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
+      LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
       CODEX_BRIDGE_PORT: "18085"
     },
     stdio: "ignore"
   });
-  codexBridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}`;
+  codexBridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
   codexBridgeProcess.once("exit", () => {
     codexBridgeProcess = null;
     codexBridgeConfig = "";
@@ -220,7 +232,7 @@ async function ensureCodexBridge(): Promise<void> {
   const reasoningControl =
     settings.llamaModels.find((item) => item.name === settings.model)?.reasoningControl ??
     detectReasoningControl(settings.model);
-  const wanted = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}`;
+  const wanted = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
   if (codexBridgeProcess && codexBridgeConfig !== wanted) {
     codexBridgeProcess.kill();
     for (let attempt = 0; attempt < 20 && await codexBridgeReady(); attempt += 1) {
@@ -345,6 +357,13 @@ export function registerCodexIpc(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     const settings = getSettings();
     const selectedEngine = tasks.get(taskId)?.engine || engine || settings.coworkEngine;
+    const llamaStatus = await probeLlama(settings);
+    if (!llamaStatus.online) {
+      throw new Error("模型服务未就绪，请先按 Settings → Models 的步骤启动 llama-server。");
+    }
+    if (llamaStatus.runningModelPath && llamaStatus.runningModel && llamaStatus.runningModel !== settings.model) {
+      throw new Error(llamaStatus.error || `当前服务加载的是 ${llamaStatus.runningModel}，不是所选 ${settings.model}。`);
+    }
     await Promise.all([ensureClaudeBridge(), ensureCodexBridge()]);
     const resolvedCwd = resolveWorkingDir(cwd || defaultCwd);
     const coworkInstructions = getSettings().coworkInstructions.trim();
@@ -417,7 +436,7 @@ export function registerCodexIpc(): void {
       content: "",
       toolCalls: [],
       status: "streaming",
-      activity: "Planning the task",
+      activity: "Planning",
       contextUsed: task.contextUsed || 0,
       contextTotal: 16384,
       createdAt: Date.now() + 1
@@ -433,7 +452,9 @@ export function registerCodexIpc(): void {
       HOME: homeDir,
       LANG: "en_US.UTF-8",
       CLAUDE_EFFORT: effort || "medium",
-      LLAMA_MODEL_ALIAS: model || "Qwen3.8-27B"
+      LLAMA_MODEL_ALIAS: model || "Qwen3.8-27B",
+      LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
+      LLAMA_SYSTEM_PROMPT: settings.systemPrompt
     };
 
     const selectedModel = model || settings.model;
@@ -506,7 +527,7 @@ export function registerCodexIpc(): void {
             if ((json.type === "item.started" || json.type === "item.completed") && item) {
               if (item.type === "agent_message" && item.text) {
                 asstMsg.content = item.text;
-                asstMsg.activity = "Writing the response";
+                asstMsg.activity = "Writing";
                 win?.webContents.send("codex:event", {
                   taskId, messageId: asstMsgId, type: "text", content: asstMsg.content
                 });
@@ -572,7 +593,7 @@ export function registerCodexIpc(): void {
             for (const block of json.message.content) {
               if (block.type === "text" && block.text) {
                 asstMsg.content += (asstMsg.content ? "\n\n" : "") + block.text;
-                asstMsg.activity = "Writing the response";
+                asstMsg.activity = "Writing";
                 if (win && !win.isDestroyed()) {
                   win.webContents.send("codex:event", {
                     taskId,
@@ -613,7 +634,7 @@ export function registerCodexIpc(): void {
                   tc.status = block.is_error ? "error" : "completed";
                   tc.output = typeof block.content === "string" ? block.content : JSON.stringify(block.content, null, 2);
                   asstMsg.toolCalls = Array.from(toolCallsMap.values());
-                  asstMsg.activity = "Reviewing the tool result";
+                  asstMsg.activity = "Reviewing";
                   if (win && !win.isDestroyed()) {
                     win.webContents.send("codex:event", {
                       taskId,

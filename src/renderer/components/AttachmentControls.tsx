@@ -82,7 +82,7 @@ export function AttachmentAddButton({ attachments, onAdd, onRemove }: Props) {
         disabled={busy}
         onClick={() => setOpen((value) => !value)}
       >
-        <IconPlus size={16} />
+        <IconPlus size={13} />
       </button>
       {open ? (
         <div className="attachment-menu" role="menu">

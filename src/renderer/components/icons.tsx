@@ -52,7 +52,7 @@ export function IconGear({ size = 15 }: IconProps) {
   );
 }
 
-export function IconArrowUp({ size = 14 }: IconProps) {
+export function IconArrowUp({ size = 13 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M8 13V3M3.75 7.25 8 3l4.25 4.25" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" />
@@ -60,7 +60,7 @@ export function IconArrowUp({ size = 14 }: IconProps) {
   );
 }
 
-export function IconStop({ size = 10 }: IconProps) {
+export function IconStop({ size = 8.5 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 10 10" fill="currentColor" aria-hidden>
       <rect x="1" y="1" width="8" height="8" rx="0.8" />

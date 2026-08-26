@@ -22,6 +22,7 @@ import {
 } from "./icons";
 
 type Props = {
+  language?: "zh" | "en";
   sidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   activeTaskId: string | null;
@@ -39,16 +40,46 @@ type Props = {
   onEngine: (engine: CoworkEngine) => void;
 };
 
-const COWORK_WELCOME_PROMPTS = [
-  "What are we going to do?",
-  "What would you like to talk about?"
-] as const;
+const COWORK_WELCOME_PROMPTS = {
+  en: ["What are we going to do?", "What would you like to talk about?"],
+  zh: ["我们接下来要做什么？", "你想聊些什么？"]
+} as const;
 
-function formatDuration(sec: number): string {
-  if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
+function formatDuration(sec: number, isZh = false): string {
+  const wholeSeconds = Math.max(0, Math.floor(sec));
+  if (isZh) {
+    if (wholeSeconds < 60) return `${wholeSeconds}秒`;
+    const m = Math.floor(wholeSeconds / 60);
+    const s = wholeSeconds % 60;
+    return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+  }
+  if (wholeSeconds < 60) return `${wholeSeconds}s`;
+  const m = Math.floor(wholeSeconds / 60);
+  const s = wholeSeconds % 60;
   return `${m}m ${s}s`;
+}
+
+function formatActivity(activity: string | undefined, isZh = false): string {
+  const act = activity?.trim();
+  if (!act || act === "Planning" || act === "Planning the task") {
+    return isZh ? "正在规划" : "Planning";
+  }
+  if (act === "Reviewing" || act === "Reviewing the tool result") {
+    return isZh ? "正在复阅" : "Reviewing";
+  }
+  if (act === "Writing") {
+    return isZh ? "正在编写" : "Writing";
+  }
+  if (act === "Using a tool") {
+    return isZh ? "正在使用工具" : "Using a tool";
+  }
+  if (act === "Completed") {
+    return isZh ? "已完成" : "Completed";
+  }
+  if (act === "Task failed") {
+    return isZh ? "任务失败" : "Task failed";
+  }
+  return act;
 }
 
 function getToolIcon(name: string) {
@@ -68,7 +99,8 @@ function getToolIcon(name: string) {
   return <IconPencil size={13} />;
 }
 
-function ToolCallCard({ tool }: { tool: CodexToolCall }) {
+function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language?: "zh" | "en" }) {
+  const isZh = language === "zh";
   const desc = toolDescription(tool);
 
   return (
@@ -84,18 +116,18 @@ function ToolCallCard({ tool }: { tool: CodexToolCall }) {
           </span>
         </div>
         <div className="tool-card-right">
-          <span className={`tool-status-badge ${tool.status}`} title={tool.status === "completed" ? "Completed" : tool.status === "error" ? "Failed" : "Running"}>
+          <span className={`tool-status-badge ${tool.status}`} title={tool.status === "completed" ? (isZh ? "已完成" : "Completed") : tool.status === "error" ? (isZh ? "执行失败" : "Failed") : (isZh ? "执行中" : "Running")}>
             {tool.status === "running" && (
               <>
                 <span className="spin" />
-                <span className="tool-status-text">Running</span>
+                <span className="tool-status-text">{isZh ? "执行中" : "Running"}</span>
               </>
             )}
             {tool.status === "completed" && <IconCheck size={13} />}
             {tool.status === "error" && (
               <>
                 <span className="tool-error-mark">✕</span>
-                <span className="tool-status-text">Failed</span>
+                <span className="tool-status-text">{isZh ? "执行失败" : "Failed"}</span>
               </>
             )}
           </span>
@@ -105,7 +137,7 @@ function ToolCallCard({ tool }: { tool: CodexToolCall }) {
   );
 }
 
-function AssistantCodexTurn({ message }: { message: CodexMessage }) {
+function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessage; language?: "zh" | "en" }) {
   const [seconds, setSeconds] = useState(() =>
     message.status === "streaming"
       ? Math.max(0, Math.floor((Date.now() - message.createdAt) / 1000))
@@ -162,26 +194,38 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
     }
   };
 
+  const isZh = language === "zh";
   const displaySec = finalSeconds ?? seconds;
   const workedSeconds = message.durationSeconds ?? displaySec;
 
   return (
     <div className="turn assistant-turn">
       {message.status === "streaming" ? (
-        <div className="thought-header streaming">
-          <span className="spin" />
-          <span>{message.activity || "Planning the task"} · {formatDuration(seconds)}</span>
-        </div>
+        <>
+          <div className="thought-header streaming">
+            <span className="spin" />
+            <span>
+              {formatActivity(message.activity, isZh)} · {formatDuration(seconds, isZh)}
+            </span>
+          </div>
+          <div className="cowork-executing-hint">
+            <span>{isZh ? "任务正式开始实施执行中" : "Task implementation is officially underway..."}</span>
+          </div>
+        </>
       ) : (
         <div className="thought-header done">
-          <span>{workedSeconds > 0 ? `Worked for ${formatDuration(workedSeconds)}` : "Work complete"}</span>
+          <span>
+            {workedSeconds > 0
+              ? (isZh ? `已完成，耗时 ${formatDuration(workedSeconds, true)}` : `Worked for ${formatDuration(workedSeconds, false)}`)
+              : (isZh ? "任务已完成" : "Work complete")}
+          </span>
         </div>
       )}
 
       {message.toolCalls && message.toolCalls.length > 0 && (
         <div className="codex-tools-list">
           {message.toolCalls.map((tc) => (
-            <ToolCallCard key={tc.id} tool={tc} />
+            <ToolCallCard key={tc.id} tool={tc} language={language} />
           ))}
         </div>
       )}
@@ -193,8 +237,8 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
           <button
             className="icon-btn ghost-icon message-action"
             type="button"
-            title={copied ? "Copied" : "Copy"}
-            aria-label={copied ? "Copied" : "Copy"}
+            title={copied ? (isZh ? "已复制" : "Copied") : (isZh ? "复制" : "Copy")}
+            aria-label={copied ? (isZh ? "已复制" : "Copied") : (isZh ? "复制" : "Copy")}
             onClick={() => void copy()}
           >
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
@@ -206,6 +250,7 @@ function AssistantCodexTurn({ message }: { message: CodexMessage }) {
 }
 
 export function CodexView(props: Props) {
+  const isZh = (props.language ?? "en") === "zh";
   const [messages, setMessages] = useState<CodexMessage[]>([]);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -215,8 +260,9 @@ export function CodexView(props: Props) {
   const [contextTokens, setContextTokens] = useState({ used: 0, total: 16384 });
   const [environmentOpen, setEnvironmentOpen] = useState(true);
   const welcomeIndex = useRef(0);
-  const [welcomePrompt, setWelcomePrompt] = useState<(typeof COWORK_WELCOME_PROMPTS)[number]>(
-    COWORK_WELCOME_PROMPTS[0]
+  const welcomePrompts = isZh ? COWORK_WELCOME_PROMPTS.zh : COWORK_WELCOME_PROMPTS.en;
+  const [welcomePrompt, setWelcomePrompt] = useState<string>(
+    COWORK_WELCOME_PROMPTS.en[0]
   );
 
   const threadRef = useRef<HTMLDivElement>(null);
@@ -226,9 +272,15 @@ export function CodexView(props: Props) {
   const activeTask = props.tasks.find((t) => t.id === props.activeTaskId);
 
   const nextWelcomePrompt = useCallback(() => {
-    welcomeIndex.current = (welcomeIndex.current + 1) % COWORK_WELCOME_PROMPTS.length;
-    setWelcomePrompt(COWORK_WELCOME_PROMPTS[welcomeIndex.current]);
-  }, []);
+    const list = isZh ? COWORK_WELCOME_PROMPTS.zh : COWORK_WELCOME_PROMPTS.en;
+    welcomeIndex.current = (welcomeIndex.current + 1) % list.length;
+    setWelcomePrompt(list[welcomeIndex.current]);
+  }, [isZh]);
+
+  useEffect(() => {
+    const list = isZh ? COWORK_WELCOME_PROMPTS.zh : COWORK_WELCOME_PROMPTS.en;
+    setWelcomePrompt(list[welcomeIndex.current % list.length]);
+  }, [isZh]);
 
   useEffect(() => {
     if (!props.activeTaskId) {
@@ -320,7 +372,7 @@ export function CodexView(props: Props) {
         return prev.map((m) => {
           if (m.id === event.messageId) {
             if (event.type === "text") {
-              return { ...m, content: event.content, activity: "Writing the response" };
+              return { ...m, content: event.content, activity: "Writing" };
             }
             if (event.type === "tool_use") {
               const activeTool = event.toolCall || event.toolCalls?.find((tool: CodexToolCall) => tool.status === "running");
@@ -331,7 +383,7 @@ export function CodexView(props: Props) {
               };
             }
             if (event.type === "tool_result") {
-              return { ...m, toolCalls: event.toolCalls, activity: "Reviewing the tool result" };
+              return { ...m, toolCalls: event.toolCalls, activity: "Reviewing" };
             }
             if (event.type === "usage") {
               return {
@@ -431,7 +483,7 @@ export function CodexView(props: Props) {
       status: "streaming",
       contextUsed: contextTokens.used,
       contextTotal: contextTokens.total,
-      activity: "Planning the task",
+      activity: "Planning",
       createdAt: Date.now() + 1
     };
 
@@ -490,8 +542,8 @@ export function CodexView(props: Props) {
           <button
             className="icon-btn ghost-icon sidebar-toggle-btn"
             type="button"
-            title="Expand sidebar (⌘B)"
-            aria-label="Expand sidebar"
+            title={isZh ? "展开侧边栏 (⌘B)" : "Expand sidebar (⌘B)"}
+            aria-label={isZh ? "展开侧边栏" : "Expand sidebar"}
             onClick={props.onToggleSidebar}
           >
             <IconSidebar size={16} />
@@ -501,8 +553,8 @@ export function CodexView(props: Props) {
           className="icon-btn ghost-icon environment-toggle"
           type="button"
           aria-pressed={environmentOpen}
-          title={environmentOpen ? "Hide environment" : "Show environment"}
-          aria-label={environmentOpen ? "Hide environment" : "Show environment"}
+          title={environmentOpen ? (isZh ? "隐藏环境面板" : "Hide environment") : (isZh ? "显示环境面板" : "Show environment")}
+          aria-label={environmentOpen ? (isZh ? "隐藏环境面板" : "Hide environment") : (isZh ? "显示环境面板" : "Show environment")}
           onClick={() => setEnvironmentOpen((current) => !current)}
         >
           <IconSidebar size={16} />
@@ -550,7 +602,7 @@ export function CodexView(props: Props) {
                   </div>
                 );
               }
-              return <AssistantCodexTurn key={m.id} message={m} />;
+              return <AssistantCodexTurn key={m.id} message={m} language={props.language} />;
             })
           )}
         </div>
@@ -574,18 +626,18 @@ export function CodexView(props: Props) {
             }
           }}
         >
-          <div className="workspace-meta" aria-label="Current workspace">
+          <div className="workspace-meta" aria-label={isZh ? "当前工作区" : "Current workspace"}>
             <button type="button" className="workspace-item workspace-directory" onClick={() => void selectWorkspace()} title={workspace?.cwd || cwd}>
               <IconFolder size={14} />
-              <span>{workspace?.name || "Workspace"}</span>
+              <span>{workspace?.name || (isZh ? "工作区" : "Workspace")}</span>
             </button>
-            <span className="workspace-item" title="This task runs on this computer">
+            <span className="workspace-item" title={isZh ? "此任务在此计算机上运行" : "This task runs on this computer"}>
               <IconLaptop size={14} />
-              <span>{workspace?.location || "Local"}</span>
+              <span>{workspace?.location || (isZh ? "本地" : "Local")}</span>
             </span>
-            <span className="workspace-item" title={workspace?.branch ? `Git branch: ${workspace.branch}` : "Not a Git repository"}>
+            <span className="workspace-item" title={workspace?.branch ? (isZh ? `Git 分支: ${workspace.branch}` : `Git branch: ${workspace.branch}`) : (isZh ? "非 Git 仓库" : "Not a Git repository")}>
               <IconBranch size={14} />
-              <span>{workspace?.branch || "No Git"}</span>
+              <span>{workspace?.branch || (isZh ? "无 Git" : "No Git")}</span>
             </span>
           </div>
           <AttachmentList
@@ -595,7 +647,7 @@ export function CodexView(props: Props) {
           <textarea
             ref={areaRef}
             rows={2}
-            placeholder="Ask Lumen"
+            placeholder={isZh ? "询问 Lumen" : "Ask Lumen"}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
@@ -632,8 +684,8 @@ export function CodexView(props: Props) {
                   className="send stop"
                   type="button"
                   onClick={() => void handleStop()}
-                  aria-label="停止生成"
-                  title="停止生成"
+                  aria-label={isZh ? "停止生成" : "Stop generating"}
+                  title={isZh ? "停止生成" : "Stop generating"}
                 >
                   <IconStop />
                 </button>
@@ -643,8 +695,8 @@ export function CodexView(props: Props) {
                   type="button"
                   disabled={!prompt.trim() && attachments.length === 0}
                   onClick={() => void handleSend()}
-                  aria-label="发送"
-                  title="发送"
+                  aria-label={isZh ? "发送" : "Send"}
+                  title={isZh ? "发送" : "Send"}
                 >
                   <IconArrowUp />
                 </button>
@@ -656,6 +708,7 @@ export function CodexView(props: Props) {
       </div>
       {environmentOpen && (
         <EnvironmentPanel
+          language={props.language}
           workspace={workspace}
           running={running}
           engine={props.tasks.find((task) => task.id === props.activeTaskId)?.engine || props.engine}

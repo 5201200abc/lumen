@@ -2,13 +2,35 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:18082/v1";
+if (!process.env.LLAMA_URL) throw new Error("LLAMA_URL is required.");
+const LLAMA_URL = process.env.LLAMA_URL;
 const PORT = parseInt(process.env.CLAUDE_BRIDGE_PORT || "18084", 10);
 const HOST = process.env.CLAUDE_BRIDGE_HOST || "127.0.0.1";
 const DEFAULT_MODEL = process.env.LLAMA_MODEL_ALIAS || "Qwen3.8-27B";
 const LLAMA_API_KEY = process.env.LLAMA_API_KEY || "";
 const REASONING_CONTROL = process.env.LLAMA_REASONING_CONTROL || "effort";
+const DEFAULT_SYSTEM_PROMPT_PATH = path.join(os.homedir(), ".config", "llama", "LLAMA.md");
+const SYSTEM_PROMPT_PATH = process.env.LLAMA_SYSTEM_PROMPT_PATH || DEFAULT_SYSTEM_PROMPT_PATH;
+const FALLBACK_SYSTEM_PROMPT = "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
+
+function getModelRuleStyle() {
+  try {
+    if (process.env.LLAMA_SYSTEM_PROMPT && process.env.LLAMA_SYSTEM_PROMPT.trim()) {
+      return process.env.LLAMA_SYSTEM_PROMPT.trim();
+    }
+    if (fs.existsSync(SYSTEM_PROMPT_PATH)) {
+      const text = fs.readFileSync(SYSTEM_PROMPT_PATH, "utf8").trim();
+      if (text) return text;
+    }
+  } catch {}
+  return FALLBACK_SYSTEM_PROMPT;
+}
+
+const MODEL_STYLE_HASH = crypto.createHash("sha256").update(getModelRuleStyle()).digest("hex").slice(0, 16);
 
 function randomId(prefix = "msg_") {
   return `${prefix}${crypto.randomBytes(12).toString("hex")}`;
@@ -17,6 +39,11 @@ function randomId(prefix = "msg_") {
 function convertAnthropicToOpenAI(body) {
   const messages = [];
   const systemParts = [];
+
+  const baseSystemPrompt = getModelRuleStyle();
+  if (baseSystemPrompt) {
+    systemParts.push(`<model_style>\n${baseSystemPrompt}\n</model_style>`);
+  }
 
   // Extract top-level system prompt
   if (body.system) {
@@ -445,7 +472,8 @@ const server = http.createServer(async (req, res) => {
       bridge: "lumen-claude",
       backend: LLAMA_URL,
       model: DEFAULT_MODEL,
-      reasoningControl: REASONING_CONTROL
+      reasoningControl: REASONING_CONTROL,
+      styleHash: MODEL_STYLE_HASH
     }));
     return;
   }

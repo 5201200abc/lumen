@@ -33,6 +33,7 @@ interface LumenAPI {
     status: () => Promise<LlamaStatus>;
     ensure: () => Promise<LlamaStatus>;
     reconnect: () => Promise<LlamaStatus>;
+    stop: () => Promise<LlamaStatus>;
   };
   chats: {
     list: () => Promise<Conversation[]>;

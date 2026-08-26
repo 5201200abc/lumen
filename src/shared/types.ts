@@ -1,11 +1,21 @@
-// Exact values supported by Qwen3.8's chat template.
-export type Effort = "low" | "medium" | "xhigh";
+export type Effort = "low" | "medium" | "high" | "xhigh";
 export type ReasoningControl = "effort" | "toggle" | "none";
 export type LlamaModel = {
   id: string;
   name: string;
   endpointId: string;
   reasoningControl: ReasoningControl;
+  reasoningEfforts?: Effort[];
+  source?: "local" | "remote";
+};
+
+export type LocalModel = {
+  name: string;
+  path: string;
+  mmproj: string | null;
+  vision: boolean;
+  reasoningControl: ReasoningControl;
+  reasoningEfforts?: Effort[];
 };
 
 /**
@@ -30,6 +40,8 @@ export function detectReasoningControl(modelName: string): ReasoningControl {
 
   // Models that expose thinking as a mode/switch, but not low/medium/high effort.
   if (
+    /gemma[-_]?4/i.test(name) ||
+    /ornith/i.test(name) ||
     /(-thinking|-think|_thinking|_think|\bthinking\b|\bthink\b)/i.test(name) ||
     /(^|[/_-])(deepseek-r1|deepseek-reasoner|r1|qwq)([/_.-]|$)/i.test(name) ||
     /qwen[-_]?3/i.test(name) ||
@@ -56,6 +68,13 @@ export function detectReasoningControl(modelName: string): ReasoningControl {
   return "none";
 }
 
+export function detectReasoningEfforts(modelName: string): Effort[] | undefined {
+  if (/qwen3\.8/i.test(modelName)) return ["low", "medium", "xhigh"];
+  return detectReasoningControl(modelName) === "effort"
+    ? ["low", "medium", "high", "xhigh"]
+    : undefined;
+}
+
 /**
  * Returns human-readable label for a reasoning control mode.
  */
@@ -66,7 +85,7 @@ export function reasoningControlLabel(
   if (control === "effort") {
     return lang === "zh"
       ? { label: "思考强度级别", tag: "Effort", description: "支持低/中/高分级思考强度" }
-      : { label: "Reasoning effort levels", tag: "Effort", description: "Supports low / medium / high effort levels" };
+      : { label: "Reasoning effort levels", tag: "Effort", description: "Supports low / medium / high / xhigh effort levels" };
   }
   if (control === "toggle") {
     return lang === "zh"
@@ -91,12 +110,19 @@ export type ApiKeyItem = {
 };
 
 export type CoworkEngine = "claude-code" | "codex";
+export type ResearchExtractor = "tavily" | "firecrawl";
 
 export type Settings = {
   llamaUrl: string;
+  llamaPort: number;
+  llamaAutoStart: boolean;
   llamaApiKey: string;
   model: string;
   tavilyApiKey: string;
+  firecrawlUrl: string;
+  firecrawlApiKey: string;
+  researchExtractor: ResearchExtractor;
+  tavilyExtractDepth: "basic" | "advanced";
   defaultEffort: Effort;
   memoryEnabled: boolean;
   theme: Theme;
@@ -185,12 +211,19 @@ export type MemoryItem = {
 
 export type LlamaStatus = {
   online: boolean;
+  port: number | null;
+  pid: number | null;
+  managed: boolean;
   model: string;
   vision: boolean;
   url: string;
   modelsDir: string;
   ggufs: string[];
   models: string[];
+  localModels: LocalModel[];
+  router: boolean;
+  runningModel: string | null;
+  runningModelPath: string | null;
   mmproj: string | null;
   error?: string;
 };

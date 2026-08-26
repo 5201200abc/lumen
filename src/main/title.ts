@@ -1,3 +1,5 @@
+import { getSettings } from "./store";
+
 export async function generateConversationTitle(userText: string, assistantText?: string): Promise<string> {
   const cleanUser = userText.trim().replace(/\s+/g, " ");
   if (!cleanUser) return "新对话";
@@ -8,11 +10,12 @@ ${assistantText ? `助手：${assistantText.trim().slice(0, 180)}` : ""}
 主题：`;
 
   try {
-    const res = await fetch("http://127.0.0.1:18082/v1/chat/completions", {
+    const settings = getSettings();
+    const res = await fetch(`${settings.llamaUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "Qwen3.8-27B",
+        model: settings.model,
         messages: [
           {
             role: "system",

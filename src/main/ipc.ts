@@ -15,7 +15,7 @@ import {
   clearMemories
 } from "./db";
 import { streamChat } from "./llama";
-import { ensureLocalLlama, probeLlama } from "./models";
+import { ensureLocalLlama, probeLlama, stopLocalLlama } from "./models";
 import { getSettings, setSettings } from "./store";
 import { maybeRemember } from "./memory";
 import { captureInteractive, markClipboard } from "./screenshot";
@@ -43,6 +43,9 @@ async function beginStream(opts: {
   const status = await probeLlama(settings);
   if (!status.online) {
     throw new Error("模型服务未就绪，请先启动 llama-server。");
+  }
+  if (status.runningModelPath && status.runningModel && status.runningModel !== settings.model) {
+    throw new Error(status.error || `当前服务加载的是 ${status.runningModel}，不是所选 ${settings.model}。`);
   }
 
   const history = listMessages(opts.conversationId);
@@ -200,6 +203,7 @@ export function registerIpc(): void {
   ipcMain.handle("models:status", async () => probeLlama(getSettings()));
   ipcMain.handle("models:ensure", async () => ensureLocalLlama(getSettings(), false));
   ipcMain.handle("models:reconnect", async () => ensureLocalLlama(getSettings(), true));
+  ipcMain.handle("models:stop", async () => stopLocalLlama(getSettings()));
 
   ipcMain.handle("chats:list", () => listConversations());
   ipcMain.handle("chats:search", (_e, q: string) => searchConversations(q));

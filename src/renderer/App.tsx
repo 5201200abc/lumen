@@ -9,7 +9,10 @@ import type { Attachment, ChatMessage, Conversation, CodexTask, CoworkEngine, Ef
 import { detectReasoningControl } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 
-const WELCOME_PROMPTS = ["What are we going to do?", "What would you like to talk about?"] as const;
+const WELCOME_PROMPTS = {
+  en: ["What are we going to do?", "What would you like to talk about?"],
+  zh: ["我们接下来要做什么？", "你想聊些什么？"]
+} as const;
 
 function applyTheme(theme: Settings["theme"]): void {
   const dark =
@@ -27,6 +30,37 @@ function applyPreferences(settings: Pick<Settings, "theme" | "language" | "fontS
   document.documentElement.style.setProperty("--base-font-size", `${numSize}px`);
 }
 
+function modelsFromStatus(settings: Settings, status: LlamaStatus): Settings["llamaModels"] {
+  const activeEndpoint =
+    settings.llamaEndpoints.find((endpoint) => endpoint.url === settings.llamaUrl) ||
+    settings.llamaEndpoints[0];
+  const localEndpoint = settings.llamaEndpoints.find((endpoint) =>
+    /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/v1\/?$/i.test(endpoint.url)
+  );
+  if (!activeEndpoint || !localEndpoint) return settings.llamaModels;
+  const replacedEndpointIds = new Set([localEndpoint.id]);
+  if (activeEndpoint.id !== localEndpoint.id) replacedEndpointIds.add(activeEndpoint.id);
+  const preserved = settings.llamaModels.filter((model) => !replacedEndpointIds.has(model.endpointId));
+  const localModels = status.localModels.map((model) => ({
+    id: `local:${model.name}`,
+    name: model.name,
+    endpointId: localEndpoint.id,
+    reasoningControl: model.reasoningControl,
+    reasoningEfforts: model.reasoningEfforts,
+    source: "local" as const
+  }));
+  const remoteModels = activeEndpoint.id === localEndpoint.id
+    ? []
+    : status.models.map((name) => ({
+        id: `${activeEndpoint.id}:${name}`,
+        name,
+        endpointId: activeEndpoint.id,
+        reasoningControl: detectReasoningControl(name),
+        source: "remote" as const
+      }));
+  return [...preserved, ...localModels, ...remoteModels];
+}
+
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [mode, setMode] = useState<"chat" | "code">("chat");
@@ -37,7 +71,7 @@ export function App() {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [effort, setEffort] = useState<Effort>("xhigh");
-  const [webSearch, setWebSearch] = useState(true);
+  const [webSearch, setWebSearch] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -45,7 +79,7 @@ export function App() {
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [account, setAccount] = useState<GoogleAccount>({ configured: false, connected: false });
   const [accountBusy, setAccountBusy] = useState(false);
-  const [welcomePrompt, setWelcomePrompt] = useState<(typeof WELCOME_PROMPTS)[number]>(WELCOME_PROMPTS[0]);
+  const [welcomePrompt, setWelcomePrompt] = useState<string>(WELCOME_PROMPTS.en[0]);
 
   // Codex state
   const [codexTasks, setCodexTasks] = useState<CodexTask[]>([]);
@@ -61,10 +95,36 @@ export function App() {
   const accountAction = useRef<"login" | "logout" | "sync" | null>(null);
   const loginStartedAt = useRef(0);
 
-  const nextWelcomePrompt = useCallback(() => {
-    setWelcomePrompt(WELCOME_PROMPTS[welcomeIndex.current % WELCOME_PROMPTS.length]);
-    welcomeIndex.current += 1;
+  const refreshDetectedModels = useCallback(async (restartRouter = false) => {
+    let current = await window.lumen.settings.get();
+    const nextStatus = restartRouter
+      ? await window.lumen.models.reconnect()
+      : await window.lumen.models.status();
+    const detectedModels = modelsFromStatus(current, nextStatus);
+    if (JSON.stringify(detectedModels) !== JSON.stringify(current.llamaModels)) {
+      current = await window.lumen.settings.set({ llamaModels: detectedModels });
+    }
+    setSettings(current);
+    setStatus(nextStatus);
+    return { settings: current, status: nextStatus };
   }, []);
+
+  const refreshLocalModels = useCallback(async () => {
+    await refreshDetectedModels(true);
+  }, [refreshDetectedModels]);
+
+  const nextWelcomePrompt = useCallback(() => {
+    const isZh = settings?.language === "zh";
+    const list = isZh ? WELCOME_PROMPTS.zh : WELCOME_PROMPTS.en;
+    setWelcomePrompt(list[welcomeIndex.current % list.length]);
+    welcomeIndex.current += 1;
+  }, [settings?.language]);
+
+  useEffect(() => {
+    const isZh = settings?.language === "zh";
+    const list = isZh ? WELCOME_PROMPTS.zh : WELCOME_PROMPTS.en;
+    setWelcomePrompt(list[welcomeIndex.current % list.length]);
+  }, [settings?.language]);
 
   const refreshChats = useCallback(async (q = query) => {
     const list = q.trim() ? await window.lumen.chats.search(q) : await window.lumen.chats.list();
@@ -124,17 +184,15 @@ export function App() {
     if (booted.current) return;
     booted.current = true;
     void (async () => {
-      const s = await window.lumen.settings.get();
-      setSettings(s);
-      setEffort(s.defaultEffort);
+      const refreshed = await refreshDetectedModels();
+      const s = refreshed.settings;
       applyPreferences(s);
       setAccount(await window.lumen.google.status());
-      const st = await window.lumen.models.status();
-      setStatus(st);
-      if (st.model && st.model !== s.model) {
-        const next = await window.lumen.settings.set({ model: st.model });
-        setSettings(next);
-      }
+      const initialModel = s.llamaModels.find((model) => model.name === s.model);
+      setEffort(initialModel?.reasoningEfforts?.includes(s.defaultEffort)
+        ? s.defaultEffort
+        : initialModel?.reasoningEfforts?.at(-1) || s.defaultEffort);
+      setSettings(s);
       void window.lumen.models.ensure().then(setStatus);
       const list = await refreshChats("");
       if (list[0]) await openChat(list[0].id);
@@ -148,7 +206,7 @@ export function App() {
       const cTasks = await refreshCodexTasks();
       if (cTasks[0]) setActiveTaskId(cTasks[0].id);
     })();
-  }, []);
+  }, [refreshDetectedModels]);
 
   useEffect(() => {
     const off = [
@@ -286,7 +344,8 @@ export function App() {
     }
     const content = draft;
     const files = attachments;
-    const plan = planChatRequest(content, webSearch);
+    const isZh = (settings?.language ?? "en") === "zh";
+    const plan = planChatRequest(content, webSearch, settings?.language ?? "en");
     setDraft("");
     setAttachments([]);
     setStreaming(true);
@@ -309,7 +368,9 @@ export function App() {
       createdAt: Date.now() + 1,
       phase: "preparing",
       introText: plan.action,
-      statusText: plan.useWeb ? "Preparing web search" : "Preparing the request"
+      statusText: plan.useWeb
+        ? (isZh ? "正在准备深度研究" : "Preparing Deep Research")
+        : (isZh ? "正在生成回答" : "Generating response")
     };
     setMessages((prev) => [...prev, user, assistant]);
     try {
@@ -361,7 +422,8 @@ export function App() {
       setChats(await window.lumen.chats.list());
       setActiveId(created.id);
     }
-    const plan = planChatRequest(content, webSearch);
+    const isZh = (settings?.language ?? "en") === "zh";
+    const plan = planChatRequest(content, webSearch, settings?.language ?? "en");
     setStreaming(true);
     const user: ChatMessage = {
       id: "tmp-user",
@@ -382,7 +444,9 @@ export function App() {
       createdAt: Date.now() + 1,
       phase: "preparing",
       introText: plan.action,
-      statusText: plan.useWeb ? "Preparing web search" : "Preparing the request"
+      statusText: plan.useWeb
+        ? (isZh ? "正在准备深度研究" : "Preparing Deep Research")
+        : (isZh ? "正在生成回答" : "Generating response")
     };
     setMessages((prev) => [...prev, user, assistant]);
     try {
@@ -421,7 +485,8 @@ export function App() {
     if (!activeId || streaming) return;
     const original = [...messages].reverse().find((m) => m.role === "assistant");
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    const plan = planChatRequest(lastUser?.content || "", webSearch);
+    const isZh = (settings?.language ?? "en") === "zh";
+    const plan = planChatRequest(lastUser?.content || "", webSearch, settings?.language ?? "en");
     setStreaming(true);
     setMessages((prev) => {
       const next = [...prev];
@@ -439,7 +504,9 @@ export function App() {
           createdAt: Date.now(),
           phase: "preparing",
           introText: plan.action,
-          statusText: plan.useWeb ? "Preparing web search" : "Preparing the request"
+          statusText: plan.useWeb
+            ? (isZh ? "正在准备深度研究" : "Preparing Deep Research")
+            : (isZh ? "正在生成回答" : "Generating response")
         }
       ];
     });
@@ -523,11 +590,20 @@ export function App() {
   const configuredModels = settings.llamaModels.filter((model) => !activeEndpoint || model.endpointId === activeEndpoint.id);
   const activeModel = settings.llamaModels.find((model) => model.name === settings.model && (!activeEndpoint || model.endpointId === activeEndpoint.id));
   const reasoningControl = activeModel?.reasoningControl ?? detectReasoningControl(settings.model);
+  const selectModel = async (model: string) => {
+    const configured = settings.llamaModels.find((item) => item.name === model && (!activeEndpoint || item.endpointId === activeEndpoint.id));
+    const supported = configured?.reasoningEfforts;
+    const nextEffort = supported?.includes(effort) ? effort : (supported?.includes(settings.defaultEffort) ? settings.defaultEffort : supported?.[supported.length - 1]);
+    if (nextEffort) setEffort(nextEffort);
+    await patchSettings({ model });
+    setStatus(await window.lumen.models.status());
+  };
 
   return (
     <>
       <div className={`app ${!sidebarOpen ? "sidebar-collapsed" : ""}`}>
         <Sidebar
+          language={settings.language}
           mode={mode}
           onModeChange={setMode}
           chats={chats}
@@ -548,7 +624,8 @@ export function App() {
           }}
           onNew={() => void newChat()}
           onDelete={async (id) => {
-            if (!window.confirm("Delete this chat? This cannot be undone.")) return;
+            const isZh = settings.language === "zh";
+            if (!window.confirm(isZh ? "确定删除此对话吗？此操作无法撤销。" : "Delete this chat? This cannot be undone.")) return;
             await window.lumen.chats.delete(id);
             const list = query.trim() ? await window.lumen.chats.search(query) : await window.lumen.chats.list();
             setChats(list);
@@ -581,6 +658,7 @@ export function App() {
         <section className="main">
           <div className="mode-pane" hidden={mode !== "code"}>
             <CodexView
+              language={settings.language}
               sidebarOpen={sidebarOpen}
               onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
               activeTaskId={activeTaskId}
@@ -591,7 +669,7 @@ export function App() {
               model={settings.model}
               models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
               effort={effort}
-              onModel={(m) => void patchSettings({ model: m })}
+              onModel={(m) => void selectModel(m)}
               onEffort={setEffort}
               reasoningControl={reasoningControl}
               engine={settings.coworkEngine}
@@ -614,6 +692,7 @@ export function App() {
                       <MessageView
                         key={m.id}
                         message={m}
+                        language={settings?.language ?? "en"}
                         streaming={streaming && i === visible.length - 1 && m.role === "assistant"}
                         onRegenerate={m.role === "assistant" && i === visible.length - 1 ? regenerate : undefined}
                         onEdit={m.role === "user" ? (id, text, atts) => void handleEditMessage(id, text, atts) : undefined}
@@ -631,7 +710,7 @@ export function App() {
                 streaming={streaming}
                 attachments={attachments}
                 onChange={setDraft}
-                onModel={(m) => void patchSettings({ model: m })}
+                onModel={(m) => void selectModel(m)}
                 onEffort={setEffort}
                 reasoningControl={reasoningControl}
                 onWebSearch={setWebSearch}
@@ -648,6 +727,7 @@ export function App() {
           settings={settings}
           initialPage={settingsPage}
           onChange={patchSettings}
+          onRefreshModels={refreshLocalModels}
           onClose={() => { setSettingsOpen(false); setSettingsPage("general"); }}
           onDeleteAllMemories={async () => {
             await window.lumen.memory.clear();

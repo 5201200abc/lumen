@@ -2,13 +2,35 @@
 
 import crypto from "node:crypto";
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const HOST = process.env.CODEX_BRIDGE_HOST || "127.0.0.1";
 const PORT = Number(process.env.CODEX_BRIDGE_PORT || 18085);
-const LLAMA_URL = (process.env.LLAMA_URL || "http://127.0.0.1:18082/v1").replace(/\/+$/, "");
+if (!process.env.LLAMA_URL) throw new Error("LLAMA_URL is required.");
+const LLAMA_URL = process.env.LLAMA_URL.replace(/\/+$/, "");
 const MODEL = process.env.LLAMA_MODEL_ALIAS || "Qwen3.8-27B";
 const API_KEY = process.env.LLAMA_API_KEY || "";
 const REASONING_CONTROL = process.env.LLAMA_REASONING_CONTROL || "effort";
+const DEFAULT_SYSTEM_PROMPT_PATH = path.join(os.homedir(), ".config", "llama", "LLAMA.md");
+const SYSTEM_PROMPT_PATH = process.env.LLAMA_SYSTEM_PROMPT_PATH || DEFAULT_SYSTEM_PROMPT_PATH;
+const FALLBACK_SYSTEM_PROMPT = "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
+
+function getModelRuleStyle() {
+  try {
+    if (process.env.LLAMA_SYSTEM_PROMPT && process.env.LLAMA_SYSTEM_PROMPT.trim()) {
+      return process.env.LLAMA_SYSTEM_PROMPT.trim();
+    }
+    if (fs.existsSync(SYSTEM_PROMPT_PATH)) {
+      const text = fs.readFileSync(SYSTEM_PROMPT_PATH, "utf8").trim();
+      if (text) return text;
+    }
+  } catch {}
+  return FALLBACK_SYSTEM_PROMPT;
+}
+
+const MODEL_STYLE_HASH = crypto.createHash("sha256").update(getModelRuleStyle()).digest("hex").slice(0, 16);
 
 const id = (prefix) => `${prefix}${crypto.randomBytes(12).toString("hex")}`;
 
@@ -23,7 +45,14 @@ function messageText(content) {
 
 function toChat(body) {
   const messages = [];
-  const systemParts = body.instructions ? [body.instructions] : [];
+  const systemParts = [];
+  const baseSystemPrompt = getModelRuleStyle();
+  if (baseSystemPrompt) {
+    systemParts.push(`<model_style>\n${baseSystemPrompt}\n</model_style>`);
+  }
+  if (body.instructions) {
+    systemParts.push(body.instructions);
+  }
   for (const item of Array.isArray(body.input) ? body.input : []) {
     if (item.type === "message" || item.role) {
       const role = item.role || "user";
@@ -215,7 +244,8 @@ const server = http.createServer((req, res) => {
       bridge: "lumen-codex",
       backend: LLAMA_URL,
       model: MODEL,
-      reasoningControl: REASONING_CONTROL
+      reasoningControl: REASONING_CONTROL,
+      styleHash: MODEL_STYLE_HASH
     }));
     return;
   }

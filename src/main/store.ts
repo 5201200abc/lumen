@@ -2,7 +2,7 @@ import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CoworkEngine, Effort, FontSize, Language, LlamaModel, Settings, Theme } from "@shared/types";
+import type { CoworkEngine, Effort, FontSize, Language, LlamaModel, ResearchExtractor, Settings, Theme } from "@shared/types";
 import { detectReasoningControl } from "@shared/types";
 import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
@@ -12,12 +12,18 @@ export const SYSTEM_PROMPT_PATH = join(homedir(), ".config", "llama", "LLAMA.md"
 
 type Disk = {
   llamaUrl: string;
+  llamaPort: number;
+  llamaAutoStart: boolean;
   llamaApiKeyEnc: string;
   llamaApiKeysEnc: string;
   model: string;
   tavilyApiKeyEnc: string;
   tavilyApiKeysEnc: string;
-  defaultEffort: Effort | "light" | "high";
+  firecrawlUrl: string;
+  firecrawlApiKeyEnc: string;
+  researchExtractor: ResearchExtractor;
+  tavilyExtractDepth: "basic" | "advanced";
+  defaultEffort: Effort | "light";
   memoryEnabled: boolean;
   theme: Theme;
   modelsDir: string;
@@ -35,12 +41,18 @@ type Disk = {
 const store = new Store<Disk>({
   name: "settings",
   defaults: {
-    llamaUrl: "http://127.0.0.1:18082/v1",
+    llamaUrl: "http://127.0.0.1/v1",
+    llamaPort: 0,
+    llamaAutoStart: true,
     llamaApiKeyEnc: "",
     llamaApiKeysEnc: "",
     model: "Qwen3.8-27B",
     tavilyApiKeyEnc: "",
     tavilyApiKeysEnc: "",
+    firecrawlUrl: "http://127.0.0.1:3002",
+    firecrawlApiKeyEnc: "",
+    researchExtractor: "tavily",
+    tavilyExtractDepth: "advanced",
     defaultEffort: "xhigh",
     memoryEnabled: true,
     theme: "system",
@@ -53,9 +65,37 @@ const store = new Store<Disk>({
     fontSize: "small",
     modelCatalog: ["Qwen3.8-27B"],
     llamaModels: [],
-    llamaEndpoints: [{ id: "local", name: "Local llama", url: "http://127.0.0.1:18082/v1" }]
+    llamaEndpoints: [{ id: "local", name: "Current model", url: "http://127.0.0.1/v1" }]
   }
 });
+
+function localLlamaUrl(port: number): string {
+  return port > 0 ? `http://127.0.0.1:${port}/v1` : "http://127.0.0.1/v1";
+}
+
+function portFromUrl(value: string): number {
+  try {
+    const parsed = new URL(value);
+    if (!["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)) return 0;
+    const port = Number(parsed.port);
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function setDetectedLlamaPort(port: number): void {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+  const url = localLlamaUrl(port);
+  store.set("llamaPort", port);
+  store.set("llamaUrl", url);
+  const endpoints = store.get("llamaEndpoints") || [];
+  const local = endpoints.find((endpoint) => endpoint.id === "local");
+  store.set("llamaEndpoints", [
+    { id: "local", name: "Current model", url },
+    ...endpoints.filter((endpoint) => endpoint.id !== "local" && endpoint.id !== local?.id)
+  ]);
+}
 
 function seedTavily(): void {
   if (decryptLocalSecret(store.get("tavilyApiKeyEnc"))) return;
@@ -77,9 +117,8 @@ export function writeSystemPrompt(text: string): void {
 }
 
 function normalizeEffort(value: string | undefined): Effort {
-  // Preserve existing local preferences while migrating to Qwen3.8 names.
   if (value === "low" || value === "light") return "low";
-  if (value === "xhigh" || value === "high") return "xhigh";
+  if (value === "high" || value === "xhigh") return value;
   return "medium";
 }
 
@@ -95,11 +134,32 @@ function normalizeFontSize(value: unknown): FontSize {
 
 export function getSettings(): Settings {
   seedTavily();
-  const activeUrl = store.get("llamaUrl");
-  const endpoints = store.get("llamaEndpoints") || [];
-  const normalizedEndpoints = endpoints.some((endpoint) => endpoint.url === activeUrl)
-    ? endpoints
-    : [{ id: "active", name: "Current Llama", url: activeUrl }, ...endpoints];
+  if (/api\.firecrawl\.dev/i.test(store.get("firecrawlUrl") || "")) {
+    store.set("firecrawlUrl", "http://127.0.0.1:3002");
+    store.set("firecrawlApiKeyEnc", "");
+  }
+  const storedUrl = store.get("llamaUrl");
+  const storedPort = store.get("llamaPort") || portFromUrl(storedUrl);
+  if (storedPort && storedPort !== store.get("llamaPort")) store.set("llamaPort", storedPort);
+  const activeUrl = storedPort ? localLlamaUrl(storedPort) : storedUrl;
+  if (activeUrl !== storedUrl) store.set("llamaUrl", activeUrl);
+  const storedEndpoints = store.get("llamaEndpoints") || [];
+  let normalizedEndpoints = storedEndpoints.map((endpoint) =>
+    endpoint.name.trim().toLowerCase() === "local llama"
+      ? { ...endpoint, name: "Current model" }
+      : endpoint
+  );
+  const localUrl = localLlamaUrl(storedPort);
+  normalizedEndpoints = [
+    { id: "local", name: "Current model", url: localUrl },
+    ...normalizedEndpoints.filter((endpoint) => endpoint.id !== "local")
+  ];
+  if (!normalizedEndpoints.some((endpoint) => endpoint.url === activeUrl)) {
+    normalizedEndpoints = [{ id: "active", name: "Current model", url: activeUrl }, ...normalizedEndpoints];
+  }
+  if (JSON.stringify(normalizedEndpoints) !== JSON.stringify(storedEndpoints)) {
+    store.set("llamaEndpoints", normalizedEndpoints);
+  }
   const catalog = [...new Set([...(store.get("modelCatalog") || []), store.get("model")].filter(Boolean))];
   const storedModels = store.get("llamaModels") || [];
   const activeEndpoint = normalizedEndpoints.find((endpoint) => endpoint.url === activeUrl) || normalizedEndpoints[0];
@@ -134,9 +194,15 @@ export function getSettings(): Settings {
 
   return {
     llamaUrl: activeUrl,
+    llamaPort: storedPort,
+    llamaAutoStart: store.get("llamaAutoStart"),
     llamaApiKey: activeLlamaKey,
     model: store.get("model"),
     tavilyApiKey: activeTavilyKey,
+    firecrawlUrl: store.get("firecrawlUrl") || "http://127.0.0.1:3002",
+    firecrawlApiKey: decryptLocalSecret(store.get("firecrawlApiKeyEnc")),
+    researchExtractor: store.get("researchExtractor") || "tavily",
+    tavilyExtractDepth: store.get("tavilyExtractDepth") || "advanced",
     defaultEffort: normalizeEffort(store.get("defaultEffort")),
     memoryEnabled: store.get("memoryEnabled"),
     theme: store.get("theme"),
@@ -178,6 +244,32 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.model !== undefined && patch.model.length > 200) {
     throw new Error("Model name is too long.");
   }
+  if (
+    patch.llamaPort !== undefined &&
+    (!Number.isInteger(patch.llamaPort) || patch.llamaPort < 0 || patch.llamaPort > 65535)
+  ) {
+    throw new Error("Llama port must be 0 (automatic) or between 1 and 65535.");
+  }
+  if (patch.researchExtractor !== undefined && !["tavily", "firecrawl"].includes(patch.researchExtractor)) {
+    throw new Error("Web Research extractor must be Tavily or Firecrawl.");
+  }
+  if (patch.tavilyExtractDepth !== undefined && !["basic", "advanced"].includes(patch.tavilyExtractDepth)) {
+    throw new Error("Tavily Extract depth must be basic or advanced.");
+  }
+  if (patch.firecrawlUrl !== undefined) {
+    let url: URL;
+    try {
+      url = new URL(patch.firecrawlUrl.trim());
+    } catch {
+      throw new Error("Firecrawl API URL must be a valid http or https URL.");
+    }
+    if (!["http:", "https:"].includes(url.protocol)) {
+      throw new Error("Firecrawl API URL must use http or https.");
+    }
+    if (url.hostname === "api.firecrawl.dev") {
+      throw new Error("Web Research reserves Firecrawl for self-hosted endpoints; use Tavily for cloud extraction.");
+    }
+  }
   if (patch.chatInstructions !== undefined && patch.chatInstructions.length > 20_000) {
     throw new Error("Chat custom instructions cannot exceed 20,000 characters.");
   }
@@ -192,9 +284,9 @@ export function setSettings(patch: Partial<Settings>): Settings {
   }
   if (
     patch.defaultEffort !== undefined &&
-    !["low", "medium", "xhigh"].includes(patch.defaultEffort)
+    !["low", "medium", "high", "xhigh"].includes(patch.defaultEffort)
   ) {
-    throw new Error("Default effort must be low, medium, or xhigh.");
+    throw new Error("Default effort must be low, medium, high, or xhigh.");
   }
   if (patch.theme !== undefined && !["system", "light", "dark"].includes(patch.theme)) {
     throw new Error("Theme must be system, light, or dark.");
@@ -229,7 +321,10 @@ export function setSettings(patch: Partial<Settings>): Settings {
         !model.name.trim() ||
         model.name.length > 200 ||
         !endpointIds.has(model.endpointId) ||
-        !["effort", "toggle", "none"].includes(model.reasoningControl)
+        !["effort", "toggle", "none"].includes(model.reasoningControl) ||
+        (model.reasoningEfforts !== undefined &&
+          (!Array.isArray(model.reasoningEfforts) ||
+            model.reasoningEfforts.some((effort) => !["low", "medium", "high", "xhigh"].includes(effort))))
       ) {
         throw new Error("Every model must have a valid name, Llama server, and reasoning control.");
       }
@@ -252,7 +347,7 @@ export function setSettings(patch: Partial<Settings>): Settings {
 
   if (patch.tavilyApiKeys !== undefined) {
     if (!Array.isArray(patch.tavilyApiKeys) || patch.tavilyApiKeys.length > 50) {
-      throw new Error("Tavily API key list must contain no more than 50 keys.");
+      throw new Error("Tavily API list must contain no more than 50 entries.");
     }
     for (const item of patch.tavilyApiKeys) {
       if (!item || typeof item.id !== "string" || typeof item.name !== "string" || typeof item.key !== "string") {
@@ -273,6 +368,14 @@ export function setSettings(patch: Partial<Settings>): Settings {
   }
 
   if (patch.llamaUrl !== undefined) store.set("llamaUrl", patch.llamaUrl.trim());
+  if (patch.llamaPort !== undefined) {
+    store.set("llamaPort", patch.llamaPort);
+    store.set("llamaUrl", localLlamaUrl(patch.llamaPort));
+  }
+  if (patch.llamaAutoStart !== undefined) store.set("llamaAutoStart", patch.llamaAutoStart);
+  if (patch.firecrawlUrl !== undefined) store.set("firecrawlUrl", patch.firecrawlUrl.trim().replace(/\/+$/, ""));
+  if (patch.researchExtractor !== undefined) store.set("researchExtractor", patch.researchExtractor);
+  if (patch.tavilyExtractDepth !== undefined) store.set("tavilyExtractDepth", patch.tavilyExtractDepth);
   if (patch.model !== undefined) store.set("model", patch.model.trim());
   if (patch.defaultEffort !== undefined) store.set("defaultEffort", normalizeEffort(patch.defaultEffort));
   if (patch.coworkEngine !== undefined) store.set("coworkEngine", patch.coworkEngine);
@@ -319,6 +422,7 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.coworkInstructions !== undefined) store.set("coworkInstructions", patch.coworkInstructions);
   if (patch.llamaApiKey !== undefined) store.set("llamaApiKeyEnc", encryptLocalSecret(patch.llamaApiKey.trim()));
   if (patch.tavilyApiKey !== undefined) store.set("tavilyApiKeyEnc", encryptLocalSecret(patch.tavilyApiKey.trim()));
+  if (patch.firecrawlApiKey !== undefined) store.set("firecrawlApiKeyEnc", encryptLocalSecret(patch.firecrawlApiKey.trim()));
   if (patch.systemPrompt !== undefined) writeSystemPrompt(patch.systemPrompt);
   return getSettings();
 }
