@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Attachment, CodexMessage, CodexTask, CodexToolCall, CoworkEngine, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CodexMessage, CodexTask, CodexToolCall, CoworkEngine, CoworkPermissionMode, CoworkToolStatus, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
 import { toolActivity, toolDescription } from "@shared/cowork-status";
-import { AttachmentAddButton, AttachmentList, readDroppedFiles } from "./AttachmentControls";
+import { AttachmentAddButton, AttachmentImage, AttachmentList, readDroppedFiles } from "./AttachmentControls";
 import { EnvironmentPanel } from "./EnvironmentPanel";
+import { PermissionPicker } from "./PermissionPicker";
 import {
   IconArrowUp,
   IconCheck,
@@ -36,14 +37,25 @@ type Props = {
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
   reasoningControl: ReasoningControl;
+  reasoningEfforts?: Effort[];
   engine: CoworkEngine;
   onEngine: (engine: CoworkEngine) => void;
+  capabilityVersion?: string;
+  permissionMode: CoworkPermissionMode;
+  defaultPermissions: boolean;
+  fullAccess: boolean;
+  onPermissionMode: (mode: CoworkPermissionMode) => void;
 };
 
 const COWORK_WELCOME_PROMPTS = {
   en: ["What are we going to do?", "What would you like to talk about?"],
   zh: ["我们接下来要做什么？", "你想聊些什么？"]
 } as const;
+
+const COWORK_COMMANDS = [
+  { command: "/goal", title: "Goal" },
+  { command: "/compact", title: "Compact" }
+] as const;
 
 function formatDuration(sec: number, isZh = false): string {
   const wholeSeconds = Math.max(0, Math.floor(sec));
@@ -102,6 +114,22 @@ function getToolIcon(name: string) {
 function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language?: "zh" | "en" }) {
   const isZh = language === "zh";
   const desc = toolDescription(tool);
+  const errorDetail = tool.status === "error" && tool.output
+    ? (() => {
+        try {
+          const parsed = JSON.parse(tool.output);
+          if (Array.isArray(parsed)) {
+            return parsed
+              .map((item) => typeof item === "string" ? item : item?.text || item?.message || "")
+              .filter(Boolean)
+              .join(" ");
+          }
+          return parsed?.message || parsed?.error?.message || tool.output;
+        } catch {
+          return tool.output;
+        }
+      })().replace(/\s+/g, " ").trim()
+    : "";
 
   return (
     <div className={`tool-card ${tool.status}`}>
@@ -133,6 +161,11 @@ function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language
           </span>
         </div>
       </div>
+      {errorDetail && (
+        <div className="tool-error-detail" title={errorDetail}>
+          {errorDetail}
+        </div>
+      )}
     </div>
   );
 }
@@ -209,7 +242,7 @@ function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessag
             </span>
           </div>
           <div className="cowork-executing-hint">
-            <span>{isZh ? "任务正式开始实施执行中" : "Task implementation is officially underway..."}</span>
+            <span>Implementing…</span>
           </div>
         </>
       ) : (
@@ -257,8 +290,10 @@ export function CodexView(props: Props) {
   const [running, setRunning] = useState(false);
   const [cwd, setCwd] = useState<string>("");
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
+  const [toolStatus, setToolStatus] = useState<CoworkToolStatus | null>(null);
   const [contextTokens, setContextTokens] = useState({ used: 0, total: 16384 });
   const [environmentOpen, setEnvironmentOpen] = useState(true);
+  const [slashIndex, setSlashIndex] = useState(0);
   const welcomeIndex = useRef(0);
   const welcomePrompts = isZh ? COWORK_WELCOME_PROMPTS.zh : COWORK_WELCOME_PROMPTS.en;
   const [welcomePrompt, setWelcomePrompt] = useState<string>(
@@ -320,6 +355,21 @@ export function CodexView(props: Props) {
     };
   }, [cwd]);
 
+  useEffect(() => {
+    let current = true;
+    const refresh = () => {
+      void window.lumen.tools.status().then((status) => {
+        if (current) setToolStatus(status);
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [props.capabilityVersion]);
+
   const selectWorkspace = async (): Promise<void> => {
     const selected = await window.lumen.codex.selectDirectory();
     if (selected) setCwd(selected);
@@ -339,11 +389,17 @@ export function CodexView(props: Props) {
   useEffect(() => {
     if (!props.activeTaskId) {
       setMessages([]);
+      setPrompt("");
+      setAttachments([]);
+      setRunning(false);
       setContextTokens({ used: 0, total: 16384 });
       return;
     }
     if (creatingTask.current || startingTask.current === props.activeTaskId) return;
-    void window.lumen.codex.getMessages(props.activeTaskId).then((list) => {
+    const taskId = props.activeTaskId;
+    let current = true;
+    void window.lumen.codex.getMessages(taskId).then((list) => {
+      if (!current || props.activeTaskId !== taskId) return;
       setMessages(list);
       setRunning(list.some((message) => message.status === "streaming"));
       const lastWithTokens = list.slice().reverse().find((m) => m.contextUsed && m.contextUsed > 0);
@@ -354,6 +410,9 @@ export function CodexView(props: Props) {
         });
       }
     });
+    return () => {
+      current = false;
+    };
   }, [props.activeTaskId]);
 
   // Listen to streaming events from the agent backend
@@ -445,6 +504,33 @@ export function CodexView(props: Props) {
   const handleSend = async (textToSend?: string) => {
     const text = (textToSend || prompt).trim() || (attachments.length ? "Review the attached files." : "");
     if (!text || running) return;
+    const goalMatch = text.match(/^\/goal(?:\s+([\s\S]+))?$/i);
+    const isCompact = /^\/compact\s*$/i.test(text);
+    if (goalMatch || isCompact) {
+      if (goalMatch && !goalMatch[1]?.trim()) {
+        setPrompt("/goal ");
+        window.requestAnimationFrame(() => areaRef.current?.focus());
+        return;
+      }
+      let commandTaskId = props.activeTaskId;
+      if (!commandTaskId) {
+        creatingTask.current = true;
+        try {
+          commandTaskId = await props.onNewTask(cwd, props.engine);
+        } finally {
+          creatingTask.current = false;
+        }
+      }
+      setPrompt("");
+      setAttachments([]);
+      const result = goalMatch
+        ? await window.lumen.codex.setGoal(commandTaskId, goalMatch[1]!.trim())
+        : await window.lumen.codex.compact(commandTaskId);
+      startingTask.current = null;
+      setMessages(await window.lumen.codex.getMessages(commandTaskId));
+      if (isCompact) setContextTokens({ used: 0, total: result.task.contextTotal || 16384 });
+      return;
+    }
     const files = attachments;
     userScrolledUp.current = false;
 
@@ -533,6 +619,19 @@ export function CodexView(props: Props) {
     }
   };
 
+  const slashMatch = prompt.match(/^\/([^\s]*)$/);
+  const slashCommands = slashMatch
+    ? COWORK_COMMANDS.filter((item) => item.command.slice(1).startsWith(slashMatch[1].toLowerCase()))
+    : [];
+  useEffect(() => {
+    setSlashIndex(0);
+  }, [prompt]);
+  const selectSlashCommand = (command: typeof COWORK_COMMANDS[number]["command"]): void => {
+    setPrompt(command === "/goal" ? "/goal " : command);
+    setSlashIndex(0);
+    window.requestAnimationFrame(() => areaRef.current?.focus());
+  };
+
   return (
     <div className={`codex-view ${environmentOpen ? "environment-open" : ""}`}>
       <div className="codex-primary">
@@ -583,9 +682,7 @@ export function CodexView(props: Props) {
                     {images.length > 0 && (
                       <div className="user-attachments">
                         {images.map((file) => (
-                          <div key={file.id} className="user-image-card" title={file.name}>
-                            <img src={file.dataUrl} alt={file.name} />
-                          </div>
+                          <AttachmentImage key={file.id} attachment={file} />
                         ))}
                       </div>
                     )}
@@ -644,6 +741,28 @@ export function CodexView(props: Props) {
             attachments={attachments}
             onRemove={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
           />
+          {slashCommands.length ? (
+            <div className="slash-command-menu" role="listbox" aria-label={isZh ? "Cowork 命令" : "Cowork commands"}>
+              {slashCommands.map((item, index) => (
+                <button
+                  key={item.command}
+                  type="button"
+                  role="option"
+                  aria-selected={index === slashIndex}
+                  className={index === slashIndex ? "active" : ""}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectSlashCommand(item.command)}
+                >
+                  <strong>{item.command}</strong>
+                  <span>
+                    {item.command === "/goal"
+                      ? (isZh ? "设置当前任务的持续目标" : "Set a persistent goal for this task")
+                      : (isZh ? "压缩上下文并开启新会话" : "Compact context and start a fresh session")}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
           <textarea
             ref={areaRef}
             rows={2}
@@ -651,6 +770,24 @@ export function CodexView(props: Props) {
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
+              if (slashCommands.length) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const delta = e.key === "ArrowDown" ? 1 : -1;
+                  setSlashIndex((current) => (current + delta + slashCommands.length) % slashCommands.length);
+                  return;
+                }
+                if (e.key === "Tab") {
+                  e.preventDefault();
+                  selectSlashCommand(slashCommands[slashIndex]?.command || slashCommands[0].command);
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey && prompt.trim() !== "/compact") {
+                  e.preventDefault();
+                  selectSlashCommand(slashCommands[slashIndex]?.command || slashCommands[0].command);
+                  return;
+                }
+              }
               if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
               e.preventDefault();
               void handleSend();
@@ -662,6 +799,36 @@ export function CodexView(props: Props) {
                 attachments={attachments}
                 onAdd={(files) => setAttachments((current) => [...current, ...files])}
                 onRemove={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
+                pluginActions={[
+                  {
+                    id: "sites",
+                    label: "Sites",
+                    description: isZh ? "预览并验证本地网站" : "Preview and verify a local site",
+                    available: Boolean(toolStatus?.capabilities.find((item) => item.id === "sites")?.available),
+                    onSelect: () => prepareEnvironmentPrompt(isZh ? "检查当前工作区的网站构建产物，使用 Lumen Sites 启动本地预览并在内置浏览器中验证。" : "Inspect the current workspace's built website, start a local preview with Lumen Sites, and verify it in the built-in browser.")
+                  },
+                  {
+                    id: "browser",
+                    label: "Browser",
+                    description: isZh ? "打开并操作内置浏览器" : "Open and control the built-in browser",
+                    available: Boolean(toolStatus?.capabilities.find((item) => item.id === "browser")?.available),
+                    onSelect: () => prepareEnvironmentPrompt(isZh ? "使用 Lumen 内置浏览器完成这个任务；先打开页面，再读取页面快照并按需要交互。" : "Use Lumen's built-in browser for this task: open the page, inspect a snapshot, and interact as needed.")
+                  },
+                  {
+                    id: "plugins",
+                    label: "Plugin Management",
+                    description: isZh ? "查看本机插件及可用能力" : "Inspect installed plugins and capabilities",
+                    available: Boolean(toolStatus?.capabilities.find((item) => item.id === "plugins")?.available),
+                    onSelect: () => prepareEnvironmentPrompt(isZh ? "使用 Lumen Plugin Management 列出本机已安装插件，并说明与当前任务相关的能力。" : "Use Lumen Plugin Management to list installed plugins and identify capabilities relevant to this task.")
+                  }
+                ]}
+              />
+              <PermissionPicker
+                language={props.language}
+                value={props.permissionMode}
+                defaultPermissions={props.defaultPermissions}
+                fullAccess={props.fullAccess}
+                onChange={props.onPermissionMode}
               />
             </div>
             <div className="right-tools">
@@ -676,6 +843,7 @@ export function CodexView(props: Props) {
                 onModel={props.onModel}
                 onEffort={props.onEffort}
                 reasoningControl={props.reasoningControl}
+                reasoningEfforts={props.reasoningEfforts}
                 engine={props.tasks.find((task) => task.id === props.activeTaskId)?.engine || props.engine}
                 onEngine={props.onEngine}
               />
@@ -715,6 +883,7 @@ export function CodexView(props: Props) {
           model={props.model}
           messages={messages}
           attachments={attachments}
+          toolStatus={toolStatus}
           onSelectWorkspace={() => void selectWorkspace()}
           onAddSource={() => void addEnvironmentSources()}
           onPrompt={prepareEnvironmentPrompt}

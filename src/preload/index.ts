@@ -6,13 +6,16 @@ import type {
   Conversation,
   Effort,
   LlamaStatus,
+  ModelBenchmarkResult,
   MemoryItem,
   Settings,
   StreamDelta,
   StreamDone,
   CodexMessage,
   CodexTask, CoworkEngine,
+  CoworkToolStatus,
   GoogleAccount,
+  TokenUsage,
   WorkspaceInfo
 } from "@shared/types";
 
@@ -36,11 +39,16 @@ const api = {
     logout: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:logout"),
     sync: (): Promise<GoogleAccount> => ipcRenderer.invoke("google:sync")
   },
+  usage: {
+    get: (): Promise<TokenUsage> => ipcRenderer.invoke("usage:get"),
+    onUpdated: (fn: (usage: TokenUsage) => void): Unlisten => on("usage:updated", fn)
+  },
   models: {
     status: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:status"),
     ensure: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:ensure"),
     reconnect: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:reconnect"),
-    stop: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:stop")
+    stop: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:stop"),
+    benchmark: (model: string): Promise<ModelBenchmarkResult> => ipcRenderer.invoke("models:benchmark", model)
   },
   chats: {
     list: (): Promise<Conversation[]> => ipcRenderer.invoke("chats:list"),
@@ -94,11 +102,24 @@ const api = {
     createTask: (opts?: { title?: string; cwd?: string; engine?: CoworkEngine }): Promise<CodexTask> => ipcRenderer.invoke("codex:createTask", opts || {}),
     getMessages: (taskId: string): Promise<CodexMessage[]> => ipcRenderer.invoke("codex:getMessages", taskId),
     deleteTask: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:deleteTask", taskId),
+    setGoal: (taskId: string, goal: string): Promise<{ task: CodexTask; message: CodexMessage }> =>
+      ipcRenderer.invoke("codex:setGoal", taskId, goal),
+    compact: (taskId: string): Promise<{ task: CodexTask; message: CodexMessage }> =>
+      ipcRenderer.invoke("codex:compact", taskId),
     selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("codex:selectDirectory"),
     stop: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:stop", taskId),
     run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string; engine?: CoworkEngine }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
       ipcRenderer.invoke("codex:run", opts),
     onEvent: (fn: (event: any) => void): Unlisten => on("codex:event", fn)
+  },
+  tools: {
+    status: (): Promise<CoworkToolStatus> => ipcRenderer.invoke("tools:status"),
+    chromeStatus: (): Promise<{ installed: boolean; running: boolean; executable: string | null }> => ipcRenderer.invoke("tools:chromeStatus"),
+    chromeOpen: (url: string): Promise<unknown> => ipcRenderer.invoke("tools:chromeOpen", url),
+    chromeSnapshot: (): Promise<unknown> => ipcRenderer.invoke("tools:chromeSnapshot"),
+    chromeClick: (ref: string | number): Promise<unknown> => ipcRenderer.invoke("tools:chromeClick", ref),
+    chromeType: (ref: string | number, text: string, submit = false): Promise<unknown> => ipcRenderer.invoke("tools:chromeType", ref, text, submit),
+    chromeScreenshot: (): Promise<{ path: string }> => ipcRenderer.invoke("tools:chromeScreenshot")
   },
   ui: {
     onSettings: (fn: () => void): Unlisten => on("ui:settings", fn),
@@ -108,6 +129,7 @@ const api = {
     onTheme: (fn: (dark: boolean) => void): Unlisten => on("ui:theme", fn)
   },
   attachments: {
+    pickFilesAndFolders: (): Promise<Attachment[]> => ipcRenderer.invoke("attachments:pickFilesAndFolders"),
     pickFiles: (): Promise<Attachment[]> => ipcRenderer.invoke("attachments:pickFiles"),
     pickFolder: (): Promise<Attachment[]> => ipcRenderer.invoke("attachments:pickFolder")
   }

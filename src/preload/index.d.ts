@@ -5,13 +5,16 @@ import type {
   Conversation,
   Effort,
   LlamaStatus,
+  ModelBenchmarkResult,
   MemoryItem,
   Settings,
   StreamDelta,
   StreamDone,
   CodexMessage,
   CodexTask, CoworkEngine,
+  CoworkToolStatus,
   GoogleAccount,
+  TokenUsage,
   WorkspaceInfo
 } from "@shared/types";
 
@@ -29,11 +32,16 @@ interface LumenAPI {
     logout: () => Promise<GoogleAccount>;
     sync: () => Promise<GoogleAccount>;
   };
+  usage: {
+    get: () => Promise<TokenUsage>;
+    onUpdated: (fn: (usage: TokenUsage) => void) => Unlisten;
+  };
   models: {
     status: () => Promise<LlamaStatus>;
     ensure: () => Promise<LlamaStatus>;
     reconnect: () => Promise<LlamaStatus>;
     stop: () => Promise<LlamaStatus>;
+    benchmark: (model: string) => Promise<ModelBenchmarkResult>;
   };
   chats: {
     list: () => Promise<Conversation[]>;
@@ -83,10 +91,21 @@ interface LumenAPI {
     createTask: (opts?: { title?: string; cwd?: string; engine?: CoworkEngine }) => Promise<CodexTask>;
     getMessages: (taskId: string) => Promise<CodexMessage[]>;
     deleteTask: (taskId: string) => Promise<boolean>;
+    setGoal: (taskId: string, goal: string) => Promise<{ task: CodexTask; message: CodexMessage }>;
+    compact: (taskId: string) => Promise<{ task: CodexTask; message: CodexMessage }>;
     selectDirectory: () => Promise<string | null>;
     stop: (taskId: string) => Promise<boolean>;
     run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string; engine?: CoworkEngine }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
     onEvent: (fn: (event: any) => void) => Unlisten;
+  };
+  tools: {
+    status: () => Promise<CoworkToolStatus>;
+    chromeStatus: () => Promise<{ installed: boolean; running: boolean; executable: string | null }>;
+    chromeOpen: (url: string) => Promise<unknown>;
+    chromeSnapshot: () => Promise<unknown>;
+    chromeClick: (ref: string | number) => Promise<unknown>;
+    chromeType: (ref: string | number, text: string, submit?: boolean) => Promise<unknown>;
+    chromeScreenshot: () => Promise<{ path: string }>;
   };
   ui: {
     onSettings: (fn: () => void) => Unlisten;
@@ -96,6 +115,7 @@ interface LumenAPI {
     onTheme: (fn: (dark: boolean) => void) => Unlisten;
   };
   attachments: {
+    pickFilesAndFolders: () => Promise<Attachment[]>;
     pickFiles: () => Promise<Attachment[]>;
     pickFolder: () => Promise<Attachment[]>;
   };

@@ -1,6 +1,6 @@
 import { nativeImage } from "electron";
 import type { Attachment, ChatMessage, Effort, Settings } from "@shared/types";
-import { detectReasoningControl } from "@shared/types";
+import { detectReasoningControl, normalizeReasoningEffort } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 import { memoryBlock } from "./memory";
 import { deepResearch } from "./research";
@@ -11,7 +11,12 @@ export type StreamHandlers = {
     phase: "preparing" | "searching" | "thinking" | "answering";
     text: string;
   }) => void;
-  onDone: (result: { thinking: string; content: string; stopped: boolean }) => void;
+  onDone: (result: {
+    thinking: string;
+    content: string;
+    stopped: boolean;
+    usage?: { inputTokens: number; outputTokens: number };
+  }) => void;
   onError: (error: string) => void;
 };
 
@@ -80,11 +85,19 @@ class ThinkSplitter {
 }
 
 function effortParams(settings: Settings, effort: Effort): Record<string, Effort | boolean> {
-  const configured = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl;
-  const control = configured ?? detectReasoningControl(settings.model);
+  const configured = settings.llamaModels.find((model) => model.name === settings.model);
+  const control = configured?.reasoningControl ?? detectReasoningControl(settings.model);
   if (control === "none") return {};
-  if (control === "toggle") return { enable_thinking: effort !== "low" };
-  return { reasoning_effort: effort };
+  if (control === "toggle") {
+    return { enable_thinking: !["none", "minimal", "low"].includes(effort) };
+  }
+  return {
+    reasoning_effort: normalizeReasoningEffort(
+      settings.model,
+      effort,
+      configured?.reasoningEfforts
+    )
+  };
 }
 
 function reasoningControl(settings: Settings) {
@@ -193,6 +206,7 @@ function historyMessages(history: ChatMessage[], vision: boolean, budget: number
 
 export async function streamChat(opts: {
   settings: Settings;
+  conversationId: string;
   history: ChatMessage[];
   userText: string;
   attachments: Attachment[];
@@ -204,14 +218,19 @@ export async function streamChat(opts: {
 }): Promise<void> {
   const { settings, handlers, abort } = opts;
   const plan = planChatRequest(opts.userText, opts.webSearch, settings.language);
-  const effectiveEffort: Effort = plan.enableThinking ? opts.effort : "low";
   const control = reasoningControl(settings);
+  const configuredEfforts = settings.llamaModels.find(
+    (model) => model.name === settings.model
+  )?.reasoningEfforts;
+  const effectiveEffort: Effort = control === "effort"
+    ? normalizeReasoningEffort(settings.model, opts.effort, configuredEfforts)
+    : opts.effort;
   const params = effortParams(settings, effectiveEffort);
   const enableThinking =
     control === "effort"
-      ? plan.enableThinking
+      ? effectiveEffort !== "none"
       : control === "toggle"
-        ? plan.enableThinking && effectiveEffort !== "low"
+        ? !["none", "minimal", "low"].includes(effectiveEffort)
         : false;
   let searchBlock = "";
   if (plan.useWeb && opts.userText.trim()) {
@@ -234,7 +253,7 @@ export async function streamChat(opts: {
     }
   }
 
-  const mem = settings.memoryEnabled ? memoryBlock(opts.userText) : "";
+  const mem = settings.memoryEnabled ? memoryBlock(opts.userText, opts.conversationId) : "";
   const modelStyle =
     settings.systemPrompt.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
   const system = [
@@ -279,6 +298,7 @@ export async function streamChat(opts: {
         model: settings.model,
         messages: requestMessages,
         stream: true,
+        stream_options: { include_usage: true },
         temperature: plan.kind === "creative" ? 0.8 : plan.enableThinking ? 0.7 : 0.3,
         top_p: 0.95,
         top_k: 20,
@@ -288,10 +308,10 @@ export async function streamChat(opts: {
         // Keep the prompt under roughly 9k tokens so a 16k server has a
         // dedicated completion budget and does not cut off the final answer.
         max_tokens:
-          plan.kind === "arithmetic"
+          plan.kind === "arithmetic" && !enableThinking
             ? 128
-            : plan.enableThinking
-              ? effectiveEffort === "low"
+            : enableThinking
+              ? ["minimal", "low"].includes(effectiveEffort)
                 ? 3072
                 : effectiveEffort === "medium"
                   ? 4608
@@ -366,6 +386,7 @@ export async function streamChat(opts: {
   let buf = "";
   const split = new ThinkSplitter();
   let reasoning = "";
+  let usage: { inputTokens: number; outputTokens: number } | undefined;
   let phase: "preparing" | "thinking" | "answering" = "preparing";
   let lastDeltaAt = 0;
 
@@ -385,6 +406,12 @@ export async function streamChat(opts: {
     const data = trimmed.slice(5).trim();
     if (!data || data === "[DONE]") return;
     let json: {
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        input_tokens?: number;
+        output_tokens?: number;
+      };
       choices?: Array<{
         delta?: {
           content?: string;
@@ -397,6 +424,12 @@ export async function streamChat(opts: {
       json = JSON.parse(data);
     } catch {
       return;
+    }
+    if (json.usage) {
+      usage = {
+        inputTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
+        outputTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0
+      };
     }
     const delta = json.choices?.[0]?.delta;
     if (!delta) return;
@@ -440,7 +473,8 @@ export async function streamChat(opts: {
     handlers.onDone({
       thinking: reasoning + split.thinking,
       content: split.content,
-      stopped: false
+      stopped: false,
+      usage
     });
   } catch (err) {
     split.finish();
@@ -448,7 +482,8 @@ export async function streamChat(opts: {
       handlers.onDone({
         thinking: reasoning + split.thinking,
         content: split.content,
-        stopped: true
+        stopped: true,
+        usage
       });
       return;
     }

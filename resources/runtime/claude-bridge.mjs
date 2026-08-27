@@ -13,6 +13,10 @@ const HOST = process.env.CLAUDE_BRIDGE_HOST || "127.0.0.1";
 const DEFAULT_MODEL = process.env.LLAMA_MODEL_ALIAS || "Qwen3.8-27B";
 const LLAMA_API_KEY = process.env.LLAMA_API_KEY || "";
 const REASONING_CONTROL = process.env.LLAMA_REASONING_CONTROL || "effort";
+const REASONING_EFFORTS = (process.env.LLAMA_REASONING_EFFORTS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const DEFAULT_SYSTEM_PROMPT_PATH = path.join(os.homedir(), ".config", "llama", "LLAMA.md");
 const SYSTEM_PROMPT_PATH = process.env.LLAMA_SYSTEM_PROMPT_PATH || DEFAULT_SYSTEM_PROMPT_PATH;
 const FALLBACK_SYSTEM_PROMPT = "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
@@ -177,9 +181,14 @@ function convertAnthropicToOpenAI(body) {
     }
   }
 
-  const headerEffort = (body.effort || process.env.CLAUDE_EFFORT || "medium").toLowerCase();
+  const requestedEffort = (body.effort || process.env.CLAUDE_EFFORT || "medium").toLowerCase();
   const reasoningControl = REASONING_CONTROL;
-  const enableThinking = headerEffort !== "low";
+  const headerEffort = reasoningControl === "effort" &&
+    REASONING_EFFORTS.length &&
+    !REASONING_EFFORTS.includes(requestedEffort)
+    ? REASONING_EFFORTS.at(-1)
+    : requestedEffort;
+  const enableThinking = !["none", "minimal", "low"].includes(headerEffort);
   const temp = headerEffort === "low" ? 0.3 : headerEffort === "xhigh" ? 0.85 : (body.temperature ?? 0.7);
 
   const payload = {
@@ -194,6 +203,12 @@ function convertAnthropicToOpenAI(body) {
 
   if (reasoningControl === "effort") {
     payload.reasoning_effort = headerEffort;
+    payload.enable_thinking = enableThinking;
+    payload.chat_template_kwargs = {
+      enable_thinking: enableThinking,
+      preserve_thinking: enableThinking,
+      reasoning_effort: headerEffort
+    };
   } else if (reasoningControl === "toggle") {
     payload.enable_thinking = enableThinking;
     payload.chat_template_kwargs = { enable_thinking: enableThinking };
@@ -473,6 +488,7 @@ const server = http.createServer(async (req, res) => {
       backend: LLAMA_URL,
       model: DEFAULT_MODEL,
       reasoningControl: REASONING_CONTROL,
+      reasoningEfforts: REASONING_EFFORTS.join(","),
       styleHash: MODEL_STYLE_HASH
     }));
     return;

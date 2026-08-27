@@ -9,8 +9,8 @@
 发布新版本时，先同步 `package.json` 与 `package-lock.json`，再创建标签：
 
 ```bash
-git tag -a 0.5.0 -m "Release 0.5.0"
-git push origin main 0.5.0
+git tag -a 0.6.0 -m "Release 0.6.0"
+git push origin main 0.6.0
 ```
 
 CI 自动创建 GitHub Release、上传六种系统/架构构建及 `SHA256SUMS.txt`；无需再手工执行 `gh release create`。

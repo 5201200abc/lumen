@@ -9,6 +9,7 @@ import { startScreenshotWatch, stopScreenshotWatch, captureInteractive } from ".
 import { applyTheme, createWindow } from "./window";
 import { cancelGoogleSync, scheduleGoogleSync } from "./google-auth";
 import { registerAttachmentIpc } from "./attachments";
+import { registerToolHostIpc, shutdownToolHost } from "./tool-host";
 
 app.setName("Lumen");
 
@@ -117,6 +118,7 @@ async function ready(): Promise<void> {
   registerTerminalIpc();
   registerCodexIpc();
   registerAttachmentIpc();
+  registerToolHostIpc();
   win = createWindow();
   startScreenshotWatch(getWin);
   buildMenu();
@@ -151,6 +153,7 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     stopScreenshotWatch();
     shutdownCodexRuntime();
+    shutdownToolHost();
     setAfterPersist(null);
     cancelGoogleSync();
     closeDb();

@@ -1,4 +1,4 @@
-export type Effort = "low" | "medium" | "high" | "xhigh";
+export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ReasoningControl = "effort" | "toggle" | "none";
 export type LlamaModel = {
   id: string;
@@ -22,21 +22,43 @@ export type LocalModel = {
  * Automatically detects the reasoning/thinking control mode of a model based on
  * its name, family, and standard capability conventions.
  */
-export function detectReasoningControl(modelName: string): ReasoningControl {
+const EFFORT_ORDER: Effort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export function detectReasoningEfforts(modelName: string, chatTemplate = ""): Effort[] | undefined {
+  const template = chatTemplate.toLowerCase();
+  if (template.includes("reasoning_effort")) {
+    const declared = [...template.matchAll(/reasoning_effort[\s\S]{0,160}?(?:not\s+in|in)\s*\(([^)]*)\)/gi)]
+      .flatMap((match) => [...match[1].matchAll(/['"]([^'"]+)['"]/g)].map((value) => value[1]));
+    const exact = EFFORT_ORDER.filter((effort) => declared.includes(effort));
+    if (exact.length >= 2) return exact;
+    const nearby = [...template.matchAll(/reasoning_effort/gi)]
+      .map((match) => template.slice(match.index, match.index + 300))
+      .join("\n");
+    const detected = EFFORT_ORDER.filter((effort) =>
+      new RegExp(`(?:['"]${effort}['"]|\\b${effort}\\b)`, "i").test(nearby)
+    );
+    return detected.length >= 2 ? detected : ["low", "medium", "high", "xhigh"];
+  }
+  if (/qwen3\.8/i.test(modelName)) return ["low", "medium", "xhigh"];
+  return undefined;
+}
+
+export function detectReasoningControl(modelName: string, chatTemplate = ""): ReasoningControl {
   if (!modelName) return "none";
   const name = modelName.trim().toLowerCase();
+  const template = chatTemplate.toLowerCase();
 
-  // Models whose public API exposes multiple reasoning-effort levels.
+  // The GGUF chat template is derived from the model's published tokenizer and
+  // is authoritative when it declares a controllable thinking parameter.
+  if (template.includes("reasoning_effort")) return "effort";
   if (
-    /(^|[/_-])(o1|o3|o4)([/_.-]|$)/i.test(name) ||
-    /(^|[/_-])gpt-5([/_.-]|$)/i.test(name) ||
-    /claude-(opus|sonnet)-4[._-]6/i.test(name) ||
-    /qwen3\.8/i.test(name) ||
-    /reasoning[-_]?effort/i.test(name) ||
-    /effort[-_]?levels?/i.test(name)
+    template.includes("enable_thinking") ||
+    template.includes("thinking_mode") ||
+    template.includes("enable_reasoning")
   ) {
-    return "effort";
+    return "toggle";
   }
+  if (/qwen3\.8/i.test(name)) return "effort";
 
   // Models that expose thinking as a mode/switch, but not low/medium/high effort.
   if (
@@ -68,11 +90,13 @@ export function detectReasoningControl(modelName: string): ReasoningControl {
   return "none";
 }
 
-export function detectReasoningEfforts(modelName: string): Effort[] | undefined {
-  if (/qwen3\.8/i.test(modelName)) return ["low", "medium", "xhigh"];
-  return detectReasoningControl(modelName) === "effort"
-    ? ["low", "medium", "high", "xhigh"]
-    : undefined;
+export function normalizeReasoningEffort(
+  modelName: string,
+  effort: Effort,
+  supported = detectReasoningEfforts(modelName)
+): Effort {
+  if (!supported) return effort;
+  return supported.includes(effort) ? effort : supported.at(-1) || "medium";
 }
 
 /**
@@ -84,8 +108,8 @@ export function reasoningControlLabel(
 ): { label: string; tag: string; description: string } {
   if (control === "effort") {
     return lang === "zh"
-      ? { label: "思考强度级别", tag: "Effort", description: "支持低/中/高分级思考强度" }
-      : { label: "Reasoning effort levels", tag: "Effort", description: "Supports low / medium / high / xhigh effort levels" };
+      ? { label: "思考强度级别", tag: "Effort", description: "按模型官方模板提供思考强度" }
+      : { label: "Reasoning effort levels", tag: "Effort", description: "Uses the effort levels declared by the model template" };
   }
   if (control === "toggle") {
     return lang === "zh"
@@ -110,7 +134,20 @@ export type ApiKeyItem = {
 };
 
 export type CoworkEngine = "claude-code" | "codex";
+export type CoworkPermissionMode = "ask" | "approve" | "full";
 export type ResearchExtractor = "tavily" | "firecrawl";
+export type ComputerUsePermission = "ask" | "allow" | "block";
+export type PluginSettings = {
+  browser: boolean;
+  sites: boolean;
+  plugins: boolean;
+};
+export type ComputerUsePermissions = {
+  approval: ComputerUsePermission;
+  history: ComputerUsePermission;
+  downloads: ComputerUsePermission;
+  uploads: ComputerUsePermission;
+};
 
 export type Settings = {
   llamaUrl: string;
@@ -132,6 +169,12 @@ export type Settings = {
   chatInstructions: string;
   coworkInstructions: string;
   coworkEngine: CoworkEngine;
+  coworkPermissionMode: CoworkPermissionMode;
+  coworkDefaultPermissions: boolean;
+  coworkFullAccess: boolean;
+  plugins: PluginSettings;
+  computerUseChromeEnabled: boolean;
+  computerUsePermissions: ComputerUsePermissions;
   language: Language;
   fontSize: FontSize;
   modelCatalog: string[];
@@ -166,6 +209,17 @@ export type WorkspaceInfo = {
     deletions: number;
   };
   hasRemote: boolean;
+};
+
+export type CoworkCapabilityId = "browser" | "sites" | "plugins" | "chrome";
+
+export type CoworkToolStatus = {
+  online: boolean;
+  capabilities: Array<{
+    id: CoworkCapabilityId;
+    available: boolean;
+    detail: string;
+  }>;
 };
 
 export type Conversation = {
@@ -228,6 +282,20 @@ export type LlamaStatus = {
   error?: string;
 };
 
+export type ModelBenchmarkResult = {
+  model: string;
+  tokensPerSecond: number;
+  tokens: number;
+  durationMs: number;
+  source: "llama.cpp" | "measured";
+};
+
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
 export type ChatSendPayload = {
   conversationId: string;
   content: string;
@@ -282,6 +350,8 @@ export type CodexTask = {
   title: string;
   cwd: string;
   engine: CoworkEngine;
+  goal?: string;
+  compactedAt?: number;
   contextUsed?: number;
   contextTotal?: number;
   createdAt: number;

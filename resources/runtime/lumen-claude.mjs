@@ -21,11 +21,16 @@ const candidates = [
   "/usr/local/bin/claude"
 ].filter(Boolean);
 const claude = candidates.find((candidate) => fs.existsSync(candidate)) || "claude";
+const permissionMode = process.env.LUMEN_COWORK_PERMISSION_MODE || "full";
+const claudePermissionMode =
+  permissionMode === "ask" ? "manual"
+    : permissionMode === "approve" ? "auto"
+      : "bypassPermissions";
 const args = [
   "--session-id", crypto.randomUUID(),
   "--tools", "Bash,Read,Edit,Write,Glob,Grep",
   "--verbose",
-  "--permission-mode", "bypassPermissions",
+  "--permission-mode", claudePermissionMode,
   "--output-format", "stream-json",
   "-p", prompt
 ];

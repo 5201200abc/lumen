@@ -1,4 +1,4 @@
-import type { Attachment, CodexMessage, CoworkEngine, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CodexMessage, CoworkCapabilityId, CoworkEngine, CoworkToolStatus, WorkspaceInfo } from "@shared/types";
 import { toolDescription } from "@shared/cowork-status";
 import {
   IconBranch,
@@ -6,6 +6,7 @@ import {
   IconChanges,
   IconExternal,
   IconFileText,
+  IconGear,
   IconGithub,
   IconGlobe,
   IconLaptop,
@@ -21,6 +22,7 @@ type Props = {
   model: string;
   messages: CodexMessage[];
   attachments: Attachment[];
+  toolStatus: CoworkToolStatus | null;
   onSelectWorkspace: () => void;
   onAddSource: () => void;
   onPrompt: (prompt: string) => void;
@@ -41,14 +43,29 @@ function sourceFiles(messages: CodexMessage[], pending: Attachment[]): Attachmen
   });
 }
 
+function relevantTools(messages: CodexMessage[]): CoworkCapabilityId[] {
+  const used = new Set<CoworkCapabilityId>();
+  for (const tool of messages.flatMap((message) => message.toolCalls || [])) {
+    const name = tool.name.toLowerCase();
+    if (name.includes("chrome_")) used.add("chrome");
+    else if (name.includes("browser_")) used.add("browser");
+    else if (name.includes("sites_")) used.add("sites");
+    else if (name.includes("plugins_")) used.add("plugins");
+  }
+  return [...used];
+}
+
 export function EnvironmentPanel(props: Props) {
   const isZh = (props.language ?? "en") === "zh";
   const changes = props.workspace?.changes || { files: 0, additions: 0, deletions: 0 };
   const sources = sourceFiles(props.messages, props.attachments).slice(0, 3);
+  const taskTools = relevantTools(props.messages);
   const activeTool = props.messages
     .flatMap((message) => message.toolCalls || [])
     .find((tool) => tool.status === "running");
   const branch = props.workspace?.branch || (isZh ? "无 Git" : "No Git");
+  const capability = (id: CoworkCapabilityId) =>
+    props.toolStatus?.capabilities.find((item) => item.id === id);
 
   return (
     <aside className="environment-rail" aria-label={isZh ? "环境" : "Environment"}>
@@ -143,22 +160,46 @@ export function EnvironmentPanel(props: Props) {
               <span>{file.name}</span>
             </div>
           ))}
-          <button
-            type="button"
-            className="environment-source capability"
-            onClick={() => props.onPrompt(isZh ? "使用联网搜索或浏览器检索此任务的相关信息，并给出参考来源。" : "Use web search or browser control to research the task, then cite the relevant sources.")}
-          >
-            <span className="environment-source-icon"><IconGlobe size={13} /></span>
-            <span>{isZh ? "联网检索与浏览器" : "Web search & browser"}</span>
-          </button>
-          <button
-            type="button"
-            className="environment-source capability"
-            onClick={() => props.onPrompt(isZh ? "使用电脑操作功能检查并操作该任务相关的应用程序界面。" : "Use Computer Use to inspect and operate the relevant application UI for this task.")}
-          >
-            <span className="environment-source-icon"><IconLaptop size={13} /></span>
-            <span>{isZh ? "电脑操作" : "Computer use"}</span>
-          </button>
+          {taskTools.map((id) => {
+            const labels: Record<CoworkCapabilityId, string> = {
+              browser: "Browser",
+              sites: "Sites",
+              plugins: "Plugin Management",
+              chrome: "Google Chrome"
+            };
+            const prompts: Record<CoworkCapabilityId, string> = {
+              browser: isZh ? "继续使用 Lumen 内置浏览器处理当前任务。" : "Continue the current task with Lumen's built-in browser.",
+              sites: isZh ? "继续使用 Lumen Sites 处理当前网站。" : "Continue working with the current Lumen Sites preview.",
+              plugins: isZh ? "继续使用 Plugin Management 检查相关插件。" : "Continue inspecting relevant plugins with Plugin Management.",
+              chrome: isZh ? "继续使用 Google Chrome Computer use 处理当前任务。" : "Continue the current task with Google Chrome Computer use."
+            };
+            return (
+              <button
+                type="button"
+                className="environment-source capability"
+                key={id}
+                disabled={!capability(id)?.available}
+                onClick={() => props.onPrompt(prompts[id])}
+                title={capability(id)?.detail}
+              >
+                <span className="environment-source-icon">
+                  {id === "sites" ? <IconLaptop size={13} /> : id === "plugins" ? <IconGear size={13} /> : <IconGlobe size={13} />}
+                </span>
+                <span>{labels[id]}</span>
+                <span className={`capability-state ${capability(id)?.available ? "ready" : ""}`}>
+                  {capability(id)?.available
+                    ? capability(id)?.detail || (isZh ? "可用" : "Ready")
+                    : (isZh ? "不可用" : "Unavailable")}
+                </span>
+              </button>
+            );
+          })}
+          {!sources.length && !taskTools.length ? (
+            <div className="environment-empty-row">
+              <IconFileText size={14} />
+              <span>{isZh ? "当前任务暂无相关资源" : "No task resources yet"}</span>
+            </div>
+          ) : null}
         </section>
       </div>
     </aside>

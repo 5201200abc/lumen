@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { GoogleAccount } from "@shared/types";
-import { IconGear } from "./icons";
+import type { GoogleAccount, TokenUsage } from "@shared/types";
+import { IconGear, IconUsage } from "./icons";
 
 type Props = {
   account: GoogleAccount;
@@ -18,9 +18,27 @@ function initials(account: GoogleAccount): string {
   return source.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 }
 
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const value = tokens / 1_000_000;
+    return `${value >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (tokens >= 1_000) {
+    const value = tokens / 1_000;
+    return `${value >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return String(tokens);
+}
+
 export function AccountMenu(props: Props) {
   const [open, setOpen] = useState(false);
+  const [usage, setUsage] = useState<TokenUsage>({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
   const root = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void window.lumen.usage.get().then(setUsage);
+    return window.lumen.usage.onUpdated(setUsage);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +83,14 @@ export function AccountMenu(props: Props) {
               <span>{props.busy ? "Cancel sign-in" : "Continue with Google"}</span>
             </button>
           )}
+          <div
+            className="account-menu-row account-usage-row"
+            title={`${usage.totalTokens.toLocaleString()} tokens · ${usage.inputTokens.toLocaleString()} input · ${usage.outputTokens.toLocaleString()} output`}
+          >
+            <span className="account-row-icon"><IconUsage size={17} /></span>
+            <span>Usages</span>
+            <strong>{compactTokens(usage.totalTokens)}</strong>
+          </div>
           <button
             type="button"
             className="account-menu-row"

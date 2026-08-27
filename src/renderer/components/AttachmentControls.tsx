@@ -1,17 +1,83 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Attachment } from "@shared/types";
-import { IconFileText, IconFolder, IconPlus } from "./icons";
+import { IconFileText, IconGear, IconGlobe, IconLaptop, IconPlus } from "./icons";
 
 type Props = {
   attachments: Attachment[];
   onAdd: (files: Attachment[]) => void;
   onRemove: (id: string) => void;
+  pluginActions?: Array<{
+    id: "sites" | "browser" | "plugins";
+    label: string;
+    description: string;
+    available: boolean;
+    onSelect: () => void;
+  }>;
 };
 
 function formatBytes(value = 0): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
   return `${(value / 1024 / 1024).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+export function AttachmentImage({
+  attachment,
+  variant = "card"
+}: {
+  attachment: Attachment;
+  variant?: "card" | "icon";
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [open]);
+
+  if (!attachment.dataUrl) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className={variant === "card" ? "user-image-card" : "attachment-image-button"}
+        title={attachment.name}
+        aria-label={`Open ${attachment.name}`}
+        onClick={() => setOpen(true)}
+      >
+        <img src={attachment.dataUrl} alt={attachment.name} loading="lazy" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              className="image-preview-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-label={attachment.name}
+              onMouseDown={(event) => {
+                if (event.currentTarget === event.target) setOpen(false);
+              }}
+            >
+              <button
+                type="button"
+                className="image-preview-close"
+                aria-label="Close image preview"
+                onClick={() => setOpen(false)}
+              >
+                ×
+              </button>
+              <img className="image-preview-full" src={attachment.dataUrl} alt={attachment.name} />
+            </div>,
+            document.body
+          )
+        : null}
+    </>
+  );
 }
 
 export function AttachmentList({ attachments, onRemove }: { attachments: Attachment[]; onRemove?: (id: string) => void }) {
@@ -22,7 +88,7 @@ export function AttachmentList({ attachments, onRemove }: { attachments: Attachm
         <div className="attachment-row" key={file.id} title={file.path || file.name}>
           <span className={`attachment-icon ${file.kind || "file"}`}>
             {file.kind === "image" && file.dataUrl ? (
-              <img src={file.dataUrl} alt="" />
+              <AttachmentImage attachment={file} variant="icon" />
             ) : file.relativePath ? (
               <IconFolder size={15} />
             ) : (
@@ -44,7 +110,7 @@ export function AttachmentList({ attachments, onRemove }: { attachments: Attachm
   );
 }
 
-export function AttachmentAddButton({ attachments, onAdd, onRemove }: Props) {
+export function AttachmentAddButton({ attachments, onAdd, pluginActions = [] }: Props) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -57,14 +123,11 @@ export function AttachmentAddButton({ attachments, onAdd, onRemove }: Props) {
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  const pick = async (kind: "files" | "folder") => {
+  const pick = async () => {
     setBusy(true);
     setOpen(false);
     try {
-      const selected =
-        kind === "files"
-          ? await window.lumen.attachments.pickFiles()
-          : await window.lumen.attachments.pickFolder();
+      const selected = await window.lumen.attachments.pickFilesAndFolders();
       if (selected.length) onAdd(selected);
     } finally {
       setBusy(false);
@@ -87,14 +150,31 @@ export function AttachmentAddButton({ attachments, onAdd, onRemove }: Props) {
       {open ? (
         <div className="attachment-menu" role="menu">
           <span className="attachment-menu-title">Add</span>
-          <button type="button" role="menuitem" onClick={() => void pick("files")}>
+          <button type="button" role="menuitem" onClick={() => void pick()}>
             <IconFileText size={17} />
-            <span><strong>Files</strong><small>Images, PPT, PDF, code, and more</small></span>
+            <span><strong>File and folder</strong><small>Images, documents, code, or a local folder</small></span>
           </button>
-          <button type="button" role="menuitem" onClick={() => void pick("folder")}>
-            <IconFolder size={17} />
-            <span><strong>Folder</strong><small>Add files inside a local folder</small></span>
-          </button>
+          {pluginActions.length ? (
+            <>
+              <div className="attachment-menu-divider" />
+              <span className="attachment-menu-title">Plugins</span>
+              {pluginActions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  role="menuitem"
+                  disabled={!action.available}
+                  onClick={() => {
+                    setOpen(false);
+                    action.onSelect();
+                  }}
+                >
+                  {action.id === "browser" ? <IconGlobe size={17} /> : action.id === "sites" ? <IconLaptop size={17} /> : <IconGear size={17} />}
+                  <span><strong>{action.label}</strong><small>{action.description}</small></span>
+                </button>
+              ))}
+            </>
+          ) : null}
         </div>
       ) : null}
       <span className="sr-only">{attachments.length} attachments</span>

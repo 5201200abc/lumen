@@ -5,11 +5,13 @@ import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
 import { app } from "electron";
-import type { LlamaStatus, LocalModel, Settings } from "@shared/types";
+import type { LlamaStatus, LocalModel, ModelBenchmarkResult, Settings } from "@shared/types";
 import { detectReasoningControl, detectReasoningEfforts } from "@shared/types";
+import { readGgufTextMetadata } from "./gguf-metadata";
 import { setDetectedLlamaPort } from "./store";
 
 const DEFAULT_DIR = join(homedir(), "models");
+const MAX_LOCAL_MODELS = 5;
 const LOOPBACK_URL = "http://127.0.0.1/v1";
 const execFileAsync = promisify(execFile);
 type LlamaListener = { pid: number; port: number };
@@ -58,18 +60,24 @@ export function discoverLocal(modelsDir = DEFAULT_DIR): {
       ggufs.find((candidate) => dirname(candidate) === parent && /mmproj/i.test(basename(candidate))) ||
       null;
     const capabilityName = `${name} ${basename(path)}`;
+    const metadata = readGgufTextMetadata(path);
+    const chatTemplate = Object.entries(metadata)
+      .filter(([key]) => key.startsWith("tokenizer.chat_template"))
+      .map(([, value]) => value)
+      .join("\n");
     return {
       name,
       path,
       mmproj: projector,
       vision: Boolean(projector),
-      reasoningControl: detectReasoningControl(capabilityName),
-      reasoningEfforts: detectReasoningEfforts(capabilityName)
+      reasoningControl: detectReasoningControl(capabilityName, chatTemplate),
+      reasoningEfforts: detectReasoningEfforts(capabilityName, chatTemplate)
     };
   });
-  const models = [...new Map(discoveredModels.map((model) => [model.name, model])).values()];
+  const models = [...new Map(discoveredModels.map((model) => [model.name, model])).values()]
+    .slice(0, MAX_LOCAL_MODELS);
   return {
-    ggufs: modelFiles,
+    ggufs: models.map((model) => model.path),
     models
   };
 }
@@ -279,6 +287,97 @@ export async function probeLlama(settings: Settings): Promise<LlamaStatus> {
         ? `${endpoint.port} 端口当前是旧单模型服务（${runningModel}），Lumen 将替换为多模型路由服务。`
         : undefined
   };
+}
+
+export async function benchmarkLocalModel(settings: Settings, model: string): Promise<ModelBenchmarkResult> {
+  if (!model || model !== settings.model) {
+    throw new Error("Only the current active model can be benchmarked.");
+  }
+  if (!settings.llamaModels.some((candidate) => candidate.name === model)) {
+    throw new Error(`Model "${model}" is no longer available. Refresh the local model list.`);
+  }
+
+  const status = await probeLlama(settings);
+  if (!status.online) throw new Error(status.error || "llama-server is not running.");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120_000);
+  const startedAt = performance.now();
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (settings.llamaApiKey) headers.Authorization = `Bearer ${settings.llamaApiKey}`;
+    const response = await fetch(`${settings.llamaUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: "Write exactly 100 short lowercase English words separated by spaces. Output only the words."
+          }
+        ],
+        temperature: 0,
+        max_tokens: 128,
+        stream: false
+      })
+    });
+    const elapsedMs = performance.now() - startedAt;
+    const raw = await response.text();
+    let payload: {
+      error?: { message?: string } | string;
+      timings?: {
+        predicted_per_second?: number;
+        predicted_n?: number;
+        predicted_ms?: number;
+      };
+      usage?: { completion_tokens?: number };
+    } = {};
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch {
+      if (!response.ok) throw new Error(`llama-server returned HTTP ${response.status}: ${raw.slice(0, 240)}`);
+    }
+    if (!response.ok) {
+      const detail = typeof payload.error === "string" ? payload.error : payload.error?.message;
+      throw new Error(detail || `llama-server returned HTTP ${response.status}.`);
+    }
+
+    const directSpeed = Number(payload.timings?.predicted_per_second);
+    const timingTokens = Number(payload.timings?.predicted_n);
+    const timingDuration = Number(payload.timings?.predicted_ms);
+    const completionTokens = Number(payload.usage?.completion_tokens);
+    const hasDirectSpeed = Number.isFinite(directSpeed) && directSpeed > 0;
+    const tokens = Number.isFinite(timingTokens) && timingTokens > 0
+      ? timingTokens
+      : completionTokens;
+    const durationMs = Number.isFinite(timingDuration) && timingDuration > 0
+      ? timingDuration
+      : elapsedMs;
+    const tokensPerSecond = hasDirectSpeed
+      ? directSpeed
+      : Number.isFinite(tokens) && tokens > 0 && elapsedMs > 0
+        ? tokens / (elapsedMs / 1000)
+        : 0;
+    if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+      throw new Error("llama-server did not return generation timing or completion token usage.");
+    }
+    return {
+      model,
+      tokensPerSecond,
+      tokens: Number.isFinite(tokens) && tokens > 0 ? Math.round(tokens) : 0,
+      durationMs: Math.round(durationMs),
+      source: hasDirectSpeed ? "llama.cpp" : "measured"
+    };
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === "AbortError") {
+      throw new Error("Speed test timed out after 120 seconds.");
+    }
+    throw cause;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function startLocalLlama(settings: Settings, restart = false): Promise<void> {

@@ -121,6 +121,15 @@ async function serializePaths(paths: string[]): Promise<Attachment[]> {
 }
 
 export function registerAttachmentIpc(): void {
+  ipcMain.handle("attachments:pickFilesAndFolders", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return [];
+    const result = await dialog.showOpenDialog(win, {
+      title: "Add file or folder",
+      properties: ["openFile", "openDirectory", "multiSelections"]
+    });
+    return result.canceled ? [] : serializePaths(result.filePaths);
+  });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return [];

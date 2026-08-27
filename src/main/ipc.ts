@@ -15,13 +15,14 @@ import {
   clearMemories
 } from "./db";
 import { streamChat } from "./llama";
-import { ensureLocalLlama, probeLlama, stopLocalLlama } from "./models";
+import { benchmarkLocalModel, ensureLocalLlama, probeLlama, stopLocalLlama } from "./models";
 import { getSettings, setSettings } from "./store";
 import { maybeRemember } from "./memory";
 import { captureInteractive, markClipboard } from "./screenshot";
 import { applyTheme } from "./window";
 import { generateConversationTitle } from "./title";
 import { cancelGoogleLogin, googleLogin, googleLogout, googleStatus, googleSync } from "./google-auth";
+import { recordTokenUsage, tokenUsage } from "./usage";
 
 const aborts = new Map<string, AbortController>();
 
@@ -99,6 +100,7 @@ async function beginStream(opts: {
     : history.filter((m) => m.id !== userId && m.id !== opts.replaceAssistantId);
   void streamChat({
     settings,
+    conversationId: opts.conversationId,
     history: hist,
     userText: opts.content,
     attachments: opts.attachments,
@@ -135,6 +137,9 @@ async function beginStream(opts: {
           thinking: result.thinking,
           durationSeconds
         });
+        if (result.usage) {
+          recordTokenUsage(result.usage.inputTokens, result.usage.outputTokens);
+        }
         if (settings.memoryEnabled && !result.stopped && result.content.trim()) {
           maybeRemember(userMsg, {
             ...userMsg,
@@ -199,11 +204,13 @@ export function registerIpc(): void {
   ipcMain.handle("google:cancelLogin", () => cancelGoogleLogin());
   ipcMain.handle("google:logout", () => googleLogout());
   ipcMain.handle("google:sync", () => googleSync());
+  ipcMain.handle("usage:get", () => tokenUsage());
 
   ipcMain.handle("models:status", async () => probeLlama(getSettings()));
   ipcMain.handle("models:ensure", async () => ensureLocalLlama(getSettings(), false));
   ipcMain.handle("models:reconnect", async () => ensureLocalLlama(getSettings(), true));
   ipcMain.handle("models:stop", async () => stopLocalLlama(getSettings()));
+  ipcMain.handle("models:benchmark", async (_e, model: string) => benchmarkLocalModel(getSettings(), model));
 
   ipcMain.handle("chats:list", () => listConversations());
   ipcMain.handle("chats:search", (_e, q: string) => searchConversations(q));

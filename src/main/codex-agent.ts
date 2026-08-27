@@ -11,11 +11,16 @@ import { toolActivity } from "@shared/cowork-status";
 import { generateConversationTitle } from "./title";
 import { getSettings, SYSTEM_PROMPT_PATH } from "./store";
 import { probeLlama } from "./models";
+import { ensureToolHost } from "./tool-host";
+import { recordTokenUsage } from "./usage";
 
 const tasks = new Map<string, CodexTask>();
 const messages = new Map<string, CodexMessage[]>();
 const activeProcesses = new Map<string, ChildProcess>();
 const codexSessions = new Map<string, string>();
+type ClaudeSessionState = { id: string; started: boolean };
+const claudeSessions = new Map<string, ClaudeSessionState>();
+const compactContexts = new Map<string, string>();
 let bridgeProcess: ChildProcess | null = null;
 let bridgeStartup: Promise<void> | null = null;
 let bridgeConfig = "";
@@ -25,8 +30,33 @@ let codexBridgeConfig = "";
 const CLAUDE_BRIDGE_URL = "http://127.0.0.1:18086";
 const CODEX_BRIDGE_URL = "http://127.0.0.1:18085";
 
+function compactTaskContext(taskMessages: CodexMessage[]): string {
+  return taskMessages
+    .filter((message) => message.role !== "system" && message.content.trim())
+    .slice(-16)
+    .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${message.content.trim().slice(0, 1600)}`)
+    .join("\n\n")
+    .slice(-12000);
+}
+
 function modelStyleHash(style: string): string {
   return crypto.createHash("sha256").update(style.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。").digest("hex").slice(0, 16);
+}
+
+function reasoningCapability(settings: Settings): {
+  control: ReturnType<typeof detectReasoningControl>;
+  efforts: string;
+} {
+  const model = settings.llamaModels.find((item) => item.name === settings.model);
+  return {
+    control: model?.reasoningControl ?? detectReasoningControl(settings.model),
+    efforts: (model?.reasoningEfforts || []).join(",")
+  };
+}
+
+function bridgeFingerprint(settings: Settings): string {
+  const capability = reasoningCapability(settings);
+  return `${settings.llamaUrl}\n${settings.model}\n${capability.control}\n${capability.efforts}\n${modelStyleHash(settings.systemPrompt)}`;
 }
 
 const homeDir = process.env.HOME || os.homedir();
@@ -97,13 +127,12 @@ async function bridgeReady(settings?: Settings): Promise<boolean> {
     if (!response.ok) return false;
     if (!settings) return true;
     const status = await response.json() as Record<string, string>;
-    const configured =
-      settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl ??
-      detectReasoningControl(settings.model);
+    const capability = reasoningCapability(settings);
     return status.bridge === "lumen-claude" &&
       status.backend?.replace(/\/+$/, "") === settings.llamaUrl.replace(/\/+$/, "") &&
       status.model === settings.model &&
-      status.reasoningControl === configured &&
+      status.reasoningControl === capability.control &&
+      status.reasoningEfforts === capability.efforts &&
       status.styleHash === modelStyleHash(settings.systemPrompt);
   } catch {
     return false;
@@ -117,8 +146,7 @@ async function startClaudeBridge(settings = getSettings()): Promise<void> {
   if (await bridgeReady(settings)) return;
   const script = runtimeResource("claude-bridge.mjs");
   if (!script) throw new Error("The bundled Cowork bridge is missing from this installation.");
-  const configured = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl;
-  const reasoningControl = configured ?? detectReasoningControl(settings.model);
+  const capability = reasoningCapability(settings);
   bridgeProcess = spawn(process.execPath, [script], {
     env: {
       ...process.env,
@@ -126,7 +154,8 @@ async function startClaudeBridge(settings = getSettings()): Promise<void> {
       LLAMA_URL: settings.llamaUrl,
       LLAMA_API_KEY: settings.llamaApiKey,
       LLAMA_MODEL_ALIAS: settings.model,
-      LLAMA_REASONING_CONTROL: reasoningControl,
+      LLAMA_REASONING_CONTROL: capability.control,
+      LLAMA_REASONING_EFFORTS: capability.efforts,
       LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
       LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
       CLAUDE_BRIDGE_HOST: "127.0.0.1",
@@ -139,7 +168,7 @@ async function startClaudeBridge(settings = getSettings()): Promise<void> {
     bridgeProcess = null;
     bridgeConfig = "";
   });
-  bridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
+  bridgeConfig = bridgeFingerprint(settings);
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     if (await bridgeReady(settings)) return;
@@ -151,9 +180,7 @@ async function startClaudeBridge(settings = getSettings()): Promise<void> {
 
 async function ensureClaudeBridge(): Promise<void> {
   const settings = getSettings();
-  const configured = settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl;
-  const reasoningControl = configured ?? detectReasoningControl(settings.model);
-  const wantedConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
+  const wantedConfig = bridgeFingerprint(settings);
   if (bridgeProcess && bridgeConfig !== wantedConfig) {
     bridgeProcess.kill();
     for (let attempt = 0; attempt < 20 && await bridgeReady(); attempt += 1) {
@@ -179,13 +206,12 @@ async function codexBridgeReady(settings?: Settings): Promise<boolean> {
     if (!response.ok) return false;
     if (!settings) return true;
     const status = await response.json() as Record<string, string>;
-    const configured =
-      settings.llamaModels.find((model) => model.name === settings.model)?.reasoningControl ??
-      detectReasoningControl(settings.model);
+    const capability = reasoningCapability(settings);
     return status.bridge === "lumen-codex" &&
       status.backend?.replace(/\/+$/, "") === settings.llamaUrl.replace(/\/+$/, "") &&
       status.model === settings.model &&
-      status.reasoningControl === configured &&
+      status.reasoningControl === capability.control &&
+      status.reasoningEfforts === capability.efforts &&
       status.styleHash === modelStyleHash(settings.systemPrompt);
   } catch {
     return false;
@@ -198,9 +224,7 @@ async function startCodexBridge(settings = getSettings()): Promise<void> {
   if (await codexBridgeReady(settings)) return;
   const script = runtimeResource("codex-responses-bridge.mjs");
   if (!script) throw new Error("The bundled Codex Responses bridge is missing.");
-  const reasoningControl =
-    settings.llamaModels.find((item) => item.name === settings.model)?.reasoningControl ??
-    detectReasoningControl(settings.model);
+  const capability = reasoningCapability(settings);
   codexBridgeProcess = spawn(process.execPath, [script], {
     env: {
       ...process.env,
@@ -208,14 +232,15 @@ async function startCodexBridge(settings = getSettings()): Promise<void> {
       LLAMA_URL: settings.llamaUrl,
       LLAMA_API_KEY: settings.llamaApiKey,
       LLAMA_MODEL_ALIAS: settings.model,
-      LLAMA_REASONING_CONTROL: reasoningControl,
+      LLAMA_REASONING_CONTROL: capability.control,
+      LLAMA_REASONING_EFFORTS: capability.efforts,
       LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
       LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
       CODEX_BRIDGE_PORT: "18085"
     },
     stdio: "ignore"
   });
-  codexBridgeConfig = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
+  codexBridgeConfig = bridgeFingerprint(settings);
   codexBridgeProcess.once("exit", () => {
     codexBridgeProcess = null;
     codexBridgeConfig = "";
@@ -229,10 +254,7 @@ async function startCodexBridge(settings = getSettings()): Promise<void> {
 
 async function ensureCodexBridge(): Promise<void> {
   const settings = getSettings();
-  const reasoningControl =
-    settings.llamaModels.find((item) => item.name === settings.model)?.reasoningControl ??
-    detectReasoningControl(settings.model);
-  const wanted = `${settings.llamaUrl}\n${settings.model}\n${reasoningControl}\n${modelStyleHash(settings.systemPrompt)}`;
+  const wanted = bridgeFingerprint(settings);
   if (codexBridgeProcess && codexBridgeConfig !== wanted) {
     codexBridgeProcess.kill();
     for (let attempt = 0; attempt < 20 && await codexBridgeReady(); attempt += 1) {
@@ -326,7 +348,55 @@ export function registerCodexIpc(): void {
     tasks.delete(taskId);
     messages.delete(taskId);
     codexSessions.delete(taskId);
+    claudeSessions.delete(taskId);
+    compactContexts.delete(taskId);
     return true;
+  });
+
+  ipcMain.handle("codex:setGoal", (_e, taskId: string, rawGoal: string) => {
+    const task = tasks.get(taskId);
+    if (!task) throw new Error("Cowork task not found.");
+    const goal = rawGoal.trim().slice(0, 4000);
+    if (!goal) throw new Error("Goal cannot be empty.");
+    task.goal = goal;
+    task.updatedAt = Date.now();
+    const message: CodexMessage = {
+      id: crypto.randomUUID(),
+      taskId,
+      role: "system",
+      content: `Goal set: ${goal}`,
+      status: "done",
+      activity: "Goal updated",
+      createdAt: Date.now()
+    };
+    const taskMessages = messages.get(taskId) || [];
+    taskMessages.push(message);
+    messages.set(taskId, taskMessages);
+    return { task, message };
+  });
+
+  ipcMain.handle("codex:compact", (_e, taskId: string) => {
+    const task = tasks.get(taskId);
+    if (!task) throw new Error("Cowork task not found.");
+    compactContexts.set(taskId, compactTaskContext(messages.get(taskId) || []));
+    codexSessions.delete(taskId);
+    claudeSessions.set(taskId, { id: crypto.randomUUID(), started: false });
+    task.contextUsed = 0;
+    task.compactedAt = Date.now();
+    task.updatedAt = Date.now();
+    const message: CodexMessage = {
+      id: crypto.randomUUID(),
+      taskId,
+      role: "system",
+      content: "Context compacted. The next turn will continue from a bounded summary.",
+      status: "done",
+      activity: "Context compacted",
+      createdAt: Date.now()
+    };
+    const taskMessages = messages.get(taskId) || [];
+    taskMessages.push(message);
+    messages.set(taskId, taskMessages);
+    return { task, message };
   });
 
   ipcMain.handle("codex:selectDirectory", async (event) => {
@@ -366,7 +436,12 @@ export function registerCodexIpc(): void {
     }
     await Promise.all([ensureClaudeBridge(), ensureCodexBridge()]);
     const resolvedCwd = resolveWorkingDir(cwd || defaultCwd);
+    const toolHost = await ensureToolHost();
+    const codexRuntimeHome = path.join(app.getPath("userData"), "codex-runtime");
+    fs.mkdirSync(codexRuntimeHome, { recursive: true });
     const coworkInstructions = getSettings().coworkInstructions.trim();
+    const existingTask = tasks.get(taskId);
+    const compactedContext = compactContexts.get(taskId);
     const reasoningDiscipline =
       "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach.</reasoning_discipline>";
     const attachmentBlock = attachments.length
@@ -378,10 +453,19 @@ export function registerCodexIpc(): void {
       coworkInstructions
         ? `<custom_instructions>\n${coworkInstructions}\n</custom_instructions>`
         : "",
+      existingTask?.goal
+        ? `<active_goal>\n${existingTask.goal}\nKeep this goal active until it is achieved or explicitly replaced.</active_goal>`
+        : "",
+      compactedContext
+        ? `<compacted_context>\n${compactedContext}\n</compacted_context>`
+        : "",
       reasoningDiscipline,
       selectedEngine === "claude-code"
         ? `<peer_agent>Claude Code is the lead agent. For a bounded subtask that needs Codex Computer Use, browser control, web research, or GitHub automation, call: node ${JSON.stringify(runtimeResource("lumen-codex.mjs") || "lumen-codex.mjs")} "TASK". The peer uses the same selected model and endpoint. Call one peer at a time and incorporate its result.</peer_agent>`
         : `<peer_agent>Codex is the lead agent. For a bounded subtask that benefits from Claude Code's repository analysis or implementation workflow, call: node ${JSON.stringify(runtimeResource("lumen-claude.mjs") || "lumen-claude.mjs")} "TASK". The peer uses the same selected model and endpoint. Call one peer at a time and incorporate its result.</peer_agent>`,
+      selectedEngine === "codex"
+        ? "<lumen_tool_guidance>Lumen Browser, Sites, and Plugin Management are MCP tools, not MCP resources. If a requested Lumen tool is deferred, use tool_search with its exact name. Never use list_mcp_resources to invoke a tool.</lumen_tool_guidance>"
+        : "",
       attachmentBlock,
       prompt
     ]
@@ -444,6 +528,17 @@ export function registerCodexIpc(): void {
     taskMessages.push(asstMsg);
     messages.set(taskId, taskMessages);
 
+    const permissionMode = settings.coworkPermissionMode;
+    const claudePermissionMode =
+      permissionMode === "full" ? "bypassPermissions"
+        : permissionMode === "approve" ? "auto"
+          : "acceptEdits";
+    const codexPermissionArgs =
+      permissionMode === "full"
+        ? ["--dangerously-bypass-approvals-and-sandbox"]
+        : permissionMode === "approve"
+          ? ["--approve-for-me"]
+          : ["--sandbox", "workspace-write"];
     const agentEnv = {
       ...process.env,
       ANTHROPIC_BASE_URL: CLAUDE_BRIDGE_URL,
@@ -454,33 +549,103 @@ export function registerCodexIpc(): void {
       CLAUDE_EFFORT: effort || "medium",
       LLAMA_MODEL_ALIAS: model || "Qwen3.8-27B",
       LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
-      LLAMA_SYSTEM_PROMPT: settings.systemPrompt
+      LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
+      ELECTRON_RUN_AS_NODE: "1",
+      LUMEN_TOOL_HOST_URL: toolHost.url,
+      LUMEN_TOOL_HOST_TOKEN: toolHost.token,
+      LUMEN_TOOL_WORKSPACE: resolvedCwd,
+      LUMEN_PLUGIN_BROWSER: settings.plugins.browser ? "1" : "0",
+      LUMEN_PLUGIN_SITES: settings.plugins.sites ? "1" : "0",
+      LUMEN_PLUGIN_MANAGEMENT: settings.plugins.plugins ? "1" : "0",
+      LUMEN_COMPUTER_USE_CHROME: settings.computerUseChromeEnabled ? "1" : "0",
+      LUMEN_COWORK_PERMISSION_MODE: permissionMode,
+      ...(selectedEngine === "codex" ? { CODEX_HOME: codexRuntimeHome } : {})
     };
 
     const selectedModel = model || settings.model;
     const codexSession = codexSessions.get(taskId);
+    const claudeSession = claudeSessions.get(taskId) || { id: taskId, started: previousCompletedTurns > 0 };
     const executable = selectedEngine === "codex" ? getCodexBin() : getClaudeBin();
     const sharedCodexArgs = [
       "--json",
+      "--ignore-user-config",
+      "--disable", "apps",
+      "--disable", "plugins",
+      "--disable", "plugin_sharing",
+      "--disable", "remote_plugin",
+      "--disable", "in_app_browser",
+      "--disable", "computer_use",
+      "--disable", "image_generation",
+      "--disable", "skill_search",
+      "--disable", "skill_mcp_dependency_install",
       "--skip-git-repo-check",
+      ...codexPermissionArgs,
       "-m", selectedModel,
       "-c", 'model_provider="lumen_local"',
       "-c", `model_providers.lumen_local=${codexProviderConfig(`${CODEX_BRIDGE_URL}/v1`)}`,
       "-c", `model_reasoning_effort=${JSON.stringify(effort || settings.defaultEffort)}`,
-      "-c", "model_context_window=16384"
+      "-c", "model_context_window=16384",
+      "-c", `mcp_servers.lumen.command=${JSON.stringify(process.execPath)}`,
+      "-c", `mcp_servers.lumen.args=${JSON.stringify([toolHost.script])}`,
+      "-c", "mcp_servers.lumen.startup_timeout_sec=10"
     ];
     const args = selectedEngine === "codex"
       ? codexSession
         ? ["exec", "resume", ...sharedCodexArgs, codexSession, effectivePrompt]
         : ["exec", ...sharedCodexArgs, "-C", resolvedCwd, effectivePrompt]
       : [
-          previousCompletedTurns > 0 ? "--resume" : "--session-id",
-          taskId,
+          claudeSession.started ? "--resume" : "--session-id",
+          claudeSession.id,
           "--tools",
-          "Bash,Read,Edit,Write,Glob,Grep",
+          [
+            "Bash",
+            "Read",
+            "Edit",
+            "Write",
+            "Glob",
+            "Grep",
+            "mcp__lumen__browser_open",
+            "mcp__lumen__browser_snapshot",
+            "mcp__lumen__browser_click",
+            "mcp__lumen__browser_type",
+            "mcp__lumen__browser_screenshot",
+            "mcp__lumen__sites_preview",
+            "mcp__lumen__sites_status",
+            "mcp__lumen__plugins_list",
+            "mcp__lumen__chrome_open",
+            "mcp__lumen__chrome_snapshot",
+            "mcp__lumen__chrome_click",
+            "mcp__lumen__chrome_type",
+            "mcp__lumen__chrome_screenshot"
+          ].filter((tool) => {
+            if (tool.includes("__browser_")) return settings.plugins.browser;
+            if (tool.includes("__sites_")) return settings.plugins.sites;
+            if (tool.includes("__plugins_")) return settings.plugins.plugins;
+            if (tool.includes("__chrome_")) return settings.computerUseChromeEnabled;
+            return true;
+          }).join(","),
+          "--mcp-config",
+          JSON.stringify({
+            mcpServers: {
+              lumen: {
+                command: process.execPath,
+                args: [toolHost.script],
+                env: {
+                  ELECTRON_RUN_AS_NODE: "1",
+                  LUMEN_TOOL_HOST_URL: toolHost.url,
+                  LUMEN_TOOL_HOST_TOKEN: toolHost.token,
+                  LUMEN_TOOL_WORKSPACE: resolvedCwd,
+                  LUMEN_PLUGIN_BROWSER: settings.plugins.browser ? "1" : "0",
+                  LUMEN_PLUGIN_SITES: settings.plugins.sites ? "1" : "0",
+                  LUMEN_PLUGIN_MANAGEMENT: settings.plugins.plugins ? "1" : "0",
+                  LUMEN_COMPUTER_USE_CHROME: settings.computerUseChromeEnabled ? "1" : "0"
+                }
+              }
+            }
+          }),
           "--verbose",
           "--permission-mode",
-          "bypassPermissions",
+          claudePermissionMode,
           "--output-format",
           "stream-json",
           "-p",
@@ -495,6 +660,10 @@ export function registerCodexIpc(): void {
       });
 
       activeProcesses.set(taskId, child);
+      if (selectedEngine === "claude-code") {
+        claudeSessions.set(taskId, { id: claudeSession.id, started: true });
+      }
+      if (compactedContext) compactContexts.delete(taskId);
 
       const rl = readline.createInterface({
         input: child.stdout,
@@ -502,6 +671,8 @@ export function registerCodexIpc(): void {
       });
 
       const toolCallsMap = new Map<string, CodexToolCall>();
+      let turnInputTokens = 0;
+      let turnOutputTokens = 0;
 
       rl.on("line", (line) => {
         if (!line.trim()) return;
@@ -531,18 +702,39 @@ export function registerCodexIpc(): void {
                 win?.webContents.send("codex:event", {
                   taskId, messageId: asstMsgId, type: "text", content: asstMsg.content
                 });
+              } else if (item.type === "error") {
+                const message = item.message || item.error?.message || item.text || "Codex reported an error.";
+                asstMsg.content = [asstMsg.content, message].filter(Boolean).join("\n\n");
+                asstMsg.activity = "Task failed";
+                win?.webContents.send("codex:event", {
+                  taskId, messageId: asstMsgId, type: "text", content: asstMsg.content
+                });
               } else if (item.type !== "reasoning") {
                 const id = item.id || crypto.randomUUID();
+                const mcpName = item.type === "mcp_tool_call"
+                  ? item.tool || item.name || `mcp:${item.server || "unknown"}`
+                  : item.type || "Tool";
+                const itemInput = item.arguments && typeof item.arguments === "object"
+                  ? {
+                      ...(item.server ? { server: item.server } : {}),
+                      ...item.arguments
+                    }
+                  : item.command
+                    ? { command: item.command }
+                    : {
+                        ...(item.server ? { server: item.server } : {}),
+                        ...(item.tool ? { tool: item.tool } : {})
+                      };
                 const tc: CodexToolCall = toolCallsMap.get(id) || {
                   id,
-                  name: item.type || "Tool",
-                  input: item.command ? { command: item.command } : item.arguments || {},
+                  name: mcpName,
+                  input: itemInput,
                   status: "running"
                 };
                 tc.status = json.type === "item.completed"
                   ? (item.status === "failed" ? "error" : "completed")
                   : "running";
-                tc.output = item.aggregated_output || item.output || item.result;
+                tc.output = item.aggregated_output || item.result || item.output;
                 toolCallsMap.set(id, tc);
                 asstMsg.toolCalls = Array.from(toolCallsMap.values());
                 asstMsg.activity = toolActivity(tc);
@@ -556,7 +748,9 @@ export function registerCodexIpc(): void {
               }
             }
             if (json.type === "turn.completed" && json.usage) {
-              const used = (json.usage.input_tokens || 0) + (json.usage.output_tokens || 0);
+              turnInputTokens = json.usage.input_tokens || 0;
+              turnOutputTokens = json.usage.output_tokens || 0;
+              const used = turnInputTokens + turnOutputTokens;
               task.contextUsed = used;
               asstMsg.contextUsed = used;
               win?.webContents.send("codex:event", {
@@ -572,6 +766,8 @@ export function registerCodexIpc(): void {
             if (json.message.usage) {
               const inTok = json.message.usage.input_tokens || 0;
               const outTok = json.message.usage.output_tokens || 0;
+              turnInputTokens = Math.max(turnInputTokens, inTok);
+              turnOutputTokens = Math.max(turnOutputTokens, outTok);
               const used = inTok + outTok;
               if (used > 0) {
                 task.contextUsed = used;
@@ -656,6 +852,8 @@ export function registerCodexIpc(): void {
             }
             const inTok = json.usage?.input_tokens ?? 0;
             const outTok = json.usage?.output_tokens ?? 0;
+            turnInputTokens = inTok || turnInputTokens;
+            turnOutputTokens = outTok || turnOutputTokens;
             const used = inTok + outTok;
             if (used > 0) {
               task.contextUsed = used;
@@ -687,6 +885,9 @@ export function registerCodexIpc(): void {
 
       child.on("close", (code) => {
         activeProcesses.delete(taskId);
+        if (turnInputTokens || turnOutputTokens) {
+          recordTokenUsage(turnInputTokens, turnOutputTokens);
+        }
         if (code !== 0 && stderr.trim()) {
           asstMsg.content = [asstMsg.content, stderr.trim()].filter(Boolean).join("\n\n");
         }

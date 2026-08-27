@@ -107,7 +107,7 @@ export function IconRefresh({ size = 14 }: IconProps) {
   );
 }
 
-export function IconGlobe({ size = 15 }: IconProps) {
+export function IconGlobe({ size = 13 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden>
       <circle cx="8" cy="8" r="5.2" stroke="currentColor" strokeWidth="1.25" />
@@ -223,6 +223,26 @@ export function IconGithub({ size = 16 }: IconProps) {
   );
 }
 
+export function IconGauge({ size = 15 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4.3 17a8.4 8.4 0 1 1 15.4 0" />
+      <path d="m12 15 4-5" />
+      <circle cx="12" cy="15" r="1.1" fill="currentColor" stroke="none" />
+      <path d="M6.7 14.7h.01M8.1 10.6h.01M12 9h.01M15.9 10.6h.01M17.3 14.7h.01" />
+    </svg>
+  );
+}
+
+export function IconUsage({ size = 17 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 3a9 9 0 1 0 9 9" />
+      <path d="M12 3v9h9A9 9 0 0 0 12 3Z" />
+    </svg>
+  );
+}
+
 export function IconLumen({ size = 20 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
@@ -244,6 +264,36 @@ export function IconChatBubble({ size = 16 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+export function IconHand({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7.2 11V6.5a1.5 1.5 0 0 1 3 0V10" />
+      <path d="M10.2 9V4.8a1.5 1.5 0 0 1 3 0V9" />
+      <path d="M13.2 9V5.7a1.5 1.5 0 0 1 3 0v4.1" />
+      <path d="M16.2 10V8.2a1.5 1.5 0 0 1 3 0v5.3c0 5-2.8 7.5-7.1 7.5-3 0-4.7-1.5-6.2-3.7L3.6 14a1.55 1.55 0 0 1 2.5-1.8L8 14.1" />
+    </svg>
+  );
+}
+
+export function IconShield({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3 20 6v5.7c0 4.8-3.2 8-8 9.3-4.8-1.3-8-4.5-8-9.3V6l8-3Z" />
+      <path d="M12 8v4.2" />
+      <path d="M12 16h.01" />
+    </svg>
+  );
+}
+
+export function IconAutoApprove({ size = 16 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 4h8l4 4v8l-4 4H8l-4-4V8l4-4Z" />
+      <path d="m8.5 12 2.1 2.1 4.9-5" />
     </svg>
   );
 }

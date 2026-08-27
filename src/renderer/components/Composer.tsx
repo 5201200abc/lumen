@@ -16,6 +16,7 @@ type Props = {
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
   reasoningControl: ReasoningControl;
+  reasoningEfforts?: Effort[];
   onWebSearch: (v: boolean) => void;
   onSend: () => void;
   onStop: () => void;
@@ -67,15 +68,14 @@ export function Composer(props: Props) {
           <div className="left-tools">
             <AttachmentAddButton attachments={props.attachments} onAdd={props.onAttach} onRemove={props.onRemove} />
             <button
-              className="research-chip"
+              className="icon-chip"
               type="button"
               aria-pressed={props.webSearch}
-              aria-label="Deep Research"
-        title="Model → Tavily Search → Tavily Extract → cross-check"
+              aria-label="全网检索"
+              title="全网检索"
               onClick={() => props.onWebSearch(!props.webSearch)}
             >
-              <IconGlobe />
-              <span>Research</span>
+              <IconGlobe size={13} />
             </button>
           </div>
           <div className="right-tools">
@@ -86,6 +86,7 @@ export function Composer(props: Props) {
               onModel={props.onModel}
               onEffort={props.onEffort}
               reasoningControl={props.reasoningControl}
+              reasoningEfforts={props.reasoningEfforts}
             />
             {props.streaming ? (
               <button className="send stop" type="button" onClick={props.onStop} aria-label="停止生成" title="停止生成">

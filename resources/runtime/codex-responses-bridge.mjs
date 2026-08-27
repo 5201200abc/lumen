@@ -13,6 +13,10 @@ const LLAMA_URL = process.env.LLAMA_URL.replace(/\/+$/, "");
 const MODEL = process.env.LLAMA_MODEL_ALIAS || "Qwen3.8-27B";
 const API_KEY = process.env.LLAMA_API_KEY || "";
 const REASONING_CONTROL = process.env.LLAMA_REASONING_CONTROL || "effort";
+const REASONING_EFFORTS = (process.env.LLAMA_REASONING_EFFORTS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const DEFAULT_SYSTEM_PROMPT_PATH = path.join(os.homedir(), ".config", "llama", "LLAMA.md");
 const SYSTEM_PROMPT_PATH = process.env.LLAMA_SYSTEM_PROMPT_PATH || DEFAULT_SYSTEM_PROMPT_PATH;
 const FALLBACK_SYSTEM_PROMPT = "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
@@ -74,20 +78,33 @@ function toChat(body) {
     }
   }
   if (systemParts.length) messages.unshift({ role: "system", content: systemParts.filter(Boolean).join("\n\n") });
-  const effort = body.reasoning?.effort || "medium";
+  const requestedEffort = body.reasoning?.effort || "medium";
+  const effort = REASONING_CONTROL === "effort" &&
+    REASONING_EFFORTS.length &&
+    !REASONING_EFFORTS.includes(requestedEffort)
+    ? REASONING_EFFORTS.at(-1)
+    : requestedEffort;
   const payload = {
     model: process.env.LLAMA_MODEL_ALIAS || MODEL,
     messages,
     stream: true,
     stream_options: { include_usage: true },
     // Cowork targets a single local slot; cap runaway agent turns to keep the Mac responsive.
-    max_tokens: Math.min(body.max_output_tokens || 1024, 1024),
+    max_tokens: Math.min(body.max_output_tokens || 2048, 2048),
     temperature: effort === "low" ? 0.3 : effort === "xhigh" ? 0.85 : 0.7
   };
-  if (REASONING_CONTROL === "effort") payload.reasoning_effort = effort;
+  if (REASONING_CONTROL === "effort") {
+    payload.reasoning_effort = effort;
+    payload.enable_thinking = effort !== "none";
+    payload.chat_template_kwargs = {
+      enable_thinking: payload.enable_thinking,
+      preserve_thinking: payload.enable_thinking,
+      reasoning_effort: effort
+    };
+  }
   if (REASONING_CONTROL === "toggle") {
-    payload.enable_thinking = effort !== "low";
-    payload.chat_template_kwargs = { enable_thinking: effort !== "low" };
+    payload.enable_thinking = !["none", "minimal", "low"].includes(effort);
+    payload.chat_template_kwargs = { enable_thinking: payload.enable_thinking };
   }
   if (Array.isArray(body.tools)) {
     payload.tools = body.tools
@@ -135,6 +152,7 @@ async function responses(res, body) {
 
   let textItem = null;
   const toolItems = new Map();
+  let nextOutputIndex = 0;
   let sequence = 0;
   let usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
   const decoder = new TextDecoder();
@@ -143,10 +161,17 @@ async function responses(res, body) {
 
   const ensureText = () => {
     if (textItem) return textItem;
-    textItem = { id: id("msg_"), type: "message", status: "in_progress", role: "assistant", content: [] };
-    send("response.output_item.added", { output_index: 0, item: textItem, sequence_number: sequence++ });
+    textItem = {
+      id: id("msg_"),
+      type: "message",
+      status: "in_progress",
+      role: "assistant",
+      content: [],
+      outputIndex: nextOutputIndex++
+    };
+    send("response.output_item.added", { output_index: textItem.outputIndex, item: textItem, sequence_number: sequence++ });
     send("response.content_part.added", {
-      item_id: textItem.id, output_index: 0, content_index: 0,
+      item_id: textItem.id, output_index: textItem.outputIndex, content_index: 0,
       part: { type: "output_text", text: "", annotations: [] }, sequence_number: sequence++
     });
     return textItem;
@@ -175,9 +200,9 @@ async function responses(res, body) {
       if (delta.content) {
         const item = ensureText();
         item.content[0] ||= { type: "output_text", text: "", annotations: [] };
-        item.content[0].text += delta.content;
+          item.content[0].text += delta.content;
         send("response.output_text.delta", {
-          item_id: item.id, output_index: 0, content_index: 0,
+          item_id: item.id, output_index: item.outputIndex, content_index: 0,
           delta: delta.content, sequence_number: sequence++
         });
       }
@@ -187,18 +212,19 @@ async function responses(res, body) {
         if (!item) {
           item = {
             id: id("fc_"), type: "function_call", status: "in_progress",
-            call_id: call.id || id("call_"), name: call.function?.name || "", arguments: ""
+            call_id: call.id || id("call_"), name: call.function?.name || "", arguments: "",
+            outputIndex: nextOutputIndex++
           };
           toolItems.set(index, item);
           send("response.output_item.added", {
-            output_index: (textItem ? 1 : 0) + index, item, sequence_number: sequence++
+            output_index: item.outputIndex, item, sequence_number: sequence++
           });
         }
         if (call.function?.name) item.name = call.function.name;
         if (call.function?.arguments) {
           item.arguments += call.function.arguments;
           send("response.function_call_arguments.delta", {
-            item_id: item.id, output_index: (textItem ? 1 : 0) + index,
+            item_id: item.id, output_index: item.outputIndex,
             delta: call.function.arguments, sequence_number: sequence++
           });
         }
@@ -210,24 +236,26 @@ async function responses(res, body) {
   if (textItem) {
     const text = textItem.content[0]?.text || "";
     send("response.output_text.done", {
-      item_id: textItem.id, output_index: 0, content_index: 0, text, sequence_number: sequence++
+      item_id: textItem.id, output_index: textItem.outputIndex, content_index: 0, text, sequence_number: sequence++
     });
     send("response.content_part.done", {
-      item_id: textItem.id, output_index: 0, content_index: 0,
+      item_id: textItem.id, output_index: textItem.outputIndex, content_index: 0,
       part: { type: "output_text", text, annotations: [] }, sequence_number: sequence++
     });
     textItem.status = "completed";
-    send("response.output_item.done", { output_index: 0, item: textItem, sequence_number: sequence++ });
-    output.push(textItem);
+    const { outputIndex, ...completedTextItem } = textItem;
+    send("response.output_item.done", { output_index: outputIndex, item: completedTextItem, sequence_number: sequence++ });
+    output.push(completedTextItem);
   }
-  for (const [index, item] of toolItems) {
-    const outputIndex = (textItem ? 1 : 0) + index;
+  for (const item of toolItems.values()) {
+    const outputIndex = item.outputIndex;
     send("response.function_call_arguments.done", {
       item_id: item.id, output_index: outputIndex, arguments: item.arguments, sequence_number: sequence++
     });
     item.status = "completed";
-    send("response.output_item.done", { output_index: outputIndex, item, sequence_number: sequence++ });
-    output.push(item);
+    const { outputIndex: _outputIndex, ...completedToolItem } = item;
+    send("response.output_item.done", { output_index: outputIndex, item: completedToolItem, sequence_number: sequence++ });
+    output.push(completedToolItem);
   }
   send("response.completed", {
     response: { ...base, status: "completed", output, usage }, sequence_number: sequence++
@@ -245,6 +273,7 @@ const server = http.createServer((req, res) => {
       backend: LLAMA_URL,
       model: MODEL,
       reasoningControl: REASONING_CONTROL,
+      reasoningEfforts: REASONING_EFFORTS.join(","),
       styleHash: MODEL_STYLE_HASH
     }));
     return;

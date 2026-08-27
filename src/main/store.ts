@@ -2,8 +2,8 @@ import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CoworkEngine, Effort, FontSize, Language, LlamaModel, ResearchExtractor, Settings, Theme } from "@shared/types";
-import { detectReasoningControl } from "@shared/types";
+import type { ComputerUsePermissions, CoworkEngine, CoworkPermissionMode, Effort, FontSize, Language, LlamaModel, PluginSettings, ResearchExtractor, Settings, Theme } from "@shared/types";
+import { detectReasoningControl, detectReasoningEfforts } from "@shared/types";
 import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
 const DEFAULT_MODELS_DIR = join(homedir(), "models");
@@ -30,6 +30,12 @@ type Disk = {
   chatInstructions: string;
   coworkInstructions: string;
   coworkEngine: CoworkEngine;
+  coworkPermissionMode: CoworkPermissionMode;
+  coworkDefaultPermissions: boolean;
+  coworkFullAccess: boolean;
+  plugins: PluginSettings;
+  computerUseChromeEnabled: boolean;
+  computerUsePermissions: ComputerUsePermissions;
   googleClientId: string;
   language: Language;
   fontSize: FontSize;
@@ -60,6 +66,12 @@ const store = new Store<Disk>({
     chatInstructions: "",
     coworkInstructions: "",
     coworkEngine: "claude-code",
+    coworkPermissionMode: "full",
+    coworkDefaultPermissions: true,
+    coworkFullAccess: true,
+    plugins: { browser: true, sites: true, plugins: true },
+    computerUseChromeEnabled: true,
+    computerUsePermissions: { approval: "ask", history: "ask", downloads: "ask", uploads: "ask" },
     googleClientId: "",
     language: "en",
     fontSize: "small",
@@ -118,7 +130,9 @@ export function writeSystemPrompt(text: string): void {
 
 function normalizeEffort(value: string | undefined): Effort {
   if (value === "low" || value === "light") return "low";
-  if (value === "high" || value === "xhigh") return value;
+  if (["none", "minimal", "medium", "high", "xhigh", "max"].includes(value || "")) {
+    return value as Effort;
+  }
   return "medium";
 }
 
@@ -160,11 +174,18 @@ export function getSettings(): Settings {
   if (JSON.stringify(normalizedEndpoints) !== JSON.stringify(storedEndpoints)) {
     store.set("llamaEndpoints", normalizedEndpoints);
   }
-  const catalog = [...new Set([...(store.get("modelCatalog") || []), store.get("model")].filter(Boolean))];
+  const catalog = [...new Set([...(store.get("modelCatalog") || []), store.get("model")].filter(Boolean))].slice(0, 5);
   const storedModels = store.get("llamaModels") || [];
   const activeEndpoint = normalizedEndpoints.find((endpoint) => endpoint.url === activeUrl) || normalizedEndpoints[0];
   const llamaModels = storedModels.length
-    ? storedModels
+    ? storedModels.slice(0, 5).map((model) => ({
+        ...model,
+        reasoningControl: model.reasoningControl || detectReasoningControl(model.name),
+        reasoningEfforts:
+          model.reasoningControl === "effort"
+            ? model.reasoningEfforts || detectReasoningEfforts(model.name)
+            : undefined
+      }))
     : catalog.map((name, index) => ({
         id: index === 0 ? "default-model" : `legacy-model-${index}`,
         name,
@@ -212,6 +233,12 @@ export function getSettings(): Settings {
     chatInstructions: store.get("chatInstructions"),
     coworkInstructions: store.get("coworkInstructions"),
     coworkEngine: store.get("coworkEngine") || "claude-code",
+    coworkPermissionMode: store.get("coworkPermissionMode") || "full",
+    coworkDefaultPermissions: store.get("coworkDefaultPermissions") ?? true,
+    coworkFullAccess: store.get("coworkFullAccess") ?? true,
+    plugins: store.get("plugins") || { browser: true, sites: true, plugins: true },
+    computerUseChromeEnabled: store.get("computerUseChromeEnabled") ?? true,
+    computerUsePermissions: store.get("computerUsePermissions") || { approval: "ask", history: "ask", downloads: "ask", uploads: "ask" },
     language: store.get("language") || "en",
     fontSize: normalizeFontSize(store.get("fontSize")),
     modelCatalog: catalog,
@@ -238,8 +265,12 @@ export function setSettings(patch: Partial<Settings>): Settings {
       throw new Error("Llama API URL must use http or https.");
     }
   }
-  if (patch.model !== undefined && !patch.model.trim()) {
-    throw new Error("Model cannot be empty.");
+  if (
+    patch.model !== undefined &&
+    !patch.model.trim() &&
+    (patch.llamaModels || getSettings().llamaModels).length > 0
+  ) {
+    throw new Error("Model cannot be empty while local models are configured.");
   }
   if (patch.model !== undefined && patch.model.length > 200) {
     throw new Error("Model name is too long.");
@@ -279,14 +310,37 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.coworkEngine !== undefined && !["claude-code", "codex"].includes(patch.coworkEngine)) {
     throw new Error("Cowork engine must be claude-code or codex.");
   }
+  if (patch.coworkPermissionMode !== undefined && !["ask", "approve", "full"].includes(patch.coworkPermissionMode)) {
+    throw new Error("Cowork permission mode must be ask, approve, or full.");
+  }
+  if (patch.coworkDefaultPermissions !== undefined && typeof patch.coworkDefaultPermissions !== "boolean") {
+    throw new Error("Default permissions must be enabled or disabled.");
+  }
+  if (patch.coworkFullAccess !== undefined && typeof patch.coworkFullAccess !== "boolean") {
+    throw new Error("Full access must be enabled or disabled.");
+  }
+  if (patch.plugins !== undefined && (
+    typeof patch.plugins !== "object" ||
+    ["browser", "sites", "plugins"].some((key) => typeof patch.plugins?.[key as keyof PluginSettings] !== "boolean")
+  )) {
+    throw new Error("Plugin settings must contain browser, sites, and plugins switches.");
+  }
+  if (patch.computerUsePermissions !== undefined && (
+    typeof patch.computerUsePermissions !== "object" ||
+    ["approval", "history", "downloads", "uploads"].some((key) =>
+      !["ask", "allow", "block"].includes(patch.computerUsePermissions?.[key as keyof ComputerUsePermissions] || "")
+    )
+  )) {
+    throw new Error("Computer use permissions must be ask, allow, or block.");
+  }
   if (patch.systemPrompt !== undefined && patch.systemPrompt.length > 100_000) {
     throw new Error("Model rule style cannot exceed 100,000 characters.");
   }
   if (
     patch.defaultEffort !== undefined &&
-    !["low", "medium", "high", "xhigh"].includes(patch.defaultEffort)
+    !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(patch.defaultEffort)
   ) {
-    throw new Error("Default effort must be low, medium, high, or xhigh.");
+    throw new Error("Default effort is not supported.");
   }
   if (patch.theme !== undefined && !["system", "light", "dark"].includes(patch.theme)) {
     throw new Error("Theme must be system, light, or dark.");
@@ -301,16 +355,16 @@ export function setSettings(patch: Partial<Settings>): Settings {
     }
   }
   if (patch.modelCatalog !== undefined) {
-    if (!Array.isArray(patch.modelCatalog) || patch.modelCatalog.length > 50) {
-      throw new Error("Model list must contain no more than 50 models.");
+    if (!Array.isArray(patch.modelCatalog) || patch.modelCatalog.length > 5) {
+      throw new Error("Model list must contain no more than 5 models.");
     }
     if (patch.modelCatalog.some((model) => typeof model !== "string" || !model.trim() || model.length > 200)) {
       throw new Error("Every model must have a valid name.");
     }
   }
   if (patch.llamaModels !== undefined) {
-    if (!Array.isArray(patch.llamaModels) || patch.llamaModels.length > 100) {
-      throw new Error("Model list must contain no more than 100 models.");
+    if (!Array.isArray(patch.llamaModels) || patch.llamaModels.length > 5) {
+      throw new Error("Model list must contain no more than 5 models.");
     }
     const endpointIds = new Set((patch.llamaEndpoints || getSettings().llamaEndpoints).map((endpoint) => endpoint.id));
     for (const model of patch.llamaModels) {
@@ -322,9 +376,14 @@ export function setSettings(patch: Partial<Settings>): Settings {
         model.name.length > 200 ||
         !endpointIds.has(model.endpointId) ||
         !["effort", "toggle", "none"].includes(model.reasoningControl) ||
+        (model.reasoningControl === "effort" &&
+          (!Array.isArray(model.reasoningEfforts) || model.reasoningEfforts.length === 0)) ||
+        (model.reasoningControl !== "effort" && model.reasoningEfforts !== undefined) ||
         (model.reasoningEfforts !== undefined &&
           (!Array.isArray(model.reasoningEfforts) ||
-            model.reasoningEfforts.some((effort) => !["low", "medium", "high", "xhigh"].includes(effort))))
+            model.reasoningEfforts.some((effort) =>
+              !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
+            )))
       ) {
         throw new Error("Every model must have a valid name, Llama server, and reasoning control.");
       }
@@ -379,6 +438,20 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.model !== undefined) store.set("model", patch.model.trim());
   if (patch.defaultEffort !== undefined) store.set("defaultEffort", normalizeEffort(patch.defaultEffort));
   if (patch.coworkEngine !== undefined) store.set("coworkEngine", patch.coworkEngine);
+  if (patch.coworkDefaultPermissions !== undefined) store.set("coworkDefaultPermissions", patch.coworkDefaultPermissions);
+  if (patch.coworkFullAccess !== undefined) store.set("coworkFullAccess", patch.coworkFullAccess);
+  if (patch.coworkPermissionMode !== undefined) store.set("coworkPermissionMode", patch.coworkPermissionMode);
+  const defaultPermissions = patch.coworkDefaultPermissions ?? store.get("coworkDefaultPermissions");
+  const fullAccess = patch.coworkFullAccess ?? store.get("coworkFullAccess");
+  const permissionMode = patch.coworkPermissionMode ?? store.get("coworkPermissionMode");
+  if (permissionMode === "full" && !fullAccess) {
+    store.set("coworkPermissionMode", defaultPermissions ? "approve" : "ask");
+  } else if (permissionMode === "approve" && !defaultPermissions) {
+    store.set("coworkPermissionMode", "ask");
+  }
+  if (patch.plugins !== undefined) store.set("plugins", patch.plugins);
+  if (patch.computerUseChromeEnabled !== undefined) store.set("computerUseChromeEnabled", patch.computerUseChromeEnabled);
+  if (patch.computerUsePermissions !== undefined) store.set("computerUsePermissions", patch.computerUsePermissions);
   if (patch.memoryEnabled !== undefined) store.set("memoryEnabled", patch.memoryEnabled);
   if (patch.theme !== undefined) store.set("theme", patch.theme);
   if (patch.language !== undefined) store.set("language", patch.language);

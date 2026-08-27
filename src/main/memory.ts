@@ -18,10 +18,10 @@ export function maybeRemember(user: ChatMessage, assistant: ChatMessage): void {
   if (rememberLine) addMemory(rememberLine.replace(/^(记忆：|已记住[:：]?)/, "").trim(), user.conversationId);
 }
 
-export function memoryBlock(query: string): string {
-  const hits = query.trim() ? searchMemories(query, 8) : [];
-  const extra = recentMemories(8).filter((m) => !hits.some((h) => h.id === m.id));
+export function memoryBlock(query: string, conversationId: string): string {
+  const hits = query.trim() ? searchMemories(query, conversationId, 8) : [];
+  const extra = recentMemories(conversationId, 8).filter((m) => !hits.some((h) => h.id === m.id));
   const items = [...hits, ...extra].slice(0, 12);
   if (items.length === 0) return "";
-  return ["长期记忆：", ...items.map((m) => `- ${m.content}`)].join("\n");
+  return ["当前对话记忆：", ...items.map((m) => `- ${m.content}`)].join("\n");
 }

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import type { Attachment, ChatMessage, Conversation, MemoryItem, Role } from "@shared/types";
+import type { Attachment, ChatMessage, Conversation, MemoryItem, Role, TokenUsage } from "@shared/types";
 
 const require = createRequire(import.meta.url);
 
@@ -109,6 +109,12 @@ export async function initDb(): Promise<void> {
       source_id TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO token_usage (id, input_tokens, output_tokens) VALUES (1, 0, 0);
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);
   `);
@@ -286,7 +292,10 @@ export function listMemories(): MemoryItem[] {
 export function addMemory(content: string, sourceId: string): void {
   const trimmed = content.trim();
   if (!trimmed) return;
-  const exists = all<{ id: string }>("SELECT id FROM memories WHERE content = ?", [trimmed])[0];
+  const exists = all<{ id: string }>(
+    "SELECT id FROM memories WHERE content = ? AND source_id = ?",
+    [trimmed, sourceId]
+  )[0];
   if (exists) return;
   run("INSERT INTO memories (id, content, source_id, created_at) VALUES (?, ?, ?, ?)", [
     crypto.randomUUID(),
@@ -296,11 +305,11 @@ export function addMemory(content: string, sourceId: string): void {
   ]);
 }
 
-export function searchMemories(query: string, limit = 8): MemoryItem[] {
+export function searchMemories(query: string, sourceId: string, limit = 8): MemoryItem[] {
   const q = `%${escapeLike(query.trim())}%`;
   return all<{ id: string; content: string; source_id: string; created_at: number }>(
-    "SELECT id, content, source_id, created_at FROM memories WHERE content LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?",
-    [q, limit]
+    "SELECT id, content, source_id, created_at FROM memories WHERE source_id = ? AND content LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?",
+    [sourceId, q, limit]
   ).map((row) => ({
     id: row.id,
     content: row.content,
@@ -309,10 +318,10 @@ export function searchMemories(query: string, limit = 8): MemoryItem[] {
   }));
 }
 
-export function recentMemories(limit = 12): MemoryItem[] {
+export function recentMemories(sourceId: string, limit = 12): MemoryItem[] {
   return all<{ id: string; content: string; source_id: string; created_at: number }>(
-    "SELECT id, content, source_id, created_at FROM memories ORDER BY created_at DESC LIMIT ?",
-    [limit]
+    "SELECT id, content, source_id, created_at FROM memories WHERE source_id = ? ORDER BY created_at DESC LIMIT ?",
+    [sourceId, limit]
   ).map((row) => ({
     id: row.id,
     content: row.content,
@@ -323,6 +332,29 @@ export function recentMemories(limit = 12): MemoryItem[] {
 
 export function clearMemories(): void {
   run("DELETE FROM memories");
+}
+
+export function getTokenUsage(): TokenUsage {
+  const row = all<{ input_tokens: number; output_tokens: number }>(
+    "SELECT input_tokens, output_tokens FROM token_usage WHERE id = 1"
+  )[0] || { input_tokens: 0, output_tokens: 0 };
+  return {
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    totalTokens: row.input_tokens + row.output_tokens
+  };
+}
+
+export function addTokenUsage(inputTokens: number, outputTokens: number): TokenUsage {
+  const input = Math.max(0, Math.round(Number(inputTokens) || 0));
+  const output = Math.max(0, Math.round(Number(outputTokens) || 0));
+  if (input || output) {
+    run(
+      "UPDATE token_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE id = 1",
+      [input, output]
+    );
+  }
+  return getTokenUsage();
 }
 
 export function flushDb(): void {

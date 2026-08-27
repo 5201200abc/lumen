@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Language, LlamaStatus, Settings } from "@shared/types";
+import type { Language, LlamaStatus, ModelBenchmarkResult, Settings } from "@shared/types";
 import { detectReasoningControl, reasoningControlLabel } from "@shared/types";
-import { IconGear, IconTrash } from "./icons";
+import { IconGauge, IconGear, IconGlobe, IconLaptop, IconTrash } from "./icons";
 
-type Page = "general" | "models" | "research" | "apikeys" | "instructions" | "data";
+type Page = "general" | "models" | "plugins" | "computer" | "research" | "apikeys" | "instructions" | "data";
 type Action = "chat" | "cowork" | "rule" | "memory" | "chats" | "setting";
 type Props = {
   settings: Settings;
@@ -18,7 +18,21 @@ type Props = {
 const COPY = {
   en: {
     settings: "Settings", back: "Back to app", general: "General", models: "Models",
-    webResearch: "Web Research", apiKeys: "API Key",
+    pluginsPage: "Plugins", computerUse: "Computer use", webResearch: "Web Research", apiKeys: "API Key",
+    pluginsHelp: "Choose which built-in Cowork plugins are available. All plugins are enabled by default.",
+    browserPlugin: "Browser", browserPluginHelp: "Control Lumen's isolated in-app browser.",
+    sitesPlugin: "Sites", sitesPluginHelp: "Preview local sites and verify them in Browser.",
+    pluginManagement: "Plugin Management", pluginManagementHelp: "Discover locally installed Codex plugins.",
+    computerHelp: "Manage how Cowork controls applications on this computer.",
+    coworkPermissions: "Permissions",
+    defaultPermissions: "Default permissions",
+    defaultPermissionsHelp: "Cowork can read and edit files in its workspace and asks when additional access is needed.",
+    fullAccess: "Full access",
+    fullAccessHelp: "Allow editing any file and running networked commands without approval. This significantly increases risk.",
+    googleChrome: "Google Chrome", chromeInstalled: "Installed", chromeMissing: "Not installed", checking: "Checking…",
+    chromeHelp: "Control a dedicated Google Chrome profile through Computer use.",
+    permissions: "Permissions", approval: "Opening websites", history: "Browser history",
+    downloads: "Downloads", uploads: "Uploads", alwaysAsk: "Always ask", allow: "Allow", block: "Block",
     instructions: "Instructions", data: "Data", language: "Language",
     languageHelp: "Choose the interface language.", fontSize: "Font size",
     fontHelp: "Adjust font size.", theme: "Theme",
@@ -29,6 +43,7 @@ const COPY = {
     configure: "Configure",
     active: "Active", use: "Use", name: "Name", url: "API URL",
     refreshModels: "Model Refresh",
+    testSpeed: "Test speed", testingSpeed: "Testing…",
     defaultEffort: "Default effort", defaultEffortHelp: "Default reasoning strength for models.",
     low: "Low", mediumLabel: "Medium", high: "High", xhigh: "Extra high (xhigh)",
     tavilyTitle: "Tavily API",
@@ -59,7 +74,7 @@ const COPY = {
     protected: "Style rule protected",
     protectedHelp: "Includes concise reasoning and loop prevention. Modify only to change output style.",
     memory: "Enable memory",
-    memoryHelp: "Allows the model to remember key facts, context, and preferences across conversations for personalized responses.",
+    memoryHelp: "Keeps key facts and context inside the current conversation only.",
     deleteMemory: "Delete all memory", deleteChat: "Delete all chat",
     dataHelp: "These actions affect local data and the next Google backup.",
     save: "Save", saved: "Saved", saving: "Saving", unsaved: "Unsaved changes",
@@ -67,7 +82,21 @@ const COPY = {
   },
   zh: {
     settings: "设置", back: "返回应用", general: "通用", models: "模型",
-    webResearch: "Web Research", apiKeys: "API Key",
+    pluginsPage: "Plugins", computerUse: "Computer use", webResearch: "Web Research", apiKeys: "API Key",
+    pluginsHelp: "选择 Cowork 可使用的内置插件；默认全部开启。",
+    browserPlugin: "Browser", browserPluginHelp: "控制 Lumen 隔离的内置浏览器。",
+    sitesPlugin: "Sites", sitesPluginHelp: "预览本地网站并在 Browser 中验证。",
+    pluginManagement: "Plugin Management", pluginManagementHelp: "发现本机已安装的 Codex 插件。",
+    computerHelp: "管理 Cowork 如何控制这台电脑上的应用。",
+    coworkPermissions: "权限",
+    defaultPermissions: "默认权限",
+    defaultPermissionsHelp: "Cowork 可以读取和编辑工作区文件，并在需要额外访问时询问。",
+    fullAccess: "完全访问",
+    fullAccessHelp: "允许不经批准编辑任意文件并运行联网命令；这会显著提高数据泄露或误操作风险。",
+    googleChrome: "Google Chrome", chromeInstalled: "已安装", chromeMissing: "未安装", checking: "检查中…",
+    chromeHelp: "通过 Computer use 控制独立的 Google Chrome 配置。",
+    permissions: "权限", approval: "打开网站", history: "浏览器历史记录",
+    downloads: "下载", uploads: "上传", alwaysAsk: "始终询问", allow: "允许", block: "阻止",
     instructions: "指令",
     data: "数据", language: "语言", languageHelp: "选择界面显示语言。", fontSize: "字体大小",
     fontHelp: "调整界面字体大小。", theme: "主题",
@@ -78,6 +107,7 @@ const COPY = {
     configure: "配置",
     active: "当前", use: "使用", name: "名称", url: "API 地址",
     refreshModels: "模型刷新",
+    testSpeed: "测速", testingSpeed: "测试中…",
     defaultEffort: "默认思考强度", defaultEffortHelp: "模型的默认推理/思考强度级别。",
     low: "低 (low)", mediumLabel: "中 (medium)", high: "高 (high)", xhigh: "极高 (xhigh)",
     tavilyTitle: "Tavily API",
@@ -108,7 +138,7 @@ const COPY = {
     modify: "修改", lock: "锁定", saveLock: "保存并锁定", protected: "规则已保护",
     protectedHelp: "包含简洁推理和防止循环的规则，仅在需要改变输出风格时修改。",
     memory: "Enable memory",
-    memoryHelp: "启用后可跨会话记住关键信息、用户偏好与上下文，提供更连贯智能的个性化回答。",
+    memoryHelp: "仅在当前对话内保留关键信息与上下文，不与其他对话混用。",
     deleteMemory: "删除全部记忆", deleteChat: "删除全部对话",
     dataHelp: "这些操作会影响本地数据和下一次 Google 备份。", save: "保存",
     saved: "已保存", saving: "保存中", unsaved: "未保存",
@@ -268,6 +298,9 @@ export function SettingsPanel(props: Props) {
   });
   const [adding, setAdding] = useState<"tavily" | "llamakey" | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
+  const [benchmarking, setBenchmarking] = useState(false);
+  const [benchmark, setBenchmark] = useState<ModelBenchmarkResult | null>(null);
+  const [benchmarkError, setBenchmarkError] = useState("");
   const [llamaStatus, setLlamaStatus] = useState<LlamaStatus | null>(null);
   const [llamaPortDraft, setLlamaPortDraft] = useState(String(s.llamaPort || ""));
   const [serviceAction, setServiceAction] = useState<"start" | "stop" | "restart" | null>(null);
@@ -275,6 +308,7 @@ export function SettingsPanel(props: Props) {
   const [showTavilyModal, setShowTavilyModal] = useState(false);
   const [showLlamaKeyModal, setShowLlamaKeyModal] = useState(false);
   const [showFirecrawlModal, setShowFirecrawlModal] = useState(false);
+  const [chromeStatus, setChromeStatus] = useState<{ installed: boolean; running: boolean; executable: string | null } | null>(null);
   const t = COPY[s?.language === "zh" ? "zh" : "en"] || COPY.en;
   const activeReasoningEfforts = s.llamaModels.find((model) => model.name === s.model)?.reasoningEfforts;
 
@@ -284,9 +318,18 @@ export function SettingsPanel(props: Props) {
   useEffect(() => setFirecrawlDraft({ url: s.firecrawlUrl, key: s.firecrawlApiKey }), [s.firecrawlUrl, s.firecrawlApiKey]);
   useEffect(() => setLlamaPortDraft(String(s.llamaPort || "")), [s.llamaPort]);
   useEffect(() => {
+    setBenchmark(null);
+    setBenchmarkError("");
+  }, [s.model]);
+  useEffect(() => {
     if (page !== "general") return;
     void window.lumen.models.status().then(setLlamaStatus).catch(() => setLlamaStatus(null));
   }, [page, s.llamaUrl]);
+  useEffect(() => {
+    if (page !== "computer") return;
+    setChromeStatus(null);
+    void window.lumen.tools.chromeStatus().then(setChromeStatus).catch(() => setChromeStatus(null));
+  }, [page, s.computerUseChromeEnabled]);
   const dirty = useMemo(() =>
     chatInstructions !== s.chatInstructions ||
     coworkInstructions !== s.coworkInstructions ||
@@ -335,6 +378,20 @@ export function SettingsPanel(props: Props) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setRefreshingModels(false);
+    }
+  };
+
+  const benchmarkModel = async () => {
+    if (benchmarking || !s.model) return;
+    setBenchmarking(true);
+    setBenchmarkError("");
+    try {
+      setBenchmark(await window.lumen.models.benchmark(s.model));
+    } catch (cause) {
+      setBenchmark(null);
+      setBenchmarkError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBenchmarking(false);
     }
   };
 
@@ -425,6 +482,8 @@ export function SettingsPanel(props: Props) {
   const nav: Array<{ id: Page; label: string }> = [
     { id: "general", label: t.general },
     { id: "models", label: t.models },
+    { id: "plugins", label: t.pluginsPage },
+    { id: "computer", label: t.computerUse },
     { id: "research", label: t.webResearch },
     { id: "apikeys", label: t.apiKeys },
     { id: "instructions", label: t.instructions },
@@ -534,6 +593,45 @@ export function SettingsPanel(props: Props) {
                 onChange={(val) => void patch({ theme: val as Settings["theme"] })}
               />
             </div>
+            <div className="research-group-heading">{t.coworkPermissions}</div>
+            <div className="setting-row">
+              <div><strong>{t.defaultPermissions}</strong><small>{t.defaultPermissionsHelp}</small></div>
+              <button
+                className={`toggle ${s.coworkDefaultPermissions ? "on" : ""}`}
+                type="button"
+                aria-label={t.defaultPermissions}
+                aria-pressed={s.coworkDefaultPermissions}
+                onClick={() => {
+                  const enabled = !s.coworkDefaultPermissions;
+                  void patch({
+                    coworkDefaultPermissions: enabled,
+                    ...(!enabled && s.coworkPermissionMode === "approve" ? { coworkPermissionMode: "ask" as const } : {})
+                  });
+                }}
+              >
+                <i />
+              </button>
+            </div>
+            <div className="setting-row permission-risk-row">
+              <div><strong>{t.fullAccess}</strong><small>{t.fullAccessHelp}</small></div>
+              <button
+                className={`toggle ${s.coworkFullAccess ? "on danger" : ""}`}
+                type="button"
+                aria-label={t.fullAccess}
+                aria-pressed={s.coworkFullAccess}
+                onClick={() => {
+                  const enabled = !s.coworkFullAccess;
+                  void patch({
+                    coworkFullAccess: enabled,
+                    ...(!enabled && s.coworkPermissionMode === "full"
+                      ? { coworkPermissionMode: s.coworkDefaultPermissions ? "approve" as const : "ask" as const }
+                      : {})
+                  });
+                }}
+              >
+                <i />
+              </button>
+            </div>
           </div>}
 
           {page === "models" && <div className="settings-page">
@@ -569,6 +667,86 @@ export function SettingsPanel(props: Props) {
                 onChange={(val) => void patch({ defaultEffort: val as Settings["defaultEffort"] })}
               />
             </div>
+          </div>}
+
+          {page === "plugins" && <div className="settings-page">
+            <div className="page-intro">
+              <h4>{t.pluginsPage}</h4>
+              <p>{t.pluginsHelp}</p>
+            </div>
+            {([
+              { id: "browser", title: t.browserPlugin, help: t.browserPluginHelp, icon: <IconGlobe size={17} /> },
+              { id: "sites", title: t.sitesPlugin, help: t.sitesPluginHelp, icon: <IconLaptop size={17} /> },
+              { id: "plugins", title: t.pluginManagement, help: t.pluginManagementHelp, icon: <IconGear size={17} /> }
+            ] as const).map((item) => (
+              <div className="setting-row integration-row" key={item.id}>
+                <div className="integration-copy">
+                  <span className="integration-icon">{item.icon}</span>
+                  <span><strong>{item.title}</strong><small>{item.help}</small></span>
+                </div>
+                <button
+                  className={`toggle ${s.plugins[item.id] ? "on" : ""}`}
+                  type="button"
+                  aria-label={item.title}
+                  aria-pressed={s.plugins[item.id]}
+                  onClick={() => void patch({ plugins: { ...s.plugins, [item.id]: !s.plugins[item.id] } })}
+                >
+                  <i />
+                </button>
+              </div>
+            ))}
+          </div>}
+
+          {page === "computer" && <div className="settings-page">
+            <div className="page-intro">
+              <h4>{t.computerUse}</h4>
+              <p>{t.computerHelp}</p>
+            </div>
+            <div className="setting-row integration-row computer-app-row">
+              <div className="integration-copy">
+                <span className="chrome-mark" aria-hidden="true"><i /></span>
+                <span>
+                  <strong>{t.googleChrome}</strong>
+                  <small>
+                    <em className={`install-state ${chromeStatus?.installed ? "installed" : ""}`} />
+                    {chromeStatus === null ? t.checking : chromeStatus.installed ? t.chromeInstalled : t.chromeMissing} · {t.chromeHelp}
+                  </small>
+                </span>
+              </div>
+              <button
+                className={`toggle ${s.computerUseChromeEnabled && chromeStatus?.installed ? "on" : ""}`}
+                type="button"
+                disabled={!chromeStatus?.installed}
+                aria-label={t.googleChrome}
+                aria-pressed={s.computerUseChromeEnabled}
+                onClick={() => void patch({ computerUseChromeEnabled: !s.computerUseChromeEnabled })}
+              >
+                <i />
+              </button>
+            </div>
+            <div className="research-group-heading">{t.permissions}</div>
+            {([
+              ["approval", t.approval],
+              ["history", t.history],
+              ["downloads", t.downloads],
+              ["uploads", t.uploads]
+            ] as const).map(([key, label]) => (
+              <div className="setting-row" key={key}>
+                <div><strong>{label}</strong></div>
+                <DropdownSelect
+                  value={s.computerUsePermissions[key]}
+                  direction="down"
+                  options={[
+                    { value: "ask", label: t.alwaysAsk },
+                    { value: "allow", label: t.allow },
+                    { value: "block", label: t.block }
+                  ]}
+                  onChange={(value) => void patch({
+                    computerUsePermissions: { ...s.computerUsePermissions, [key]: value as Settings["computerUsePermissions"][typeof key] }
+                  })}
+                />
+              </div>
+            ))}
           </div>}
 
           {page === "research" && <div className="settings-page">
@@ -836,7 +1014,27 @@ export function SettingsPanel(props: Props) {
 
             <div className="llama-model-heading">
               <h5>{s.language === "zh" ? "本地模型" : "Local Model"}</h5>
+              <button
+                type="button"
+                className={`model-speedometer${benchmark ? " has-result" : ""}${benchmarking ? " is-running" : ""}`}
+                disabled={benchmarking || !s.model}
+                onClick={() => void benchmarkModel()}
+                title={benchmark
+                  ? `${benchmark.model} · ${benchmark.tokens} tokens · ${benchmark.durationMs} ms · ${benchmark.source}`
+                  : t.testSpeed}
+                aria-label={`${t.testSpeed}: ${s.model}`}
+              >
+                <IconGauge />
+                <span>
+                  {benchmarking
+                    ? t.testingSpeed
+                    : benchmark
+                      ? `${benchmark.tokensPerSecond.toFixed(1)} t/s`
+                      : t.testSpeed}
+                </span>
+              </button>
             </div>
+            {benchmarkError && <div className="model-benchmark-error">{benchmarkError}</div>}
 
             <div className="llama-endpoint-list llama-model-list">
               {s.llamaModels.map((model) => {

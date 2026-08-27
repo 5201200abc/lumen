@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Attachment, ChatMessage } from "@shared/types";
 import { IconCheck, IconCopy, IconPencil, IconRefresh } from "./icons";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
-import { AttachmentList } from "./AttachmentControls";
+import { AttachmentImage, AttachmentList } from "./AttachmentControls";
 
 type Props = {
   message: ChatMessage;
@@ -23,6 +23,16 @@ function formatDuration(sec: number, isZh = false): string {
   if (wholeSeconds < 60) return `${wholeSeconds}s`;
   const minutes = Math.floor(wholeSeconds / 60);
   return `${minutes}m ${wholeSeconds % 60}s`;
+}
+
+function renderLiveStatusText(text: string) {
+  const clean = text.replace(/(\s*[.·…]+)+$/, "").trim();
+  return (
+    <>
+      {clean}
+      <span className="status-dots">...</span>
+    </>
+  );
 }
 
 export function MessageView({ message, streaming, language, onRegenerate, onEdit }: Props) {
@@ -92,9 +102,7 @@ export function MessageView({ message, streaming, language, onRegenerate, onEdit
         {images.length > 0 && (
           <div className="user-attachments">
             {images.map((file) => (
-              <div key={file.id} className="user-image-card" title={file.name}>
-                <img src={file.dataUrl} alt={file.name} />
-              </div>
+              <AttachmentImage key={file.id} attachment={file} />
             ))}
           </div>
         )}
@@ -212,7 +220,7 @@ export function MessageView({ message, streaming, language, onRegenerate, onEdit
       {showLiveStatus ? (
         <div className={`assistant-live-status ${message.phase || "preparing"}`}>
           <span className="spin" />
-          <span>{message.statusText}</span>
+          <span>{renderLiveStatusText(message.statusText!)}</span>
         </div>
       ) : null}
       {showThought ? (

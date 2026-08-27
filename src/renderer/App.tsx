@@ -38,8 +38,11 @@ function modelsFromStatus(settings: Settings, status: LlamaStatus): Settings["ll
     /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/v1\/?$/i.test(endpoint.url)
   );
   if (!activeEndpoint || !localEndpoint) return settings.llamaModels;
-  const replacedEndpointIds = new Set([localEndpoint.id]);
-  if (activeEndpoint.id !== localEndpoint.id) replacedEndpointIds.add(activeEndpoint.id);
+  const replacedEndpointIds = new Set(
+    settings.llamaEndpoints
+      .filter((endpoint) => /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/v1\/?$/i.test(endpoint.url))
+      .map((endpoint) => endpoint.id)
+  );
   const preserved = settings.llamaModels.filter((model) => !replacedEndpointIds.has(model.endpointId));
   const localModels = status.localModels.map((model) => ({
     id: `local:${model.name}`,
@@ -58,7 +61,7 @@ function modelsFromStatus(settings: Settings, status: LlamaStatus): Settings["ll
         reasoningControl: detectReasoningControl(name),
         source: "remote" as const
       }));
-  return [...preserved, ...localModels, ...remoteModels];
+  return [...preserved, ...localModels, ...remoteModels].slice(0, 5);
 }
 
 export function App() {
@@ -101,8 +104,17 @@ export function App() {
       ? await window.lumen.models.reconnect()
       : await window.lumen.models.status();
     const detectedModels = modelsFromStatus(current, nextStatus);
-    if (JSON.stringify(detectedModels) !== JSON.stringify(current.llamaModels)) {
-      current = await window.lumen.settings.set({ llamaModels: detectedModels });
+    const selectedExists = detectedModels.some((model) => model.name === current.model);
+    const nextModel = selectedExists ? current.model : detectedModels[0]?.name || "";
+    if (
+      JSON.stringify(detectedModels) !== JSON.stringify(current.llamaModels) ||
+      nextModel !== current.model
+    ) {
+      current = await window.lumen.settings.set({
+        llamaModels: detectedModels,
+        modelCatalog: detectedModels.map((model) => model.name),
+        model: nextModel
+      });
     }
     setSettings(current);
     setStatus(nextStatus);
@@ -153,11 +165,10 @@ export function App() {
       await window.lumen.chat.stop(activeId);
       setStreaming(false);
     }
-    const c = await window.lumen.chats.create();
     setQuery("");
     setChats(await window.lumen.chats.list());
     chatLoad.current += 1;
-    setActiveId(c.id);
+    setActiveId(null);
     setMessages([]);
     setDraft("");
     setAttachments([]);
@@ -170,6 +181,11 @@ export function App() {
     setActiveTaskId(t.id);
     return t.id;
   }, [settings?.coworkEngine]);
+
+  const cleanCodexTask = useCallback(async () => {
+    if (activeTaskId) await window.lumen.codex.stop(activeTaskId);
+    setActiveTaskId(null);
+  }, [activeTaskId]);
 
   const handleDeleteCodexTask = useCallback(async (id: string) => {
     await window.lumen.codex.deleteTask(id);
@@ -196,7 +212,11 @@ export function App() {
       void window.lumen.models.ensure().then(setStatus);
       const list = await refreshChats("");
       if (list[0]) await openChat(list[0].id);
-      else await newChat();
+      else {
+        setActiveId(null);
+        setMessages([]);
+        nextWelcomePrompt();
+      }
 
       // Auto summarize existing long titles in background
       void window.lumen.chats.autoSummarize?.().then((updated) => {
@@ -285,14 +305,17 @@ export function App() {
         ]);
       }),
       window.lumen.ui.onSettings(() => setSettingsOpen(true)),
-      window.lumen.ui.onNewChat(() => void newChat()),
+      window.lumen.ui.onNewChat(() => {
+        if (mode === "code") void cleanCodexTask();
+        else void newChat();
+      }),
       window.lumen.ui.onSearch(() => searchRef.current?.focus()),
       window.lumen.ui.onStop(() => {
         if (activeId) void window.lumen.chat.stop(activeId);
       })
     ];
     return () => off.forEach((fn) => fn());
-  }, [activeId, newChat, refreshChats]);
+  }, [activeId, cleanCodexTask, mode, newChat, refreshChats]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -334,9 +357,11 @@ export function App() {
     if (!draft.trim() && attachments.length === 0) return;
     userScrolledUp.current = false;
     let conversationId = activeId;
+    let createdConversation = false;
     if (!conversationId) {
       const created = await window.lumen.chats.create();
       conversationId = created.id;
+      createdConversation = true;
       chatLoad.current += 1;
       setQuery("");
       setChats(await window.lumen.chats.list());
@@ -391,6 +416,14 @@ export function App() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setStreaming(false);
+      if (createdConversation) {
+        const persisted = await window.lumen.chats.messages(conversationId);
+        if (persisted.length === 0) {
+          await window.lumen.chats.delete(conversationId);
+          setActiveId(null);
+          setChats(await window.lumen.chats.list());
+        }
+      }
       if (message === "生成已停止") {
         setMessages((prev) => prev.filter((m) => m.id !== "tmp-user" && m.id !== "tmp-asst"));
         return;
@@ -590,6 +623,7 @@ export function App() {
   const configuredModels = settings.llamaModels.filter((model) => !activeEndpoint || model.endpointId === activeEndpoint.id);
   const activeModel = settings.llamaModels.find((model) => model.name === settings.model && (!activeEndpoint || model.endpointId === activeEndpoint.id));
   const reasoningControl = activeModel?.reasoningControl ?? detectReasoningControl(settings.model);
+  const reasoningEfforts = activeModel?.reasoningEfforts;
   const selectModel = async (model: string) => {
     const configured = settings.llamaModels.find((item) => item.name === model && (!activeEndpoint || item.endpointId === activeEndpoint.id));
     const supported = configured?.reasoningEfforts;
@@ -651,7 +685,7 @@ export function App() {
           codexTasks={codexTasks}
           activeTaskId={activeTaskId}
           onSelectCodexTask={setActiveTaskId}
-          onNewCodexTask={() => void handleNewCodexTask()}
+          onNewCodexTask={() => void cleanCodexTask()}
           onDeleteCodexTask={(id) => void handleDeleteCodexTask(id)}
         />
         <div className="v-line" />
@@ -667,12 +701,18 @@ export function App() {
               onNewTask={handleNewCodexTask}
               onDeleteTask={handleDeleteCodexTask}
               model={settings.model}
-              models={[...new Set([...configuredModels.map((model) => model.name), ...(status?.models || []), settings.model])]}
+              models={[...new Set(configuredModels.map((model) => model.name))]}
               effort={effort}
               onModel={(m) => void selectModel(m)}
               onEffort={setEffort}
               reasoningControl={reasoningControl}
+              reasoningEfforts={reasoningEfforts}
               engine={settings.coworkEngine}
+              capabilityVersion={`${Number(settings.plugins.browser)}${Number(settings.plugins.sites)}${Number(settings.plugins.plugins)}${Number(settings.computerUseChromeEnabled)}`}
+              permissionMode={settings.coworkPermissionMode}
+              defaultPermissions={settings.coworkDefaultPermissions}
+              fullAccess={settings.coworkFullAccess}
+              onPermissionMode={(coworkPermissionMode) => void patchSettings({ coworkPermissionMode })}
               onEngine={(engine) => {
                 void patchSettings({ coworkEngine: engine });
                 setActiveTaskId(null);
@@ -713,6 +753,7 @@ export function App() {
                 onModel={(m) => void selectModel(m)}
                 onEffort={setEffort}
                 reasoningControl={reasoningControl}
+                reasoningEfforts={reasoningEfforts}
                 onWebSearch={setWebSearch}
                 onSend={() => void send()}
                 onStop={() => activeId && void window.lumen.chat.stop(activeId)}
