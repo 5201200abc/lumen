@@ -252,6 +252,7 @@ export function Sidebar(props: Props) {
             {(props.coworkTasks || []).map((t) => (
               <div
                 key={t.id}
+                data-task-id={t.id}
                 className={`chat-item ${t.id === props.activeTaskId ? "active" : ""}`}
                 onClick={() => props.onSelectCoworkTask && props.onSelectCoworkTask(t.id)}
               >

@@ -7,6 +7,7 @@ import path from "node:path";
 import type { CoworkToolStatus } from "@shared/types";
 import { chromeClick, chromeOpen, chromeScreenshot, chromeSnapshot, chromeStatus, chromeType, shutdownChromeComputerUse } from "./chrome-computer-use";
 import { getSettings } from "./store";
+import { tavilySearch } from "./search";
 
 type ToolRequest = {
   name: string;
@@ -395,6 +396,32 @@ async function dispatchTool(request: ToolRequest): Promise<ToolResult> {
     throw new Error(`${pluginForTool} is disabled in Settings → Plugins.`);
   }
   switch (request.name) {
+    case "web_search": {
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      if (!query) throw new Error("A web search query is required.");
+      const maxResults = typeof args.max_results === "number"
+        ? Math.max(1, Math.min(Math.round(args.max_results), 10))
+        : 5;
+      const timeRange = ["day", "week", "month", "year"].includes(String(args.time_range))
+        ? args.time_range as "day" | "week" | "month" | "year"
+        : undefined;
+      const result = await tavilySearch(settings.tavilyApiKey, query, {
+        maxResults,
+        timeRange
+      });
+      return {
+        ok: true,
+        content: {
+          query,
+          count: result.hits.length,
+          results: result.hits.map((hit) => ({
+            title: hit.title,
+            url: hit.url,
+            snippet: hit.content
+          }))
+        }
+      };
+    }
     case "browser_open":
       return { ok: true, content: await browserOpen(args.url) };
     case "browser_snapshot":

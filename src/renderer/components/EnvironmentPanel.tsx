@@ -1,4 +1,6 @@
-import type { Attachment, CoworkMessage, CoworkCapabilityId, CoworkToolStatus, WorkspaceInfo } from "@shared/types";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import type { Attachment, CoworkMessage, CoworkToolCall, WorkspaceInfo } from "@shared/types";
 import { toolDescription } from "@shared/cowork-status";
 import {
   IconBranch,
@@ -6,7 +8,6 @@ import {
   IconChanges,
   IconExternal,
   IconFileText,
-  IconGear,
   IconGithub,
   IconGlobe,
   IconLaptop,
@@ -21,7 +22,6 @@ type Props = {
   model: string;
   messages: CoworkMessage[];
   attachments: Attachment[];
-  toolStatus: CoworkToolStatus | null;
   onSelectWorkspace: () => void;
   onAddSource: () => void;
   onPrompt: (prompt: string) => void;
@@ -42,29 +42,101 @@ function sourceFiles(messages: CoworkMessage[], pending: Attachment[]): Attachme
   });
 }
 
-function relevantTools(messages: CoworkMessage[]): CoworkCapabilityId[] {
-  const used = new Set<CoworkCapabilityId>();
-  for (const tool of messages.flatMap((message) => message.toolCalls || [])) {
-    const name = tool.name.toLowerCase();
-    if (name.includes("chrome_")) used.add("chrome");
-    else if (name.includes("browser_")) used.add("browser");
-    else if (name.includes("sites_")) used.add("sites");
-    else if (name.includes("plugins_")) used.add("plugins");
+type WebSearchHit = {
+  title: string;
+  url: string;
+  snippet?: string;
+};
+
+type WebSearchRecord = {
+  id: string;
+  query: string;
+  status: CoworkToolCall["status"];
+  hits: WebSearchHit[];
+};
+
+function decodedToolOutput(output?: string): Record<string, unknown> | null {
+  if (!output) return null;
+  try {
+    let value: unknown = JSON.parse(output);
+    if (
+      Array.isArray(value) &&
+      typeof value[0] === "object" &&
+      value[0] !== null &&
+      "text" in value[0]
+    ) {
+      value = JSON.parse(String((value[0] as { text: unknown }).text));
+    }
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
   }
-  return [...used];
+}
+
+function webSearches(messages: CoworkMessage[]): WebSearchRecord[] {
+  return messages.flatMap((message) => message.toolCalls || [])
+    .filter((tool) => tool.name.toLowerCase().endsWith("web_search"))
+    .map((tool) => {
+      const decoded = decodedToolOutput(tool.output);
+      const rawHits = Array.isArray(decoded?.results) ? decoded.results : [];
+      const hits = rawHits.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const result = item as Record<string, unknown>;
+        const url = typeof result.url === "string" ? result.url : "";
+        if (!url) return [];
+        return [{
+          title: typeof result.title === "string" && result.title.trim() ? result.title : url,
+          url,
+          snippet: typeof result.snippet === "string" ? result.snippet : undefined
+        }];
+      });
+      return {
+        id: tool.id,
+        query: typeof tool.input?.query === "string"
+          ? tool.input.query
+          : typeof decoded?.query === "string" ? decoded.query : "Web search",
+        status: tool.status,
+        hits
+      };
+    });
+}
+
+function domainOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
 
 export function EnvironmentPanel(props: Props) {
   const isZh = (props.language ?? "en") === "zh";
   const changes = props.workspace?.changes || { files: 0, additions: 0, deletions: 0 };
-  const sources = sourceFiles(props.messages, props.attachments).slice(0, 3);
-  const taskTools = relevantTools(props.messages);
+  const sources = useMemo(
+    () => sourceFiles(props.messages, props.attachments),
+    [props.messages, props.attachments]
+  );
+  const searches = useMemo(() => webSearches(props.messages), [props.messages]);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const pendingIds = useMemo(
+    () => new Set(props.attachments.map((attachment) => attachment.id)),
+    [props.attachments]
+  );
   const activeTool = props.messages
     .flatMap((message) => message.toolCalls || [])
     .find((tool) => tool.status === "running");
   const branch = props.workspace?.branch || (isZh ? "无 Git" : "No Git");
-  const capability = (id: CoworkCapabilityId) =>
-    props.toolStatus?.capabilities.find((item) => item.id === id);
+
+  useEffect(() => {
+    if (!sourcesOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSourcesOpen(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [sourcesOpen]);
 
   return (
     <aside className="environment-rail" aria-label={isZh ? "环境" : "Environment"}>
@@ -144,56 +216,54 @@ export function EnvironmentPanel(props: Props) {
 
         <section className="environment-section environment-sources">
           <div className="environment-section-heading">
-            <h3>{isZh ? "来源" : "Sources"}</h3>
+            <button
+              type="button"
+              className="environment-sources-title"
+              onClick={() => setSourcesOpen(true)}
+              aria-label={isZh ? "查看全部来源" : "View all sources"}
+            >
+              <h3>{isZh ? "来源" : "Sources"}</h3>
+              {(sources.length > 0 || searches.length > 0) && (
+                <span>{sources.length + searches.length}</span>
+              )}
+            </button>
             <button type="button" onClick={props.onAddSource} aria-label={isZh ? "添加来源" : "Add source"} title={isZh ? "添加来源" : "Add source"}>
               <IconPlus size={14} />
             </button>
           </div>
-          {sources.map((file) => (
-            <div className="environment-source" key={file.id} title={file.path || file.name}>
+          {sources.slice(0, 3).map((file) => (
+            <button
+              type="button"
+              className="environment-source"
+              key={file.id}
+              title={file.path || file.name}
+              onClick={() => setSourcesOpen(true)}
+            >
               {file.mime.startsWith("image/") && file.dataUrl ? (
                 <img src={file.dataUrl} alt="" />
               ) : (
                 <span className="environment-source-icon"><IconFileText size={13} /></span>
               )}
               <span>{file.name}</span>
-            </div>
+            </button>
           ))}
-          {taskTools.map((id) => {
-            const labels: Record<CoworkCapabilityId, string> = {
-              browser: "Browser",
-              sites: "Sites",
-              plugins: "Plugin Management",
-              chrome: "Google Chrome"
-            };
-            const prompts: Record<CoworkCapabilityId, string> = {
-              browser: isZh ? "继续使用 Lumen 内置浏览器处理当前任务。" : "Continue the current task with Lumen's built-in browser.",
-              sites: isZh ? "继续使用 Lumen Sites 处理当前网站。" : "Continue working with the current Lumen Sites preview.",
-              plugins: isZh ? "继续使用 Plugin Management 检查相关插件。" : "Continue inspecting relevant plugins with Plugin Management.",
-              chrome: isZh ? "继续使用 Google Chrome Computer use 处理当前任务。" : "Continue the current task with Google Chrome Computer use."
-            };
-            return (
-              <button
-                type="button"
-                className="environment-source capability"
-                key={id}
-                disabled={!capability(id)?.available}
-                onClick={() => props.onPrompt(prompts[id])}
-                title={capability(id)?.detail}
-              >
-                <span className="environment-source-icon">
-                  {id === "sites" ? <IconLaptop size={13} /> : id === "plugins" ? <IconGear size={13} /> : <IconGlobe size={13} />}
-                </span>
-                <span>{labels[id]}</span>
-                <span className={`capability-state ${capability(id)?.available ? "ready" : ""}`}>
-                  {capability(id)?.available
-                    ? capability(id)?.detail || (isZh ? "可用" : "Ready")
-                    : (isZh ? "不可用" : "Unavailable")}
-                </span>
-              </button>
-            );
-          })}
-          {!sources.length && !taskTools.length ? (
+          {sources.length > 3 && (
+            <button type="button" className="environment-source-more" onClick={() => setSourcesOpen(true)}>
+              {isZh ? `另外 ${sources.length - 3} 个附件` : `${sources.length - 3} more attachments`}
+            </button>
+          )}
+          {searches.length > 0 && (
+            <button
+              type="button"
+              className="environment-source web-search"
+              onClick={() => setSourcesOpen(true)}
+            >
+              <span className="environment-source-icon"><IconGlobe size={13} /></span>
+              <span>{isZh ? "全网搜索" : "Web search"}</span>
+              <span className="environment-source-count">{searches.length}</span>
+            </button>
+          )}
+          {!sources.length && !searches.length ? (
             <div className="environment-empty-row">
               <IconFileText size={14} />
               <span>{isZh ? "当前任务暂无相关资源" : "No task resources yet"}</span>
@@ -201,6 +271,119 @@ export function EnvironmentPanel(props: Props) {
           ) : null}
         </section>
       </div>
+      {sourcesOpen && createPortal(
+        <div className="sources-dialog-backdrop" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setSourcesOpen(false);
+        }}>
+          <section
+            className="sources-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={isZh ? "任务来源" : "Task sources"}
+          >
+            <header className="sources-dialog-header">
+              <div className="sources-dialog-title">
+                <span className="sources-dialog-mark">⌁</span>
+                <strong>{isZh ? "来源" : "Sources"}</strong>
+                <span>{sources.length + searches.length}</span>
+              </div>
+              <div className="sources-dialog-actions">
+                <button type="button" onClick={props.onAddSource} aria-label={isZh ? "添加来源" : "Add source"}>
+                  <IconPlus size={17} />
+                </button>
+                <button type="button" onClick={() => setSourcesOpen(false)} aria-label={isZh ? "关闭" : "Close"}>×</button>
+              </div>
+            </header>
+
+            <div className="sources-dialog-body">
+              {sources.length > 0 && (
+                <section className="sources-group">
+                  <h4>{isZh ? `对话附件 · ${sources.length}` : `Conversation attachments · ${sources.length}`}</h4>
+                  <div className="sources-file-list">
+                    {sources.map((file) => (
+                      <article className="sources-file" key={file.id}>
+                        {file.mime.startsWith("image/") && file.dataUrl ? (
+                          <img src={file.dataUrl} alt="" />
+                        ) : (
+                          <span className="sources-file-icon"><IconFileText size={18} /></span>
+                        )}
+                        <div>
+                          <strong>{file.name}</strong>
+                          <span title={file.path || file.name}>{file.path || file.relativePath || file.name}</span>
+                          <small>
+                            {pendingIds.has(file.id)
+                              ? (isZh ? "等待附加到对话" : "Ready to attach")
+                              : (isZh ? "已附加到当前对话" : "Attached to the conversation")}
+                          </small>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {searches.length > 0 && (
+                <section className="sources-group sources-web-group">
+                  <div className="sources-web-heading">
+                    <span className="sources-web-icon"><IconGlobe size={16} /></span>
+                    <div>
+                      <h4>{isZh ? "全网搜索" : "Web search"}</h4>
+                      <span>{isZh ? `已搜索 ${searches.length} 次` : `Searched ${searches.length} ${searches.length === 1 ? "time" : "times"}`}</span>
+                    </div>
+                  </div>
+                  <div className="sources-search-list">
+                    {searches.map((search) => (
+                      <details className="sources-search" key={search.id} open={searches.length === 1}>
+                        <summary>
+                          <span>{search.query}</span>
+                          <small>
+                            {search.status === "running"
+                              ? (isZh ? "搜索中" : "Searching")
+                              : search.status === "error"
+                                ? (isZh ? "搜索失败" : "Search failed")
+                              : isZh ? `${search.hits.length} 个结果` : `${search.hits.length} results`}
+                          </small>
+                        </summary>
+                        {search.hits.length > 0 ? (
+                          <div className="sources-search-results">
+                            {search.hits.map((hit) => (
+                              <div className="sources-search-result" key={`${search.id}:${hit.url}`}>
+                                <span className="sources-result-domain">{domainOf(hit.url)}</span>
+                                <strong>{hit.title}</strong>
+                                {hit.snippet && <p>{hit.snippet}</p>}
+                                <small title={hit.url}>{hit.url}</small>
+                              </div>
+                            ))}
+                          </div>
+                        ) : search.status !== "running" ? (
+                          <div className="sources-search-empty">
+                            {search.status === "error"
+                              ? (isZh ? "本次搜索失败；可在对话中的工具输出查看错误。" : "This search failed; see its tool output in the conversation.")
+                              : (isZh ? "本次搜索没有返回可展示的网页。" : "This search returned no displayable pages.")}
+                          </div>
+                        ) : null}
+                      </details>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {!sources.length && !searches.length && (
+                <div className="sources-dialog-empty">
+                  <IconFileText size={20} />
+                  <strong>{isZh ? "当前任务暂无来源" : "No sources for this task"}</strong>
+                  <span>{isZh ? "上传图片或文件，或让 Cowork 进行全网搜索。" : "Upload an image or file, or ask Cowork to search the web."}</span>
+                  <button type="button" onClick={props.onAddSource}>
+                    <IconPlus size={14} />
+                    {isZh ? "添加文件" : "Add files"}
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>,
+        document.body
+      )}
     </aside>
   );
 }

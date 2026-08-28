@@ -5,6 +5,7 @@ import {
   deleteAllConversations,
   deleteConversation,
   deleteMessage,
+  getConversation,
   insertMessage,
   listConversations,
   listMemories,
@@ -20,7 +21,7 @@ import { getSettings, setSettings } from "./store";
 import { maybeRemember } from "./memory";
 import { captureInteractive, markClipboard } from "./screenshot";
 import { applyTheme } from "./window";
-import { generateConversationTitle } from "./title";
+import { generateConversationTitle, immediateConversationTitle } from "./title";
 import { cancelGoogleLogin, googleLogin, googleLogout, googleStatus, googleSync } from "./google-auth";
 import { recordTokenUsage, tokenUsage } from "./usage";
 import { reconcileModelCatalog } from "@shared/model-catalog";
@@ -48,10 +49,13 @@ async function beginStream(opts: {
   insertUser: boolean;
   replaceAssistantId?: string;
 }): Promise<{ userId: string; assistantId: string }> {
-  const settings = getSettings();
-  const status = await probeLlama(settings);
+  let settings = getSettings();
+  const status = await ensureLocalLlama(settings);
   if (!status.online) {
     throw new Error("模型服务未就绪，请先启动 llama-server。");
+  }
+  if (status.managed && status.url !== settings.llamaUrl) {
+    settings = { ...settings, llamaUrl: status.url, llamaPort: status.port || settings.llamaPort };
   }
   if (status.runningModelPath && status.runningModel && status.runningModel !== settings.model) {
     throw new Error(status.error || `当前服务加载的是 ${status.runningModel}，不是所选 ${settings.model}。`);
@@ -79,8 +83,21 @@ async function beginStream(opts: {
   }
 
   if (isFirstTurn && opts.insertUser && opts.content.trim()) {
-    const title = await generateConversationTitle(opts.content);
-    if (title.trim()) broadcastConversationTitle(opts.conversationId, title.trim());
+    const title = immediateConversationTitle(opts.content);
+    if (title.trim()) {
+      const initialTitle = title.trim();
+      broadcastConversationTitle(opts.conversationId, initialTitle);
+      void generateConversationTitle(opts.content, undefined, settings)
+        .then((generatedTitle) => {
+          if (
+            generatedTitle !== initialTitle &&
+            getConversation(opts.conversationId)?.title === initialTitle
+          ) {
+            broadcastConversationTitle(opts.conversationId, generatedTitle);
+          }
+        })
+        .catch(() => undefined);
+    }
   }
 
   const assistantId = crypto.randomUUID();

@@ -3,8 +3,8 @@ import WebSocket from "ws";
 const phase = process.argv[2];
 const expectedTaskId = process.argv[3];
 const originalModel = process.argv[4];
-if (!["create", "verify"].includes(phase)) {
-  throw new Error("Usage: node scripts/runtime-interruption.mjs <create|verify> [task-id] [original-model]");
+if (!["create", "verify", "cleanup"].includes(phase)) {
+  throw new Error("Usage: node scripts/runtime-interruption.mjs <create|verify|cleanup> [task-id] [original-model]");
 }
 
 const targets = await fetch(`http://127.0.0.1:${Number(process.env.LUMEN_CDP_PORT || "9223")}/json/list`)
@@ -51,7 +51,23 @@ async function evaluate(expression, timeout = 120_000) {
 }
 
 await command("Runtime.enable");
-if (phase === "create") {
+if (phase === "cleanup") {
+  const deleted = await evaluate(`(async () => {
+    const tasks = await window.lumen.cowork.listTasks();
+    let count = 0;
+    for (const task of tasks) {
+      const messages = await window.lumen.cowork.getMessages(task.id);
+      if (!messages.some((message) =>
+        message.role === "user" &&
+        message.content === "Use Bash to sleep for 60 seconds, then report completion."
+      )) continue;
+      await window.lumen.cowork.deleteTask(task.id);
+      count += 1;
+    }
+    return count;
+  })()`);
+  process.stdout.write(`${JSON.stringify({ ok: true, deleted })}\n`);
+} else if (phase === "create") {
   const result = await evaluate(`(async () => {
     const original = await window.lumen.settings.get();
     await window.lumen.settings.set({

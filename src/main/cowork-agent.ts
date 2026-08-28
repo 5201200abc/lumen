@@ -9,9 +9,9 @@ import type { Attachment, ChatMessage, CoworkMessage, CoworkTask, CoworkToolCall
 import { detectReasoningControl } from "@shared/types";
 import { toolActivity } from "@shared/cowork-status";
 import { isCoworkDirectConversation } from "@shared/cowork-routing";
-import { generateConversationTitle } from "./title";
+import { generateConversationTitle, immediateConversationTitle } from "./title";
 import { getSettings, SYSTEM_PROMPT_PATH } from "./store";
-import { probeLlama } from "./models";
+import { ensureLocalLlama, probeLlama } from "./models";
 import { ensureToolHost } from "./tool-host";
 import { parseModelUsage, recordTokenUsage } from "./usage";
 import { streamChat } from "./llama";
@@ -316,6 +316,34 @@ function runtimeResource(name: string): string | null {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
+function taskAttachmentDirectory(taskId: string): string {
+  const safeTaskId = taskId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100);
+  return path.join(app.getPath("userData"), "cowork-attachments", safeTaskId || "task");
+}
+
+function materializeCoworkAttachments(taskId: string, attachments: Attachment[]): Attachment[] {
+  return attachments.map((attachment) => {
+    if (attachment.path || !attachment.dataUrl) return attachment;
+    const match = attachment.dataUrl.match(/^data:([^;,]+);base64,([a-zA-Z0-9+/=\s]+)$/);
+    if (!match || match[2].length > 36_000_000) return attachment;
+    const extensions: Record<string, string> = {
+      "image/png": ".png",
+      "image/jpeg": ".jpg",
+      "image/gif": ".gif",
+      "image/webp": ".webp",
+      "image/svg+xml": ".svg"
+    };
+    const extension = extensions[match[1]] || "";
+    if (!extension) return attachment;
+    const directory = taskAttachmentDirectory(taskId);
+    fs.mkdirSync(directory, { recursive: true });
+    const safeId = attachment.id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100) || crypto.randomUUID();
+    const filePath = path.join(directory, `${safeId}${extension}`);
+    if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, Buffer.from(match[2], "base64"));
+    return { ...attachment, path: filePath, kind: "image" };
+  });
+}
+
 async function bridgeReady(settings?: Settings): Promise<boolean> {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 800);
@@ -438,37 +466,69 @@ function startPersistentClaudeRun(opts: {
   let partialText = "";
   let finalUsage: ReturnType<typeof parseModelUsage>;
   let finished = false;
+  let persistTimer: NodeJS.Timeout | null = null;
+  let textTimer: NodeJS.Timeout | null = null;
+  let runtimeTimer: NodeJS.Timeout | null = null;
+  let lastTextSentAt = 0;
 
   assistant.checkpointId = opts.checkpointId;
   assistant.rewindAvailable = false;
 
-  const send = (event: Record<string, unknown>) => {
-    saveCoworkMessage(assistant);
+  const persistAssistant = (immediate = false) => {
+    if (immediate) {
+      if (persistTimer) clearTimeout(persistTimer);
+      persistTimer = null;
+      saveCoworkMessage(assistant);
+      return;
+    }
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      saveCoworkMessage(assistant);
+    }, 300);
+  };
+  const send = (event: Record<string, unknown>, persistNow = false) => {
+    persistAssistant(persistNow);
     if (win && !win.isDestroyed()) {
       win.webContents.send("cowork:event", { taskId, messageId, ...event });
     }
   };
-  const publishText = () => {
+  const flushText = () => {
+    if (textTimer) clearTimeout(textTimer);
+    textTimer = null;
+    lastTextSentAt = Date.now();
+    send({ type: "text", content: assistant.content, activity: assistant.activity });
+  };
+  const publishText = (immediate = false) => {
     assistant.content = [...committedText, partialText]
       .filter((part) => part.trim())
       .join("\n\n");
     assistant.activity = "Writing";
-    send({ type: "text", content: assistant.content, activity: assistant.activity });
+    if (immediate || Date.now() - lastTextSentAt >= 64) {
+      flushText();
+    } else if (!textTimer) {
+      textTimer = setTimeout(flushText, 64);
+    }
   };
   const commitText = (text: string) => {
     const value = text.trim();
     if (value && committedText.at(-1) !== value) committedText.push(value);
     partialText = "";
-    publishText();
+    publishText(true);
   };
   const publishActivity = (activity: string) => {
+    if (assistant.activity === activity) return;
     assistant.activity = activity;
     send({ type: "activity", activity });
   };
   const publishTools = (type: "tool_use" | "tool_result", toolCall?: CoworkToolCall) => {
+    if (textTimer) flushText();
     assistant.toolCalls = Array.from(toolCalls.values());
     if (toolCall) assistant.activity = type === "tool_use" ? toolActivity(toolCall) : "Reviewing";
-    send({ type, toolCall, toolCalls: assistant.toolCalls, activity: assistant.activity });
+    send(
+      { type, toolCall, toolCalls: assistant.toolCalls, activity: assistant.activity },
+      type === "tool_result"
+    );
   };
   const absorbUsage = (raw: unknown) => {
     const usage = parseModelUsage(raw);
@@ -488,7 +548,12 @@ function startPersistentClaudeRun(opts: {
       .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
       .replace(/\[claude-code:unrecognized_model\][^\n]*(?:\n|$)/g, "")
       .slice(-262_144);
-    send({ type: "runtime_output", runtimeOutput: assistant.runtimeOutput });
+    if (!runtimeTimer) {
+      runtimeTimer = setTimeout(() => {
+        runtimeTimer = null;
+        send({ type: "runtime_output", runtimeOutput: assistant.runtimeOutput });
+      }, 120);
+    }
   };
   const canUseTool: PersistentRunHandlers["canUseTool"] = (toolName, input, options) => {
     if (taskAllowedTools.get(taskId)?.has(toolName)) {
@@ -629,6 +694,18 @@ function startPersistentClaudeRun(opts: {
     assistant.status = exitCode === 0 ? "done" : "error";
     assistant.activity = exitCode === 0 ? "Completed" : "Task failed";
     assistant.durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    if (textTimer) {
+      clearTimeout(textTimer);
+      textTimer = null;
+    }
+    if (runtimeTimer) {
+      clearTimeout(runtimeTimer);
+      runtimeTimer = null;
+    }
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
     task.updatedAt = Date.now();
     if (finalUsage) {
       recordTokenUsage(
@@ -649,7 +726,7 @@ function startPersistentClaudeRun(opts: {
       contextTotal: task.contextTotal || 16384,
       durationSeconds: assistant.durationSeconds,
       exitCode
-    });
+    }, true);
     const currentSession = persistentAgentSessions.get(taskId);
     if (currentSession) currentSession.current = undefined;
     if (exitCode === 0) {
@@ -698,7 +775,8 @@ function startPersistentClaudeRun(opts: {
             id,
             name: block.name || "Tool",
             input: block.input || {},
-            status: "running"
+            status: "running",
+            startedAt: Date.now()
           };
           toolCalls.set(id, toolCall);
           streamingTools.set(index, { id, partialJson: "" });
@@ -724,13 +802,16 @@ function startPersistentClaudeRun(opts: {
               } catch {
                 toolCall.input = { partial: streamed.partialJson };
               }
-              publishTools("tool_use", toolCall);
             }
           }
         }
       } else if (event.type === "content_block_stop") {
         const streamed = streamingTools.get(index);
-        if (streamed) streamingTools.delete(index);
+        if (streamed) {
+          streamingTools.delete(index);
+          const toolCall = toolCalls.get(streamed.id);
+          if (toolCall) publishTools("tool_use", toolCall);
+        }
       }
       return;
     }
@@ -752,7 +833,8 @@ function startPersistentClaudeRun(opts: {
           id,
           name: block.name || "Tool",
           input: block.input || {},
-          status: "running"
+          status: "running",
+          startedAt: Date.now()
         };
         toolCall.name = block.name || toolCall.name;
         toolCall.input = block.input || toolCall.input;
@@ -767,6 +849,7 @@ function startPersistentClaudeRun(opts: {
         const toolCall = toolCalls.get(block.tool_use_id);
         if (!toolCall) continue;
         toolCall.status = block.is_error ? "error" : "completed";
+        toolCall.completedAt = Date.now();
         toolCall.output = (
           typeof block.content === "string" ? block.content : JSON.stringify(block.content, null, 2)
         ).slice(-262_144);
@@ -895,6 +978,7 @@ export function registerCoworkIpc(): void {
     compactContexts.delete(taskId);
     taskAllowedTools.delete(taskId);
     deletePersistedCoworkTask(taskId);
+    fs.rmSync(taskAttachmentDirectory(taskId), { recursive: true, force: true });
     return true;
   });
   ipcMain.handle("cowork:setGoal", (_event, taskId: string, rawGoal: string) => {
@@ -1034,15 +1118,22 @@ export function registerCoworkIpc(): void {
     model?: string;
   }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
-    const settings = getSettings();
-    const attachments = opts.attachments || [];
+    let settings = getSettings();
+    const attachments = materializeCoworkAttachments(opts.taskId, opts.attachments || []);
     const prompt = opts.prompt.trim();
     if (!prompt && attachments.length === 0) {
       throw new Error("Cowork prompt cannot be empty.");
     }
-    const llamaStatus = await probeLlama(settings);
+    const llamaStatus = await ensureLocalLlama(settings);
     if (!llamaStatus.online) {
       throw new Error("模型服务未就绪，请先按 Settings → Models 的步骤启动 llama-server。");
+    }
+    if (llamaStatus.managed && llamaStatus.url !== settings.llamaUrl) {
+      settings = {
+        ...settings,
+        llamaUrl: llamaStatus.url,
+        llamaPort: llamaStatus.port || settings.llamaPort
+      };
     }
     if (
       llamaStatus.runningModelPath &&
@@ -1079,17 +1170,29 @@ export function registerCoworkIpc(): void {
     const taskMessages = messages.get(task.id) || [];
     const previousMessages = taskMessages.slice();
     if (taskMessages.length === 0 && prompt) {
-      try {
-        task.title = await generateConversationTitle(prompt);
-      } catch {
-        task.title = prompt.replace(/\s+/g, " ").slice(0, 16) || "新任务";
-      }
+      const initialTitle = immediateConversationTitle(prompt);
+      task.title = initialTitle;
       persistTask(task);
       win?.webContents.send("cowork:event", {
         taskId: task.id,
         type: "renamed",
         title: task.title
       });
+      const taskId = task.id;
+      void generateConversationTitle(prompt, undefined, settings)
+        .then((generatedTitle) => {
+          const currentTask = tasks.get(taskId);
+          if (!currentTask || currentTask.title !== initialTitle || generatedTitle === initialTitle) return;
+          currentTask.title = generatedTitle;
+          currentTask.updatedAt = Date.now();
+          persistTask(currentTask);
+          win?.webContents.send("cowork:event", {
+            taskId,
+            type: "renamed",
+            title: generatedTitle
+          });
+        })
+        .catch(() => undefined);
     }
 
     const userMessage: CoworkMessage = {
@@ -1157,6 +1260,7 @@ export function registerCoworkIpc(): void {
         : "",
       "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach.</reasoning_discipline>",
       "<lumen_agent>Lumen Cowork uses Claude Agent SDK with local Llama inference. Use Lumen tools directly; do not delegate to another coding agent.</lumen_agent>",
+      "<web_research>When the user asks for public-web research or current information, use mcp__lumen__web_search. Run distinct precise queries as needed, then use Browser only to inspect selected results. Search queries and results are retained as task Sources.</web_research>",
       attachmentBlock,
       prompt
     ].filter(Boolean).join("\n\n");
@@ -1169,6 +1273,7 @@ export function registerCoworkIpc(): void {
       "Write",
       "Glob",
       "Grep",
+      "mcp__lumen__web_search",
       "mcp__lumen__browser_open",
       "mcp__lumen__browser_snapshot",
       "mcp__lumen__browser_click",

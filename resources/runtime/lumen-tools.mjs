@@ -6,6 +6,24 @@ const workspace = process.env.LUMEN_TOOL_WORKSPACE || process.cwd();
 
 const tools = [
   {
+    name: "web_search",
+    description: "Search the public web with Lumen's configured Tavily service. Use this for current information, news, official sources, or whenever the user asks to search the web. Results are saved in the Cowork task Sources panel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Precise web search query." },
+        max_results: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+        time_range: {
+          type: "string",
+          enum: ["day", "week", "month", "year"],
+          description: "Optional freshness filter."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "browser_open",
     description: "Open an http/https URL in Lumen's visible built-in browser.",
     inputSchema: {

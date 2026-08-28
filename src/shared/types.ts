@@ -364,6 +364,8 @@ export type CoworkToolCall = {
   input: Record<string, any>;
   status: "running" | "completed" | "error";
   output?: string;
+  startedAt?: number;
+  completedAt?: number;
 };
 
 export type CoworkApprovalStatus = "pending" | "allowed" | "denied";

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -15,9 +15,11 @@ const MAX_LOCAL_MODELS = 5;
 const LOOPBACK_URL = "http://127.0.0.1/v1";
 const execFileAsync = promisify(execFile);
 type LlamaListener = { pid: number; port: number };
+let managedRouterProcess: ReturnType<typeof spawn> | null = null;
+let managedRouterPort = 0;
 
 function walkGgufs(root: string, depth = 0, acc: string[] = []): string[] {
-  if (depth > 3 || !existsSync(root)) return acc;
+  if (depth > 5 || !existsSync(root)) return acc;
   let entries: string[] = [];
   try {
     entries = readdirSync(root);
@@ -41,21 +43,33 @@ function walkGgufs(root: string, depth = 0, acc: string[] = []): string[] {
   return acc;
 }
 
+function isPrimaryModelGguf(path: string): boolean {
+  const name = basename(path);
+  if (/mmproj/i.test(name)) return false;
+  const shard = name.match(/-(\d{5})-of-(\d{5})\.gguf$/i);
+  return !shard || shard[1] === "00001";
+}
+
+function standaloneModelName(path: string): string {
+  return basename(path)
+    .replace(/\.gguf$/i, "")
+    .replace(/-\d{5}-of-\d{5}$/i, "")
+    .replace(/[-_.](?:uncensored[-_.])?(?:q\d(?:_[a-z0-9]+)*|iq\d(?:_[a-z0-9]+)*|f16|bf16)$/i, "");
+}
+
 export function discoverLocal(modelsDir = DEFAULT_DIR): {
   ggufs: string[];
   models: LocalModel[];
 } {
   const dir = modelsDir || DEFAULT_DIR;
   const ggufs = walkGgufs(dir).sort((a, b) => a.localeCompare(b));
-  const modelFiles = ggufs.filter((p) => !/mmproj/i.test(basename(p)));
+  const modelFiles = ggufs.filter(isPrimaryModelGguf);
   const discoveredModels = modelFiles.map((path) => {
     const parent = dirname(path);
     const relativeParent = relative(dir, parent);
     const name = relativeParent && relativeParent !== "."
       ? relativeParent.split(/[\\/]/)[0]
-      : basename(path)
-          .replace(/\.gguf$/i, "")
-          .replace(/[-_.](?:uncensored[-_.])?(?:q\d(?:_[a-z0-9]+)?|iq\d(?:_[a-z0-9]+)?|f16|bf16)$/i, "");
+      : standaloneModelName(path);
     const projector =
       ggufs.find((candidate) => dirname(candidate) === parent && /mmproj/i.test(basename(candidate))) ||
       null;
@@ -84,15 +98,6 @@ export function discoverLocal(modelsDir = DEFAULT_DIR): {
 
 function origin(url: string): string {
   return url.replace(/\/v1\/?$/, "").replace(/\/$/, "");
-}
-
-function bundledRuntimeScript(): string | null {
-  const name = process.platform === "win32" ? "start-llama.ps1" : "start-llama.sh";
-  const candidates = [
-    join(process.resourcesPath, "runtime", name),
-    join(app.getAppPath(), "resources", "runtime", name)
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) || null;
 }
 
 export function isManagedLocalLlamaUrl(url: string): boolean {
@@ -165,13 +170,23 @@ async function processListeners(): Promise<LlamaListener[]> {
   }
 }
 
-async function healthyListener(preferredPort = 0): Promise<LlamaListener | null> {
+async function healthyListener(preferredPort = 0, routerOnly = false): Promise<LlamaListener | null> {
   const listeners = await processListeners();
-  listeners.sort((a, b) =>
+  const candidates = preferredPort
+    ? listeners.filter((listener) => listener.port === preferredPort)
+    : listeners;
+  candidates.sort((a, b) =>
     Number(b.port === preferredPort) - Number(a.port === preferredPort) || a.port - b.port
   );
-  for (const listener of listeners) {
-    if (await fetchJson(`http://127.0.0.1:${listener.port}/health`, 900)) return listener;
+  for (const listener of candidates) {
+    if (!(await fetchJson(`http://127.0.0.1:${listener.port}/health`, 900))) continue;
+    if (routerOnly) {
+      const props = await fetchJson(`http://127.0.0.1:${listener.port}/props`, 900) as
+        | { role?: string }
+        | null;
+      if (props?.role !== "router") continue;
+    }
+    return listener;
   }
   return null;
 }
@@ -194,10 +209,35 @@ async function resolveLocalEndpoint(settings: Settings, allocate = false): Promi
   pid: number | null;
 }> {
   const preferred = configuredPort(settings);
-  const listener = await healthyListener(preferred);
+  if (
+    managedRouterProcess &&
+    managedRouterPort > 0 &&
+    (!preferred || preferred === managedRouterPort) &&
+    await fetchJson(`http://127.0.0.1:${managedRouterPort}/health`, 900)
+  ) {
+    setDetectedLlamaPort(managedRouterPort);
+    return {
+      url: urlForPort(managedRouterPort),
+      port: managedRouterPort,
+      pid: managedRouterProcess.pid || null
+    };
+  }
+  const listener = preferred
+    ? await healthyListener(preferred)
+    : await healthyListener(0, true);
   if (listener) {
     setDetectedLlamaPort(listener.port);
     return { url: urlForPort(listener.port), port: listener.port, pid: listener.pid };
+  }
+  const preferredOnline = preferred
+    ? await fetchJson(`http://127.0.0.1:${preferred}/health`, 900)
+    : null;
+  if (preferred && preferredOnline) {
+    return {
+      url: urlForPort(preferred),
+      port: preferred,
+      pid: managedRouterPort === preferred ? managedRouterProcess?.pid || null : null
+    };
   }
   const port = preferred || (allocate ? await freeLoopbackPort() : 0);
   if (port) setDetectedLlamaPort(port);
@@ -297,7 +337,7 @@ export async function benchmarkLocalModel(settings: Settings, model: string): Pr
     throw new Error(`Model "${model}" is no longer available. Refresh the local model list.`);
   }
 
-  const status = await probeLlama(settings);
+  let status = await ensureLocalLlama(settings);
   if (!status.online) throw new Error(status.error || "llama-server is not running.");
 
   const controller = new AbortController();
@@ -306,25 +346,39 @@ export async function benchmarkLocalModel(settings: Settings, model: string): Pr
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (settings.llamaApiKey) headers.Authorization = `Bearer ${settings.llamaApiKey}`;
-    const response = await fetch(`${settings.llamaUrl.replace(/\/+$/, "")}/chat/completions`, {
+    const body = JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: "Write exactly 100 short lowercase English words separated by spaces. Output only the words."
+        }
+      ],
+      temperature: 0,
+      max_tokens: 128,
+      stream: false
+    });
+    const request = (url: string) => fetch(`${url.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       headers,
       signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "user",
-            content: "Write exactly 100 short lowercase English words separated by spaces. Output only the words."
-          }
-        ],
-        temperature: 0,
-        max_tokens: 128,
-        stream: false
-      })
+      body
     });
+    let response = await request(status.url);
+    let raw = await response.text();
+    if (
+      response.status === 400 &&
+      /model\s+['"][^'"]+['"]\s+not found/i.test(raw) &&
+      status.managed
+    ) {
+      status = await ensureLocalLlama(settings, true);
+      if (!status.online || !status.router) {
+        throw new Error(status.error || "The local model router could not be restarted.");
+      }
+      response = await request(status.url);
+      raw = await response.text();
+    }
     const elapsedMs = performance.now() - startedAt;
-    const raw = await response.text();
     let payload: {
       error?: { message?: string } | string;
       timings?: {
@@ -380,38 +434,87 @@ export async function benchmarkLocalModel(settings: Settings, model: string): Pr
   }
 }
 
-export async function startLocalLlama(settings: Settings, restart = false): Promise<void> {
-  const found = discoverLocal(settings.modelsDir || DEFAULT_DIR);
-  const endpoint = await resolveLocalEndpoint(settings, true);
-  const script = bundledRuntimeScript();
-  const env = {
-    ...process.env,
-    LLAMA_HOST: "127.0.0.1",
-    LLAMA_PORT: String(endpoint.port),
-    LLAMA_CTX: "16384",
-    LLAMA_PARALLEL: "1",
-    LLAMA_MODELS_DIR: settings.modelsDir || DEFAULT_DIR,
-    LLAMA_MODELS_MAX: "1",
-    LLAMA_LOG_DIR: join(app.getPath("userData"), "runtime"),
-    LUMEN_RESTART: restart ? "1" : "0"
-  } as NodeJS.ProcessEnv;
-  if (script) {
-    if (process.platform === "win32") {
-      spawn(
-        "powershell.exe",
-        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
-        { env, detached: true, stdio: "ignore" }
-      ).unref();
-    } else {
-      spawn("/bin/sh", [script], { env, detached: true, stdio: "ignore" }).unref();
+async function llamaServerBinary(): Promise<string | null> {
+  const executable = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+  const candidates = [
+    process.env.LLAMA_SERVER_BIN,
+    process.platform === "darwin" ? "/opt/homebrew/bin/llama-server" : undefined,
+    process.platform !== "win32" ? "/usr/local/bin/llama-server" : undefined,
+    process.platform !== "win32" ? "/usr/bin/llama-server" : undefined,
+    process.platform !== "win32" ? join(homedir(), ".local", "bin", "llama-server") : undefined,
+    process.platform === "win32" && process.env.LOCALAPPDATA
+      ? join(process.env.LOCALAPPDATA, "Programs", "llama.cpp", executable)
+      : undefined,
+    process.platform === "win32" && process.env.PROGRAMFILES
+      ? join(process.env.PROGRAMFILES, "llama.cpp", executable)
+      : undefined,
+    process.platform === "win32"
+      ? join(homedir(), "scoop", "apps", "llama.cpp", "current", executable)
+      : undefined,
+    process.platform === "win32"
+      ? join("C:\\", "ProgramData", "chocolatey", "bin", executable)
+      : undefined
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  try {
+    const locator = process.platform === "win32" ? "where.exe" : "which";
+    const { stdout } = await execFileAsync(locator, [executable], { timeout: 2500 });
+    candidates.unshift(...stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  } catch {
+    // Common install locations below still support GUI launches with a minimal PATH.
+  }
+  return [...new Set(candidates)].find((candidate) => {
+    try {
+      return existsSync(candidate) && statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) || null;
+}
+
+async function terminateManagedListener(port: number): Promise<void> {
+  if (
+    managedRouterProcess &&
+    managedRouterPort === port &&
+    managedRouterProcess.pid &&
+    !managedRouterProcess.killed
+  ) {
+    const child = managedRouterProcess;
+    child.stdin?.end();
+    child.kill("SIGTERM");
+    for (let i = 0; i < 40; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!(await fetchJson(`http://127.0.0.1:${port}/health`, 250))) return;
+    }
+  }
+  const listener = await healthyListener(port);
+  if (!listener) {
+    if (await fetchJson(`http://127.0.0.1:${port}/health`, 500)) {
+      throw new Error(
+        `A llama-server is running on port ${port}, but Lumen cannot identify its process. Stop it before restarting.`
+      );
     }
     return;
   }
-  if (!found.ggufs.length) return;
-  // Fallback remains router-only. Lumen never starts llama-server with -m.
-  const args = [
+  try {
+    process.kill(listener.pid, "SIGTERM");
+  } catch (cause) {
+    throw new Error(`Unable to stop llama-server pid ${listener.pid}: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+  for (let i = 0; i < 40; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (!(await healthyListener(port))) return;
+  }
+  try {
+    process.kill(listener.pid, "SIGKILL");
+  } catch {
+    // The process may have exited between the final probe and kill.
+  }
+}
+
+function routerArgs(modelsDir: string, port: number): string[] {
+  return [
     "--models-dir",
-    settings.modelsDir || DEFAULT_DIR,
+    modelsDir,
     "--models-max",
     "1",
     "--models-autoload",
@@ -439,9 +542,52 @@ export async function startLocalLlama(settings: Settings, restart = false): Prom
     "--host",
     "127.0.0.1",
     "--port",
-    String(endpoint.port)
+    String(port)
   ];
-  spawn("llama-server", args, { env, detached: true, stdio: "ignore" }).unref();
+}
+
+export async function startLocalLlama(settings: Settings, restart = false): Promise<void> {
+  const found = discoverLocal(settings.modelsDir || DEFAULT_DIR);
+  if (!found.ggufs.length) {
+    throw new Error(`No usable GGUF model was found under ${settings.modelsDir || DEFAULT_DIR}.`);
+  }
+  const endpoint = await resolveLocalEndpoint(settings, true);
+  if (restart && endpoint.port) await terminateManagedListener(endpoint.port);
+  if (!restart && endpoint.port && await fetchJson(`http://127.0.0.1:${endpoint.port}/health`, 900)) {
+    return;
+  }
+  const binary = await llamaServerBinary();
+  if (!binary) {
+    throw new Error(
+      process.platform === "win32"
+        ? "llama-server.exe was not found. Install llama.cpp and add it to PATH."
+        : "llama-server was not found. Install llama.cpp and add it to PATH."
+    );
+  }
+
+  const logDir = join(app.getPath("userData"), "runtime");
+  mkdirSync(logDir, { recursive: true });
+  const logFd = openSync(join(logDir, "llama-server.log"), "a");
+  const child = spawn(binary, routerArgs(settings.modelsDir || DEFAULT_DIR, endpoint.port), {
+    env: process.env,
+    windowsHide: true,
+    stdio: ["pipe", logFd, logFd]
+  });
+  closeSync(logFd);
+  managedRouterProcess = child;
+  managedRouterPort = endpoint.port;
+  child.once("error", () => {
+    if (managedRouterProcess === child) {
+      managedRouterProcess = null;
+      managedRouterPort = 0;
+    }
+  });
+  child.once("exit", () => {
+    if (managedRouterProcess === child) {
+      managedRouterProcess = null;
+      managedRouterPort = 0;
+    }
+  });
 }
 
 export async function ensureLocalLlama(settings: Settings, restart = false): Promise<LlamaStatus> {
@@ -463,16 +609,25 @@ export async function ensureLocalLlama(settings: Settings, restart = false): Pro
 }
 
 export async function stopLocalLlama(settings: Settings): Promise<LlamaStatus> {
-  const listener = await healthyListener(configuredPort(settings));
+  const port = configuredPort(settings) || managedRouterPort;
+  if (port && managedRouterProcess && managedRouterPort === port) {
+    await terminateManagedListener(port);
+    return probeLlama(settings);
+  }
+  const listener = port
+    ? await healthyListener(port)
+    : await healthyListener(0, true);
   if (!listener) return probeLlama(settings);
-  try {
-    process.kill(listener.pid, "SIGTERM");
-  } catch (cause) {
-    throw new Error(`Unable to stop llama-server pid ${listener.pid}: ${cause instanceof Error ? cause.message : String(cause)}`);
-  }
-  for (let i = 0; i < 40; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    if (!(await healthyListener(listener.port))) return probeLlama(settings);
-  }
-  throw new Error(`llama-server pid ${listener.pid} did not stop.`);
+  await terminateManagedListener(listener.port);
+  if (managedRouterProcess?.pid === listener.pid) managedRouterProcess.stdin?.end();
+  return probeLlama(settings);
+}
+
+export function shutdownLocalLlamaRuntime(): void {
+  const child = managedRouterProcess;
+  managedRouterProcess = null;
+  managedRouterPort = 0;
+  if (!child || child.killed) return;
+  child.stdin?.end();
+  child.kill("SIGTERM");
 }

@@ -1,5 +1,6 @@
 import { getSettings } from "./store";
 import { recordParsedUsage } from "./usage";
+import type { Settings } from "@shared/types";
 
 function sanitizeTitle(raw: string): string {
   let s = raw.trim();
@@ -74,7 +75,15 @@ function smartFallbackTitle(userText: string): string {
   return s || "新对话";
 }
 
-export async function generateConversationTitle(userText: string, assistantText?: string): Promise<string> {
+export function immediateConversationTitle(userText: string): string {
+  return smartFallbackTitle(userText);
+}
+
+export async function generateConversationTitle(
+  userText: string,
+  assistantText?: string,
+  runtimeSettings?: Pick<Settings, "llamaUrl" | "llamaApiKey" | "model">
+): Promise<string> {
   const cleanUser = userText.trim().replace(/\s+/g, " ");
   if (!cleanUser) return "新对话";
 
@@ -91,7 +100,7 @@ export async function generateConversationTitle(userText: string, assistantText?
 
   let timeout: NodeJS.Timeout | undefined;
   try {
-    const settings = getSettings();
+    const settings = runtimeSettings || getSettings();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (settings.llamaApiKey) {
       headers.Authorization = `Bearer ${settings.llamaApiKey}`;

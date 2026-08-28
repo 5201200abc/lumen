@@ -39,7 +39,7 @@ export function databasePath(): string {
 
 function schedulePersist(): void {
   if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(persist, 120);
+  persistTimer = setTimeout(persist, 500);
 }
 
 function run(sql: string, params: unknown[] = []): void {

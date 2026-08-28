@@ -45,11 +45,12 @@ async function evaluate(expression, timeout = 300_000) {
 
 await command("Runtime.enable");
 const original = await evaluate("window.lumen.settings.get()");
+const model = process.env.LUMEN_BENCHMARK_MODEL || "Gemma4-26B-A4B";
 try {
-  await evaluate(`window.lumen.settings.set({ model: "Gemma4-26B-A4B" })`);
-  const result = await evaluate(`window.lumen.models.benchmark("Gemma4-26B-A4B")`);
+  await evaluate(`window.lumen.settings.set({ model: ${JSON.stringify(model)} })`);
+  const result = await evaluate(`window.lumen.models.benchmark(${JSON.stringify(model)})`);
   if (
-    result.model !== "Gemma4-26B-A4B" ||
+    result.model !== model ||
     !Number.isFinite(result.tokensPerSecond) ||
     result.tokensPerSecond <= 0 ||
     result.tokens <= 0 ||

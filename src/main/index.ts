@@ -4,7 +4,7 @@ import { registerTerminalIpc } from "./terminal";
 import { registerCoworkIpc, shutdownCoworkRuntime } from "./cowork-agent";
 import { initDb, flushDb, closeDb, setAfterPersist } from "./db";
 import { getSettings } from "./store";
-import { ensureLocalLlama } from "./models";
+import { ensureLocalLlama, shutdownLocalLlamaRuntime } from "./models";
 import { startScreenshotWatch, stopScreenshotWatch, captureInteractive } from "./screenshot";
 import { applyTheme, createWindow } from "./window";
 import { cancelGoogleSync, scheduleGoogleSync } from "./google-auth";
@@ -153,6 +153,7 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     stopScreenshotWatch();
     shutdownCoworkRuntime();
+    shutdownLocalLlamaRuntime();
     shutdownToolHost();
     setAfterPersist(null);
     cancelGoogleSync();
