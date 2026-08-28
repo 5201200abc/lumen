@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import type { Attachment, ChatMessage, Conversation, MemoryItem, Role, TokenUsage } from "@shared/types";
+import type { Attachment, ChatMessage, CoworkMessage, CoworkTask, Conversation, MemoryItem, ModelUsage, ResearchProgress, Role, TokenUsage } from "@shared/types";
 
 const require = createRequire(import.meta.url);
 
@@ -82,6 +82,25 @@ function parseAttachments(raw: string): Attachment[] {
   }
 }
 
+function parseResearch(raw: string): ResearchProgress | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as ResearchProgress;
+    return typeof parsed?.strategy === "string" && Array.isArray(parsed.steps) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJson<T>(raw: string, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function initDb(): Promise<void> {
   SQL = await initSqlJs({ locateFile: () => wasmPath() });
   const file = dbPath();
@@ -100,6 +119,7 @@ export async function initDb(): Promise<void> {
       content TEXT NOT NULL DEFAULT '',
       thinking TEXT NOT NULL DEFAULT '',
       attachments TEXT NOT NULL DEFAULT '[]',
+      research TEXT NOT NULL DEFAULT '',
       duration_seconds INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
@@ -112,18 +132,252 @@ export async function initDb(): Promise<void> {
     CREATE TABLE IF NOT EXISTS token_usage (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_tokens INTEGER NOT NULL DEFAULT 0
     );
     INSERT OR IGNORE INTO token_usage (id, input_tokens, output_tokens) VALUES (1, 0, 0);
+    CREATE TABLE IF NOT EXISTS model_usage (
+      model TEXT PRIMARY KEY,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_tokens INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS cowork_tasks (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      engine TEXT NOT NULL DEFAULT 'claude-agent',
+      goal TEXT NOT NULL DEFAULT '',
+      claude_session_id TEXT NOT NULL DEFAULT '',
+      compact_context TEXT NOT NULL DEFAULT '',
+      context_used INTEGER NOT NULL DEFAULT 0,
+      context_total INTEGER NOT NULL DEFAULT 16384,
+      compacted_at INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS cowork_messages (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      runtime_output TEXT NOT NULL DEFAULT '',
+      checkpoint_id TEXT NOT NULL DEFAULT '',
+      rewind_available INTEGER NOT NULL DEFAULT 0,
+      attachments TEXT NOT NULL DEFAULT '[]',
+      tool_calls TEXT NOT NULL DEFAULT '[]',
+      approvals TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT '',
+      context_used INTEGER NOT NULL DEFAULT 0,
+      context_total INTEGER NOT NULL DEFAULT 16384,
+      activity TEXT NOT NULL DEFAULT '',
+      duration_seconds INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cowork_tasks_updated ON cowork_tasks(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cowork_messages_task ON cowork_messages(task_id, created_at);
   `);
   try {
     db.run("ALTER TABLE messages ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0");
   } catch {
     // Existing databases with the column need no migration.
   }
+  try {
+    db.run("ALTER TABLE messages ADD COLUMN research TEXT NOT NULL DEFAULT ''");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
+  try {
+    db.run("ALTER TABLE token_usage ADD COLUMN cache_tokens INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
+  try {
+    db.run("ALTER TABLE cowork_messages ADD COLUMN checkpoint_id TEXT NOT NULL DEFAULT ''");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
+  try {
+    db.run("ALTER TABLE cowork_messages ADD COLUMN rewind_available INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
+  const modelRows = all<{ n: number }>("SELECT COUNT(*) AS n FROM model_usage")[0];
+  if (!modelRows?.n) {
+    const legacy = all<{ input_tokens: number; output_tokens: number; cache_tokens?: number }>(
+      "SELECT input_tokens, output_tokens, cache_tokens FROM token_usage WHERE id = 1"
+    )[0];
+    if (legacy && (legacy.input_tokens || legacy.output_tokens || legacy.cache_tokens)) {
+      run(
+        "INSERT INTO model_usage (model, input_tokens, output_tokens, cache_tokens) VALUES (?, ?, ?, ?)",
+        ["(earlier)", legacy.input_tokens, legacy.output_tokens, legacy.cache_tokens || 0]
+      );
+    }
+  }
   persist();
+}
+
+export type CoworkTaskRecord = {
+  task: CoworkTask;
+  claudeSessionId?: string;
+  compactContext?: string;
+};
+
+export function listCoworkTasks(): CoworkTaskRecord[] {
+  return all<{
+    id: string;
+    title: string;
+    cwd: string;
+    engine: CoworkTask["engine"];
+    goal: string;
+    claude_session_id: string;
+    compact_context: string;
+    context_used: number;
+    context_total: number;
+    compacted_at: number;
+    created_at: number;
+    updated_at: number;
+  }>("SELECT * FROM cowork_tasks ORDER BY updated_at DESC").map((row) => ({
+    task: {
+      id: row.id,
+      title: row.title,
+      cwd: row.cwd,
+      engine: "claude-agent",
+      goal: row.goal || undefined,
+      contextUsed: row.context_used,
+      contextTotal: row.context_total,
+      compactedAt: row.compacted_at || undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    },
+    claudeSessionId: row.claude_session_id || undefined,
+    compactContext: row.compact_context || undefined
+  }));
+}
+
+export function saveCoworkTask(task: CoworkTask, claudeSessionId?: string, compactContext?: string): void {
+  run(
+    `INSERT INTO cowork_tasks (
+      id, title, cwd, engine, goal, claude_session_id, compact_context,
+      context_used, context_total, compacted_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      cwd = excluded.cwd,
+      engine = excluded.engine,
+      goal = excluded.goal,
+      claude_session_id = excluded.claude_session_id,
+      compact_context = excluded.compact_context,
+      context_used = excluded.context_used,
+      context_total = excluded.context_total,
+      compacted_at = excluded.compacted_at,
+      updated_at = excluded.updated_at`,
+    [
+      task.id,
+      task.title,
+      task.cwd,
+      "claude-agent",
+      task.goal || "",
+      claudeSessionId || "",
+      compactContext || "",
+      task.contextUsed || 0,
+      task.contextTotal || 16384,
+      task.compactedAt || 0,
+      task.createdAt,
+      task.updatedAt
+    ]
+  );
+}
+
+export function listCoworkMessages(taskId: string): CoworkMessage[] {
+  return all<{
+    id: string;
+    task_id: string;
+    role: CoworkMessage["role"];
+    content: string;
+    runtime_output: string;
+    checkpoint_id: string;
+    rewind_available: number;
+    attachments: string;
+    tool_calls: string;
+    approvals: string;
+    status: CoworkMessage["status"] | "";
+    context_used: number;
+    context_total: number;
+    activity: string;
+    duration_seconds: number;
+    created_at: number;
+  }>(
+    "SELECT * FROM cowork_messages WHERE task_id = ? ORDER BY created_at ASC",
+    [taskId]
+  ).map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    role: row.role,
+    content: row.content,
+    runtimeOutput: row.runtime_output || undefined,
+    checkpointId: row.checkpoint_id || undefined,
+    rewindAvailable: row.rewind_available === 1,
+    attachments: parseAttachments(row.attachments),
+    toolCalls: parseJson(row.tool_calls, []),
+    approvals: parseJson(row.approvals, []),
+    status: row.status || undefined,
+    contextUsed: row.context_used || undefined,
+    contextTotal: row.context_total || undefined,
+    activity: row.activity || undefined,
+    durationSeconds: row.duration_seconds || undefined,
+    createdAt: row.created_at
+  }));
+}
+
+export function saveCoworkMessage(message: CoworkMessage): void {
+  run(
+    `INSERT INTO cowork_messages (
+      id, task_id, role, content, runtime_output, checkpoint_id, rewind_available,
+      attachments, tool_calls, approvals, status, context_used, context_total,
+      activity, duration_seconds, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      content = excluded.content,
+      runtime_output = excluded.runtime_output,
+      checkpoint_id = excluded.checkpoint_id,
+      rewind_available = excluded.rewind_available,
+      attachments = excluded.attachments,
+      tool_calls = excluded.tool_calls,
+      approvals = excluded.approvals,
+      status = excluded.status,
+      context_used = excluded.context_used,
+      context_total = excluded.context_total,
+      activity = excluded.activity,
+      duration_seconds = excluded.duration_seconds`,
+    [
+      message.id,
+      message.taskId,
+      message.role,
+      message.content,
+      message.runtimeOutput || "",
+      message.checkpointId || "",
+      message.rewindAvailable ? 1 : 0,
+      JSON.stringify(message.attachments || []),
+      JSON.stringify(message.toolCalls || []),
+      JSON.stringify(message.approvals || []),
+      message.status || "",
+      message.contextUsed || 0,
+      message.contextTotal || 16384,
+      message.activity || "",
+      message.durationSeconds || 0,
+      message.createdAt
+    ]
+  );
+}
+
+export function deleteCoworkTask(taskId: string): void {
+  transaction(() => {
+    db!.run("DELETE FROM cowork_messages WHERE task_id = ?", [taskId]);
+    db!.run("DELETE FROM cowork_tasks WHERE id = ?", [taskId]);
+  });
 }
 
 export function listConversations(): Conversation[] {
@@ -209,6 +463,7 @@ function rowToMessage(row: {
   content: string;
   thinking: string;
   attachments: string;
+  research: string;
   duration_seconds: number;
   created_at: number;
 }): ChatMessage {
@@ -219,6 +474,7 @@ function rowToMessage(row: {
     content: row.content,
     thinking: row.thinking,
     attachments: parseAttachments(row.attachments),
+    research: parseResearch(row.research),
     durationSeconds: row.duration_seconds || undefined,
     createdAt: row.created_at
   };
@@ -232,17 +488,18 @@ export function listMessages(conversationId: string): ChatMessage[] {
     content: string;
     thinking: string;
     attachments: string;
+    research: string;
     duration_seconds: number;
     created_at: number;
   }>(
-    "SELECT id, conversation_id, role, content, thinking, attachments, duration_seconds, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+    "SELECT id, conversation_id, role, content, thinking, attachments, research, duration_seconds, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
     [conversationId]
   ).map(rowToMessage);
 }
 
 export function insertMessage(message: ChatMessage): void {
   run(
-    "INSERT INTO messages (id, conversation_id, role, content, thinking, attachments, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO messages (id, conversation_id, role, content, thinking, attachments, research, duration_seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       message.id,
       message.conversationId,
@@ -250,6 +507,7 @@ export function insertMessage(message: ChatMessage): void {
       message.content,
       message.thinking,
       JSON.stringify(message.attachments),
+      message.research ? JSON.stringify(message.research) : "",
       message.durationSeconds || 0,
       message.createdAt
     ]
@@ -259,16 +517,17 @@ export function insertMessage(message: ChatMessage): void {
 
 export function updateMessage(
   id: string,
-  patch: { content?: string; thinking?: string; durationSeconds?: number }
+  patch: { content?: string; thinking?: string; research?: ResearchProgress; durationSeconds?: number }
 ): void {
-  const current = all<{ content: string; thinking: string; duration_seconds: number }>(
-    "SELECT content, thinking, duration_seconds FROM messages WHERE id = ?",
+  const current = all<{ content: string; thinking: string; research: string; duration_seconds: number }>(
+    "SELECT content, thinking, research, duration_seconds FROM messages WHERE id = ?",
     [id]
   )[0];
   if (!current) return;
-  run("UPDATE messages SET content = ?, thinking = ?, duration_seconds = ? WHERE id = ?", [
+  run("UPDATE messages SET content = ?, thinking = ?, research = ?, duration_seconds = ? WHERE id = ?", [
     patch.content ?? current.content,
     patch.thinking ?? current.thinking,
+    patch.research ? JSON.stringify(patch.research) : current.research,
     patch.durationSeconds ?? current.duration_seconds,
     id
   ]);
@@ -334,25 +593,69 @@ export function clearMemories(): void {
   run("DELETE FROM memories");
 }
 
-export function getTokenUsage(): TokenUsage {
-  const row = all<{ input_tokens: number; output_tokens: number }>(
-    "SELECT input_tokens, output_tokens FROM token_usage WHERE id = 1"
-  )[0] || { input_tokens: 0, output_tokens: 0 };
+function toUsage(row: { input_tokens: number; output_tokens: number; cache_tokens: number }, model: string): ModelUsage {
+  const inputTokens = row.input_tokens;
+  const outputTokens = row.output_tokens;
+  const cacheTokens = row.cache_tokens;
   return {
-    inputTokens: row.input_tokens,
-    outputTokens: row.output_tokens,
-    totalTokens: row.input_tokens + row.output_tokens
+    model,
+    inputTokens,
+    outputTokens,
+    cacheTokens,
+    totalTokens: inputTokens + outputTokens + cacheTokens
   };
 }
 
-export function addTokenUsage(inputTokens: number, outputTokens: number): TokenUsage {
+export function getTokenUsage(): TokenUsage {
+  const models = all<{ model: string; input_tokens: number; output_tokens: number; cache_tokens: number }>(
+    "SELECT model, input_tokens, output_tokens, cache_tokens FROM model_usage ORDER BY (input_tokens + output_tokens + cache_tokens) DESC, model ASC"
+  ).map((row) => toUsage(row, row.model));
+  if (models.length) {
+    const inputTokens = models.reduce((sum, item) => sum + item.inputTokens, 0);
+    const outputTokens = models.reduce((sum, item) => sum + item.outputTokens, 0);
+    const cacheTokens = models.reduce((sum, item) => sum + item.cacheTokens, 0);
+    return { inputTokens, outputTokens, cacheTokens, totalTokens: inputTokens + outputTokens + cacheTokens, models };
+  }
+  const row = all<{ input_tokens: number; output_tokens: number; cache_tokens?: number }>(
+    "SELECT input_tokens, output_tokens, cache_tokens FROM token_usage WHERE id = 1"
+  )[0] || { input_tokens: 0, output_tokens: 0, cache_tokens: 0 };
+  const cacheTokens = row.cache_tokens || 0;
+  return {
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheTokens,
+    totalTokens: row.input_tokens + row.output_tokens + cacheTokens,
+    models: []
+  };
+}
+
+export function addTokenUsage(
+  inputTokens: number,
+  outputTokens: number,
+  cacheTokens = 0,
+  model = ""
+): TokenUsage {
   const input = Math.max(0, Math.round(Number(inputTokens) || 0));
   const output = Math.max(0, Math.round(Number(outputTokens) || 0));
-  if (input || output) {
+  const cache = Math.max(0, Math.round(Number(cacheTokens) || 0));
+  if (input || output || cache) {
     run(
-      "UPDATE token_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE id = 1",
-      [input, output]
+      "UPDATE token_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cache_tokens = COALESCE(cache_tokens, 0) + ? WHERE id = 1",
+      [input, output, cache]
     );
+    const name = model.trim() || "(unknown)";
+    const existing = all<{ model: string }>("SELECT model FROM model_usage WHERE model = ?", [name])[0];
+    if (existing) {
+      run(
+        "UPDATE model_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, cache_tokens = cache_tokens + ? WHERE model = ?",
+        [input, output, cache, name]
+      );
+    } else {
+      run(
+        "INSERT INTO model_usage (model, input_tokens, output_tokens, cache_tokens) VALUES (?, ?, ?, ?)",
+        [name, input, output, cache]
+      );
+    }
   }
   return getTokenUsage();
 }

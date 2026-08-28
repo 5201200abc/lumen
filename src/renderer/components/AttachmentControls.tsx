@@ -1,12 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { Attachment } from "@shared/types";
-import { IconFileText, IconGear, IconGlobe, IconLaptop, IconPlus } from "./icons";
+import type { Attachment, Language } from "@shared/types";
+import {
+  IconArchive,
+  IconCode,
+  IconFilePdf,
+  IconFilePpt,
+  IconFileSpreadsheet,
+  IconFileText,
+  IconFileWord,
+  IconFolder,
+  IconGear,
+  IconGlobe,
+  IconImage,
+  IconLaptop,
+  IconMusic,
+  IconPaperclip,
+  IconPlus,
+  IconVideo
+} from "./icons";
 
 type Props = {
   attachments: Attachment[];
   onAdd: (files: Attachment[]) => void;
   onRemove: (id: string) => void;
+  language?: Language;
   pluginActions?: Array<{
     id: "sites" | "browser" | "plugins";
     label: string;
@@ -80,37 +98,148 @@ export function AttachmentImage({
   );
 }
 
-export function AttachmentList({ attachments, onRemove }: { attachments: Attachment[]; onRemove?: (id: string) => void }) {
+function getAttachmentExt(file: Attachment): string {
+  const target = file.name || file.relativePath || file.path || "";
+  const match = target.match(/\.([0-9a-z]+)$/i);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function getAttachmentCategory(file: Attachment): {
+  kind: "folder" | "video" | "audio" | "image" | "pdf" | "ppt" | "word" | "spreadsheet" | "code" | "archive" | "text" | "file";
+  label: string;
+} {
+  if (file.relativePath) {
+    return { kind: "folder", label: "Folder" };
+  }
+  const ext = getAttachmentExt(file);
+  const mime = (file.mime || "").toLowerCase();
+
+  if (file.kind === "video" || mime.startsWith("video/") || ["mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "m4v", "3gp", "ts"].includes(ext)) {
+    return { kind: "video", label: ext ? `${ext.toUpperCase()} Video` : "Video" };
+  }
+  if (file.kind === "audio" || mime.startsWith("audio/") || ["mp3", "wav", "m4a", "aac", "flac", "ogg", "wma", "aiff"].includes(ext)) {
+    return { kind: "audio", label: ext ? `${ext.toUpperCase()} Audio` : "Audio" };
+  }
+  if (file.kind === "image" || mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "ico", "tiff"].includes(ext)) {
+    return { kind: "image", label: ext ? `${ext.toUpperCase()} Image` : "Image" };
+  }
+  if (file.kind === "pdf" || mime === "application/pdf" || ext === "pdf") {
+    return { kind: "pdf", label: "PDF Document" };
+  }
+  if (["pptx", "ppt", "key"].includes(ext)) {
+    return { kind: "ppt", label: "PowerPoint" };
+  }
+  if (["docx", "doc", "pages", "odt", "rtf"].includes(ext)) {
+    return { kind: "word", label: "Word Document" };
+  }
+  if (["xlsx", "xls", "numbers", "csv", "tsv"].includes(ext)) {
+    return { kind: "spreadsheet", label: ext === "csv" ? "CSV" : ext === "tsv" ? "TSV" : "Spreadsheet" };
+  }
+  if (["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"].includes(ext)) {
+    return { kind: "archive", label: ext ? `${ext.toUpperCase()} Archive` : "Archive" };
+  }
+  if (file.kind === "code" || ["js", "jsx", "ts", "tsx", "py", "go", "rs", "java", "kt", "swift", "c", "h", "cpp", "hpp", "cs", "php", "sh", "zsh", "bash", "sql", "graphql", "html", "htm", "css", "scss", "json", "yaml", "yml", "toml", "xml", "env"].includes(ext)) {
+    return { kind: "code", label: ext ? `${ext.toUpperCase()} Code` : "Source Code" };
+  }
+  if (file.kind === "text" || ["txt", "md", "markdown", "log", "rst"].includes(ext)) {
+    return { kind: "text", label: ext === "md" ? "Markdown" : "Text" };
+  }
+  if (file.kind === "document") {
+    return { kind: "word", label: "Document" };
+  }
+  return { kind: "file", label: ext ? ext.toUpperCase() : "File" };
+}
+
+function getCategoryLabel(file: Attachment, isZh = false): string {
+  const { kind, label } = getAttachmentCategory(file);
+  const ext = getAttachmentExt(file).toUpperCase();
+  if (!isZh) return label;
+  switch (kind) {
+    case "folder": return "文件夹";
+    case "video": return ext ? `${ext} 视频` : "视频";
+    case "audio": return ext ? `${ext} 音频` : "音频";
+    case "image": return ext ? `${ext} 图片` : "图片";
+    case "pdf": return "PDF 文档";
+    case "ppt": return "PowerPoint 幻灯片";
+    case "word": return "Word 文档";
+    case "spreadsheet": return ext === "CSV" ? "CSV 表格" : ext === "TSV" ? "TSV 表格" : "Excel 表格";
+    case "code": return ext ? `${ext} 源码` : "代码文件";
+    case "archive": return ext ? `${ext} 压缩包` : "压缩包";
+    case "text": return "文本文件";
+    default: return ext ? `${ext} 文件` : "文件";
+  }
+}
+
+function renderAttachmentIcon(file: Attachment) {
+  if (file.kind === "image" && file.dataUrl) {
+    return <AttachmentImage attachment={file} variant="icon" />;
+  }
+  const { kind } = getAttachmentCategory(file);
+  switch (kind) {
+    case "folder":
+      return <IconFolder size={15} />;
+    case "video":
+      return <IconVideo size={15} />;
+    case "audio":
+      return <IconMusic size={15} />;
+    case "image":
+      return <IconImage size={15} />;
+    case "pdf":
+      return <IconFilePdf size={15} />;
+    case "ppt":
+      return <IconFilePpt size={15} />;
+    case "word":
+      return <IconFileWord size={15} />;
+    case "spreadsheet":
+      return <IconFileSpreadsheet size={15} />;
+    case "code":
+      return <IconCode size={15} />;
+    case "archive":
+      return <IconArchive size={15} />;
+    default:
+      return <IconFileText size={15} />;
+  }
+}
+
+export function AttachmentList({
+  attachments,
+  onRemove,
+  language
+}: {
+  attachments: Attachment[];
+  onRemove?: (id: string) => void;
+  language?: Language;
+}) {
   if (!attachments.length) return null;
+  const isZh = (language ?? "en") === "zh";
+
   return (
     <div className="attachment-list" aria-label="Attached files">
-      {attachments.map((file) => (
-        <div className="attachment-row" key={file.id} title={file.path || file.name}>
-          <span className={`attachment-icon ${file.kind || "file"}`}>
-            {file.kind === "image" && file.dataUrl ? (
-              <AttachmentImage attachment={file} variant="icon" />
-            ) : file.relativePath ? (
-              <IconFolder size={15} />
-            ) : (
-              <IconFileText size={15} />
-            )}
-          </span>
-          <span className="attachment-copy">
-            <strong>{file.relativePath || file.name}</strong>
-            <small>{[file.kind === "document" ? "Document" : file.mime, formatBytes(file.size)].filter(Boolean).join(" · ")}</small>
-          </span>
-          {onRemove ? (
-            <button type="button" className="attachment-remove" onClick={() => onRemove(file.id)} aria-label={`Remove ${file.name}`}>
-              ×
-            </button>
-          ) : null}
-        </div>
-      ))}
+      {attachments.map((file) => {
+        const { kind } = getAttachmentCategory(file);
+        return (
+          <div className="attachment-row" key={file.id} title={file.path || file.name}>
+            <span className={`attachment-icon ${kind}`}>
+              {renderAttachmentIcon(file)}
+            </span>
+            <span className="attachment-copy">
+              <strong>{file.relativePath || file.name}</strong>
+              <small>{[getCategoryLabel(file, isZh), formatBytes(file.size)].filter(Boolean).join(" · ")}</small>
+            </span>
+            {onRemove ? (
+              <button type="button" className="attachment-remove" onClick={() => onRemove(file.id)} aria-label={`Remove ${file.name}`}>
+                ×
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-export function AttachmentAddButton({ attachments, onAdd, pluginActions = [] }: Props) {
+export function AttachmentAddButton({ attachments, onAdd, language, pluginActions = [] }: Props) {
+  const isZh = (language ?? "en") === "zh";
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -139,8 +268,8 @@ export function AttachmentAddButton({ attachments, onAdd, pluginActions = [] }: 
       <button
         className="icon-chip attachment-trigger"
         type="button"
-        aria-label="Add files or folders"
-        title="Add files or folders"
+        aria-label={isZh ? "添加文件或文件夹" : "Add files or folders"}
+        title={isZh ? "添加文件或文件夹" : "Add files or folders"}
         aria-expanded={open}
         disabled={busy}
         onClick={() => setOpen((value) => !value)}
@@ -149,10 +278,13 @@ export function AttachmentAddButton({ attachments, onAdd, pluginActions = [] }: 
       </button>
       {open ? (
         <div className="attachment-menu" role="menu">
-          <span className="attachment-menu-title">Add</span>
+          <span className="attachment-menu-title">{isZh ? "添加" : "Add"}</span>
           <button type="button" role="menuitem" onClick={() => void pick()}>
-            <IconFileText size={17} />
-            <span><strong>File and folder</strong><small>Images, documents, code, or a local folder</small></span>
+            <IconPaperclip size={14} />
+            <span className="attachment-menu-item-text">
+              <strong>{isZh ? "文件与文件夹" : "File and folder"}</strong>
+              <small>{isZh ? "图片、文档、pptx" : "Images, docs, pptx"}</small>
+            </span>
           </button>
           {pluginActions.length ? (
             <>
@@ -169,8 +301,11 @@ export function AttachmentAddButton({ attachments, onAdd, pluginActions = [] }: 
                     action.onSelect();
                   }}
                 >
-                  {action.id === "browser" ? <IconGlobe size={17} /> : action.id === "sites" ? <IconLaptop size={17} /> : <IconGear size={17} />}
-                  <span><strong>{action.label}</strong><small>{action.description}</small></span>
+                  {action.id === "browser" ? <IconGlobe size={14} /> : action.id === "sites" ? <IconLaptop size={14} /> : <IconGear size={14} />}
+                  <span className="attachment-menu-item-text">
+                    <strong>{action.label}</strong>
+                    <small>{action.description}</small>
+                  </span>
                 </button>
               ))}
             </>

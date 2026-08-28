@@ -25,6 +25,7 @@ export type LocalModel = {
 const EFFORT_ORDER: Effort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function detectReasoningEfforts(modelName: string, chatTemplate = ""): Effort[] | undefined {
+  if (/qwen3\.8(?:[-_]?27b)?/i.test(modelName)) return ["low", "medium", "xhigh"];
   const template = chatTemplate.toLowerCase();
   if (template.includes("reasoning_effort")) {
     const declared = [...template.matchAll(/reasoning_effort[\s\S]{0,160}?(?:not\s+in|in)\s*\(([^)]*)\)/gi)]
@@ -39,7 +40,6 @@ export function detectReasoningEfforts(modelName: string, chatTemplate = ""): Ef
     );
     return detected.length >= 2 ? detected : ["low", "medium", "high", "xhigh"];
   }
-  if (/qwen3\.8/i.test(modelName)) return ["low", "medium", "xhigh"];
   return undefined;
 }
 
@@ -133,7 +133,7 @@ export type ApiKeyItem = {
   key: string;
 };
 
-export type CoworkEngine = "claude-code" | "codex";
+export type CoworkEngine = "claude-agent";
 export type CoworkPermissionMode = "ask" | "approve" | "full";
 export type ResearchExtractor = "tavily" | "firecrawl";
 export type ComputerUsePermission = "ask" | "allow" | "block";
@@ -237,8 +237,31 @@ export type Attachment = {
   path?: string;
   relativePath?: string;
   size?: number;
-  kind?: "image" | "text" | "document" | "file";
+  kind?: "image" | "video" | "audio" | "document" | "text" | "code" | "archive" | "pdf" | "file";
   text?: string;
+};
+
+export type ResearchSite = {
+  title: string;
+  url: string;
+  domain: string;
+};
+
+export type ResearchStep = {
+  id: string;
+  kind: "search" | "read" | "verify";
+  status: "active" | "done";
+  count?: number;
+  domains?: string[];
+  sites?: ResearchSite[];
+  detail?: string;
+};
+
+export type ResearchProgress = {
+  strategy: string;
+  steps: ResearchStep[];
+  sources?: ResearchSite[];
+  complete?: boolean;
 };
 
 export type ChatMessage = {
@@ -253,6 +276,7 @@ export type ChatMessage = {
   phaseStartedAt?: number;
   introText?: string;
   statusText?: string;
+  research?: ResearchProgress;
   durationSeconds?: number;
 };
 
@@ -290,10 +314,20 @@ export type ModelBenchmarkResult = {
   source: "llama.cpp" | "measured";
 };
 
+export type ModelUsage = {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  totalTokens: number;
+};
+
 export type TokenUsage = {
   inputTokens: number;
   outputTokens: number;
+  cacheTokens: number;
   totalTokens: number;
+  models: ModelUsage[];
 };
 
 export type ChatSendPayload = {
@@ -311,6 +345,7 @@ export type StreamDelta = {
   content?: string;
   phase?: ChatPhase;
   statusText?: string;
+  research?: ResearchProgress;
 };
 
 export type StreamDone = {
@@ -320,9 +355,10 @@ export type StreamDone = {
   content: string;
   stopped?: boolean;
   durationSeconds?: number;
+  research?: ResearchProgress;
 };
 
-export type CodexToolCall = {
+export type CoworkToolCall = {
   id: string;
   name: string;
   input: Record<string, any>;
@@ -330,13 +366,31 @@ export type CodexToolCall = {
   output?: string;
 };
 
-export type CodexMessage = {
+export type CoworkApprovalStatus = "pending" | "allowed" | "denied";
+export type CoworkApprovalDecision = "allow_once" | "allow_session" | "deny";
+
+export type CoworkApproval = {
+  id: string;
+  taskId: string;
+  toolName: string;
+  title: string;
+  input: Record<string, unknown>;
+  blockedPath?: string;
+  status: CoworkApprovalStatus;
+  createdAt: number;
+};
+
+export type CoworkMessage = {
   id: string;
   taskId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  runtimeOutput?: string;
+  checkpointId?: string;
+  rewindAvailable?: boolean;
+  approvals?: CoworkApproval[];
   attachments?: Attachment[];
-  toolCalls?: CodexToolCall[];
+  toolCalls?: CoworkToolCall[];
   status?: "streaming" | "done" | "error";
   contextUsed?: number;
   contextTotal?: number;
@@ -345,7 +399,16 @@ export type CodexMessage = {
   createdAt: number;
 };
 
-export type CodexTask = {
+export type CoworkRewindResult = {
+  canRewind: boolean;
+  error?: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
+  skippedLinks?: number;
+};
+
+export type CoworkTask = {
   id: string;
   title: string;
   cwd: string;

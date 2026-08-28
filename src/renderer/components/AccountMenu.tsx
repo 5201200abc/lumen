@@ -10,6 +10,7 @@ type Props = {
   onLogout: () => void;
   onSync: () => void;
   onSettings: () => void;
+  onUsages: () => void;
   collapsed?: boolean;
 };
 
@@ -32,7 +33,13 @@ function compactTokens(tokens: number): string {
 
 export function AccountMenu(props: Props) {
   const [open, setOpen] = useState(false);
-  const [usage, setUsage] = useState<TokenUsage>({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  const [usage, setUsage] = useState<TokenUsage>({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheTokens: 0,
+    totalTokens: 0,
+    models: []
+  });
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -63,12 +70,15 @@ export function AccountMenu(props: Props) {
               <strong>{label}</strong>
             </div>
           </div>
-          {props.account.error ? <div className="account-error">{props.account.error}</div> : null}
+          {props.account.error && props.account.configured ? <div className="account-error">{props.account.error}</div> : null}
+          {!props.account.configured && !props.account.connected ? (
+            <div className="account-error">Google sign-in is unavailable in this local build.</div>
+          ) : null}
           <div className="account-menu-separator" />
           {props.account.connected ? (
             <button type="button" className="account-menu-row" onClick={props.onSync} disabled={props.busy}>
               <span className="account-row-icon sync-mark">↻</span>
-              <span>{props.busy ? "Syncing…" : "Sync data now"}</span>
+              <span>{props.busy ? "Syncing" : "Sync data now"}</span>
               {props.account.lastSyncedAt ? (
                 <small>{new Date(props.account.lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
               ) : null}
@@ -77,20 +87,27 @@ export function AccountMenu(props: Props) {
             <button
               type="button"
               className="account-menu-row google-login-row"
+              disabled={!props.account.configured}
               onClick={props.busy ? props.onCancelLogin : props.onLogin}
             >
               <span className="google-g">G</span>
               <span>{props.busy ? "Cancel sign-in" : "Continue with Google"}</span>
             </button>
           )}
-          <div
+          <button
+            type="button"
             className="account-menu-row account-usage-row"
-            title={`${usage.totalTokens.toLocaleString()} tokens · ${usage.inputTokens.toLocaleString()} input · ${usage.outputTokens.toLocaleString()} output`}
+            title={`${usage.totalTokens.toLocaleString()} tokens · ${usage.inputTokens.toLocaleString()} in · ${usage.outputTokens.toLocaleString()} out · ${usage.cacheTokens.toLocaleString()} cache`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              props.onUsages();
+            }}
           >
             <span className="account-row-icon"><IconUsage size={17} /></span>
             <span>Usages</span>
             <strong>{compactTokens(usage.totalTokens)}</strong>
-          </div>
+          </button>
           <button
             type="button"
             className="account-menu-row"

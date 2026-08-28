@@ -1,9 +1,10 @@
 import { nativeImage } from "electron";
-import type { Attachment, ChatMessage, Effort, Settings } from "@shared/types";
+import type { Attachment, ChatMessage, Effort, ResearchProgress, Settings } from "@shared/types";
 import { detectReasoningControl, normalizeReasoningEffort } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 import { memoryBlock } from "./memory";
 import { deepResearch } from "./research";
+import { parseModelUsage } from "./usage";
 
 export type StreamHandlers = {
   onDelta: (chunk: { thinking?: string; content?: string }) => void;
@@ -11,11 +12,13 @@ export type StreamHandlers = {
     phase: "preparing" | "searching" | "thinking" | "answering";
     text: string;
   }) => void;
+  onResearch: (progress: ResearchProgress) => void;
   onDone: (result: {
     thinking: string;
     content: string;
     stopped: boolean;
-    usage?: { inputTokens: number; outputTokens: number };
+    usage?: { inputTokens: number; outputTokens: number; cacheTokens?: number };
+    research?: ResearchProgress;
   }) => void;
   onError: (error: string) => void;
 };
@@ -30,6 +33,19 @@ type OpenAIMessage = {
   reasoning_content?: string;
   reasoning?: string;
 };
+
+function ensureResearchSources(
+  content: string,
+  research: ResearchProgress | undefined,
+  language: Settings["language"]
+): string {
+  if (!research?.sources?.length || /\[[^\]]+\]\(https?:\/\/[^)]+\)/i.test(content)) return content;
+  const links = research.sources.slice(0, 4).map((source) => {
+    const title = source.title.replace(/[\[\]\r\n]+/g, " ").trim() || source.domain;
+    return `- [${title}](${source.url})`;
+  });
+  return `${content.trimEnd()}\n\n**${language === "zh" ? "来源" : "Sources"}**\n\n${links.join("\n")}`;
+}
 
 class ThinkSplitter {
   thinking = "";
@@ -214,6 +230,7 @@ export async function streamChat(opts: {
   webSearch: boolean;
   vision: boolean;
   abort: AbortController;
+  instructionMode?: "chat" | "cowork";
   handlers: StreamHandlers;
 }): Promise<void> {
   const { settings, handlers, abort } = opts;
@@ -233,19 +250,25 @@ export async function streamChat(opts: {
         ? !["none", "minimal", "low"].includes(effectiveEffort)
         : false;
   let searchBlock = "";
+  let research: ResearchProgress | undefined;
   if (plan.useWeb && opts.userText.trim()) {
     handlers.onStatus({ phase: "searching", text: settings.language === "zh" ? "正在启动深度研究" : "Starting Deep Research" });
     try {
-      searchBlock = await deepResearch({
+      const result = await deepResearch({
         settings,
         question: opts.userText.trim(),
-        effort: effectiveEffort,
         signal: abort.signal,
-        onStatus: (text) => handlers.onStatus({ phase: "searching", text })
+        onStatus: (text) => handlers.onStatus({ phase: "searching", text }),
+        onProgress: (progress) => {
+          research = progress;
+          handlers.onResearch(progress);
+        }
       });
+      searchBlock = result.evidence;
+      research = result.progress;
     } catch (err) {
       if (abort.signal.aborted) {
-        handlers.onDone({ thinking: "", content: "", stopped: true });
+        handlers.onDone({ thinking: "", content: "", stopped: true, research });
         return;
       }
       handlers.onError(err instanceof Error ? err.message : String(err));
@@ -256,10 +279,18 @@ export async function streamChat(opts: {
   const mem = settings.memoryEnabled ? memoryBlock(opts.userText, opts.conversationId) : "";
   const modelStyle =
     settings.systemPrompt.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。";
+  const instructionMode = opts.instructionMode || "chat";
+  const customInstructions =
+    instructionMode === "cowork"
+      ? settings.coworkInstructions.trim()
+      : settings.chatInstructions.trim();
   const system = [
     `<model_style>\n${trimToTokens(modelStyle, 1800)}\n</model_style>`,
-    settings.chatInstructions.trim()
-      ? `<custom_instructions mode="chat">\n${trimToTokens(settings.chatInstructions.trim(), 1200)}\n</custom_instructions>`
+    customInstructions
+      ? `<custom_instructions mode="${instructionMode}">\n${trimToTokens(customInstructions, 1200)}\n</custom_instructions>`
+      : "",
+    instructionMode === "cowork"
+      ? "You are Lumen Cowork, not the underlying model. For capability questions, answer concisely from Lumen's actual role: conversation, workspace file inspection and editing, command execution, and enabled Browser, Sites, or Plugin tools. Never claim unsupported modalities or identify yourself as the underlying model."
       : "",
     "Reasoning discipline: solve simple tasks directly, never repeat the same verification or restart an established reasoning path, and answer as soon as the result is established.",
     plan.kind === "arithmetic"
@@ -386,7 +417,7 @@ export async function streamChat(opts: {
   let buf = "";
   const split = new ThinkSplitter();
   let reasoning = "";
-  let usage: { inputTokens: number; outputTokens: number } | undefined;
+  let usage: { inputTokens: number; outputTokens: number; cacheTokens?: number } | undefined;
   let phase: "preparing" | "thinking" | "answering" = "preparing";
   let lastDeltaAt = 0;
 
@@ -406,12 +437,8 @@ export async function streamChat(opts: {
     const data = trimmed.slice(5).trim();
     if (!data || data === "[DONE]") return;
     let json: {
-      usage?: {
-        prompt_tokens?: number;
-        completion_tokens?: number;
-        input_tokens?: number;
-        output_tokens?: number;
-      };
+      usage?: Record<string, unknown>;
+      timings?: Record<string, unknown>;
       choices?: Array<{
         delta?: {
           content?: string;
@@ -425,12 +452,8 @@ export async function streamChat(opts: {
     } catch {
       return;
     }
-    if (json.usage) {
-      usage = {
-        inputTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
-        outputTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0
-      };
-    }
+    const parsed = parseModelUsage(json.usage) || parseModelUsage(json.timings);
+    if (parsed) usage = parsed;
     const delta = json.choices?.[0]?.delta;
     if (!delta) return;
     const rc = delta.reasoning_content || delta.reasoning || "";
@@ -472,9 +495,10 @@ export async function streamChat(opts: {
     emitDelta(true);
     handlers.onDone({
       thinking: reasoning + split.thinking,
-      content: split.content,
+      content: ensureResearchSources(split.content, research, settings.language),
       stopped: false,
-      usage
+      usage,
+      research
     });
   } catch (err) {
     split.finish();
@@ -483,7 +507,8 @@ export async function streamChat(opts: {
         thinking: reasoning + split.thinking,
         content: split.content,
         stopped: true,
-        usage
+        usage,
+        research
       });
       return;
     }

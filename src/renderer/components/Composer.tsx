@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import type { Attachment, Effort, ReasoningControl } from "@shared/types";
+import type { Attachment, Effort, Language, ReasoningControl } from "@shared/types";
 import { IconArrowUp, IconGlobe, IconStop } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 import { AttachmentAddButton, AttachmentList, readDroppedFiles } from "./AttachmentControls";
@@ -12,6 +12,7 @@ type Props = {
   webSearch: boolean;
   streaming: boolean;
   attachments: Attachment[];
+  language?: Language;
   onChange: (v: string) => void;
   onModel: (m: string) => void;
   onEffort: (e: Effort) => void;
@@ -42,7 +43,7 @@ export function Composer(props: Props) {
           if (e.dataTransfer.files.length) props.onAttach(await readDroppedFiles(e.dataTransfer.files));
         }}
       >
-        <AttachmentList attachments={props.attachments} onRemove={props.onRemove} />
+        <AttachmentList attachments={props.attachments} onRemove={props.onRemove} language={props.language} />
         <textarea
           ref={area}
           rows={2}
@@ -66,7 +67,7 @@ export function Composer(props: Props) {
         />
         <div className="composer-bar">
           <div className="left-tools">
-            <AttachmentAddButton attachments={props.attachments} onAdd={props.onAttach} onRemove={props.onRemove} />
+            <AttachmentAddButton attachments={props.attachments} onAdd={props.onAttach} onRemove={props.onRemove} language={props.language} />
             <button
               className="icon-chip"
               type="button"

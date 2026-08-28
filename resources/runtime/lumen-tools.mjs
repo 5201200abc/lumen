@@ -67,7 +67,7 @@ const tools = [
   },
   {
     name: "plugins_list",
-    description: "List valid locally installed Codex plugin manifests visible to Lumen.",
+    description: "List valid locally installed Claude Agent or Lumen plugin manifests.",
     inputSchema: {
       type: "object",
       properties: {

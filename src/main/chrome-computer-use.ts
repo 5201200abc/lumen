@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog } from "electron";
+import type { MessageBoxOptions } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -168,7 +169,7 @@ async function permitted(kind: "approval", label: string): Promise<void> {
   const mode: ComputerUsePermission = getSettings().computerUsePermissions[kind];
   if (mode === "block") throw new Error(`${label} is blocked in Computer use settings.`);
   if (mode === "allow") return;
-  const options = {
+  const options: MessageBoxOptions = {
     type: "question",
     buttons: ["Allow", "Cancel"],
     defaultId: 0,
@@ -176,7 +177,7 @@ async function permitted(kind: "approval", label: string): Promise<void> {
     title: "Google Chrome Computer use",
     message: label,
     detail: "Lumen will control its dedicated Google Chrome profile for this action."
-  } as const;
+  };
   const parent = BrowserWindow.getFocusedWindow();
   const result = parent
     ? await dialog.showMessageBox(parent, options)

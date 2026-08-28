@@ -1,10 +1,20 @@
 export type SearchHit = { title: string; url: string; content: string };
 export type ExtractedPage = { title: string; url: string; markdown: string };
 
+function requestSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  return signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+    : AbortSignal.timeout(timeoutMs);
+}
+
 export async function tavilySearch(
   apiKey: string,
   query: string,
-  options: { maxResults?: number; signal?: AbortSignal } = {}
+  options: {
+    maxResults?: number;
+    signal?: AbortSignal;
+    timeRange?: "day" | "week" | "month" | "year";
+  } = {}
 ): Promise<{ digest: string; hits: SearchHit[]; answer: string }> {
   if (!apiKey) throw new Error("未配置 Tavily API");
   const res = await fetch("https://api.tavily.com/search", {
@@ -18,9 +28,10 @@ export async function tavilySearch(
       max_results: Math.max(1, Math.min(options.maxResults ?? 5, 10)),
       include_answer: false,
       include_raw_content: false,
-      search_depth: "advanced"
+      search_depth: "advanced",
+      ...(options.timeRange ? { time_range: options.timeRange } : {})
     }),
-    signal: options.signal
+    signal: requestSignal(options.signal, 30_000)
   });
   if (!res.ok) {
     const body = await res.text();
@@ -69,7 +80,7 @@ export async function tavilyExtract(
       include_images: false,
       timeout: options.depth === "basic" ? 15 : 45
     }),
-    signal: options.signal
+    signal: requestSignal(options.signal, 60_000)
   });
   if (!res.ok) {
     const body = await res.text();

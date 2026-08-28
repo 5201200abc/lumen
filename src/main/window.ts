@@ -8,6 +8,9 @@ export function applyTheme(theme: Theme): void {
 }
 
 export function createWindow(): BrowserWindow {
+  const isMac = process.platform === "darwin";
+  const isWin = process.platform === "win32";
+
   const win = new BrowserWindow({
     width: 1180,
     height: 760,
@@ -15,10 +18,23 @@ export function createWindow(): BrowserWindow {
     minHeight: 560,
     show: false,
     backgroundColor: "#00000000",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 18 },
-    vibrancy: "under-window",
-    visualEffectState: "active",
+    ...(isMac
+      ? {
+          titleBarStyle: "hiddenInset",
+          trafficLightPosition: { x: 16, y: 18 },
+          vibrancy: "under-window",
+          visualEffectState: "active"
+        }
+      : isWin
+      ? {
+          titleBarStyle: "hidden",
+          titleBarOverlay: {
+            color: "#161616",
+            symbolColor: "#8d8d88",
+            height: 40
+          }
+        }
+      : {}),
     transparent: false,
     autoHideMenuBar: true,
     webPreferences: {

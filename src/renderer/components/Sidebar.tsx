@@ -1,5 +1,5 @@
 import { useState, type RefObject } from "react";
-import type { Conversation, CodexTask, GoogleAccount, Language } from "@shared/types";
+import type { Conversation, CoworkTask, GoogleAccount, Language } from "@shared/types";
 import { IconChatBubble, IconCompose, IconLumen, IconSearch, IconSidebar, IconTrash } from "./icons";
 import { AccountMenu } from "./AccountMenu";
 
@@ -15,6 +15,7 @@ type Props = {
   onNew: () => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
+  onUsages: () => void;
   onToggleSidebar?: () => void;
   collapsed?: boolean;
   account: GoogleAccount;
@@ -24,12 +25,12 @@ type Props = {
   onGoogleLogout: () => void;
   onGoogleSync: () => void;
   searchRef: RefObject<HTMLInputElement | null>;
-  // Codex task props
-  codexTasks?: CodexTask[];
+  // Cowork task props
+  coworkTasks?: CoworkTask[];
   activeTaskId?: string | null;
-  onSelectCodexTask?: (id: string) => void;
-  onNewCodexTask?: () => void;
-  onDeleteCodexTask?: (id: string) => void;
+  onSelectCoworkTask?: (id: string) => void;
+  onNewCoworkTask?: () => void;
+  onDeleteCoworkTask?: (id: string) => void;
 };
 
 function initials(account: GoogleAccount): string {
@@ -64,7 +65,7 @@ export function Sidebar(props: Props) {
             <button
               type="button"
               className="collapsed-icon-btn"
-              onClick={props.mode === "code" ? () => props.onNewCodexTask?.() : props.onNew}
+              onClick={props.mode === "code" ? () => props.onNewCoworkTask?.() : props.onNew}
               title={isZh ? "新建会话 (⌘N)" : "New chat (⌘N)"}
               aria-label={isZh ? "新建会话" : "New chat"}
             >
@@ -200,7 +201,9 @@ export function Sidebar(props: Props) {
             <span>{isZh ? "新建会话" : "New chat"}</span>
           </button>
 
-          <div className="chats">
+          <div className="recents-group">
+            <div className="recents-heading">{isZh ? "最近" : "Recents"}</div>
+            <div className="chats">
             {props.chats.map((c) => (
               <div
                 key={c.id}
@@ -228,6 +231,7 @@ export function Sidebar(props: Props) {
             {props.chats.length === 0 && (
               <div className="empty-tasks-hint">{isZh ? "暂无历史会话" : "No recent chats"}</div>
             )}
+            </div>
           </div>
         </>
       ) : (
@@ -235,19 +239,21 @@ export function Sidebar(props: Props) {
           <button
             className="new-chat-btn"
             type="button"
-            onClick={() => props.onNewCodexTask && props.onNewCodexTask()}
+            onClick={() => props.onNewCoworkTask && props.onNewCoworkTask()}
             title={isZh ? "新建会话 (⌘N)" : "New chat (⌘N)"}
           >
             <IconCompose size={16} />
             <span>{isZh ? "新建会话" : "New chat"}</span>
           </button>
 
-          <div className="chats">
-            {(props.codexTasks || []).map((t) => (
+          <div className="recents-group">
+            <div className="recents-heading">{isZh ? "最近" : "Recents"}</div>
+            <div className="chats">
+            {(props.coworkTasks || []).map((t) => (
               <div
                 key={t.id}
                 className={`chat-item ${t.id === props.activeTaskId ? "active" : ""}`}
-                onClick={() => props.onSelectCodexTask && props.onSelectCodexTask(t.id)}
+                onClick={() => props.onSelectCoworkTask && props.onSelectCoworkTask(t.id)}
               >
                 <div>
                   <div className="title">{t.title || (isZh ? "新会话" : "New Chat")}</div>
@@ -260,16 +266,17 @@ export function Sidebar(props: Props) {
                   title={isZh ? "删除会话" : "Delete chat"}
                   onClick={(e) => {
                     e.stopPropagation();
-                    props.onDeleteCodexTask && props.onDeleteCodexTask(t.id);
+                    props.onDeleteCoworkTask && props.onDeleteCoworkTask(t.id);
                   }}
                 >
                   <IconTrash size={15} />
                 </button>
               </div>
             ))}
-            {(!props.codexTasks || props.codexTasks.length === 0) && (
+            {(!props.coworkTasks || props.coworkTasks.length === 0) && (
               <div className="empty-tasks-hint">{isZh ? "暂无历史会话" : "No recent chats"}</div>
             )}
+            </div>
           </div>
         </>
       )}
@@ -283,6 +290,7 @@ export function Sidebar(props: Props) {
           onLogout={props.onGoogleLogout}
           onSync={props.onGoogleSync}
           onSettings={props.onSettings}
+          onUsages={props.onUsages}
         />
       </div>
     </aside>

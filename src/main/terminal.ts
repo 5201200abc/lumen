@@ -3,6 +3,7 @@ import * as pty from "node-pty";
 import os from "os";
 import fs from "fs";
 import path from "path";
+import { ensureClaudeBridge } from "./cowork-agent";
 
 let ptyProcess: pty.IPty | null = null;
 let currentCwd = process.env.HOME || os.homedir();
@@ -45,7 +46,7 @@ function getTerminalEnv(): Record<string, string> {
 
   return {
     ...process.env,
-    ANTHROPIC_BASE_URL: "http://127.0.0.1:18084",
+    ANTHROPIC_BASE_URL: "http://127.0.0.1:18086",
     ANTHROPIC_API_KEY: "sk-local-llama",
     PATH: finalPath,
     TERM: "xterm-256color",
@@ -56,7 +57,7 @@ function getTerminalEnv(): Record<string, string> {
 }
 
 export function registerTerminalIpc(): void {
-  ipcMain.handle("terminal:init", (event, opts?: { cols?: number; rows?: number; cwd?: string }) => {
+  ipcMain.handle("terminal:init", async (event, opts?: { cols?: number; rows?: number; cwd?: string }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const cols = opts?.cols || 80;
     const rows = opts?.rows || 24;
@@ -70,6 +71,7 @@ export function registerTerminalIpc(): void {
     const env = getTerminalEnv();
 
     try {
+      await ensureClaudeBridge();
       ptyProcess = pty.spawn(claudeBin, ["--dangerously-skip-permissions"], {
         name: "xterm-256color",
         cols,
@@ -145,7 +147,7 @@ export function registerTerminalIpc(): void {
     return false;
   });
 
-  ipcMain.handle("terminal:restart", (event, opts?: { cols?: number; rows?: number; cwd?: string }) => {
+  ipcMain.handle("terminal:restart", async (event, opts?: { cols?: number; rows?: number; cwd?: string }) => {
     if (ptyProcess) {
       try {
         ptyProcess.kill();
@@ -161,6 +163,7 @@ export function registerTerminalIpc(): void {
     const env = getTerminalEnv();
 
     try {
+      await ensureClaudeBridge();
       ptyProcess = pty.spawn(claudeBin, ["--dangerously-skip-permissions"], {
         name: "xterm-256color",
         cols,

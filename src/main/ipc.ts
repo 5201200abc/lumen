@@ -23,11 +23,19 @@ import { applyTheme } from "./window";
 import { generateConversationTitle } from "./title";
 import { cancelGoogleLogin, googleLogin, googleLogout, googleStatus, googleSync } from "./google-auth";
 import { recordTokenUsage, tokenUsage } from "./usage";
+import { reconcileModelCatalog } from "@shared/model-catalog";
 
 const aborts = new Map<string, AbortController>();
 
 function senderWin(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender);
+}
+
+function broadcastConversationTitle(conversationId: string, title: string): void {
+  renameConversation(conversationId, title);
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("chats:renamed", { conversationId, title });
+  }
 }
 
 async function beginStream(opts: {
@@ -66,11 +74,13 @@ async function beginStream(opts: {
       attachments: opts.attachments,
       createdAt: Date.now()
     });
-    if (isFirstTurn && opts.content.trim()) {
-      renameConversation(opts.conversationId, opts.content.trim().slice(0, 16));
-    }
   } else {
     userId = [...history].reverse().find((m) => m.role === "user")?.id || "";
+  }
+
+  if (isFirstTurn && opts.insertUser && opts.content.trim()) {
+    const title = await generateConversationTitle(opts.content);
+    if (title.trim()) broadcastConversationTitle(opts.conversationId, title.trim());
   }
 
   const assistantId = crypto.randomUUID();
@@ -126,6 +136,15 @@ async function beginStream(opts: {
           ...chunk
         });
       },
+      onResearch: (research) => {
+        if (aborts.get(opts.conversationId) !== abort) return;
+        opts.win?.webContents.send("chat:delta", {
+          conversationId: opts.conversationId,
+          messageId: assistantId,
+          phase: "searching",
+          research
+        });
+      },
       onDone: (result) => {
         if (aborts.get(opts.conversationId) !== abort) {
           deleteMessage(assistantId);
@@ -135,10 +154,16 @@ async function beginStream(opts: {
         updateMessage(assistantId, {
           content: result.content,
           thinking: result.thinking,
+          research: result.research,
           durationSeconds
         });
         if (result.usage) {
-          recordTokenUsage(result.usage.inputTokens, result.usage.outputTokens);
+          recordTokenUsage(
+            result.usage.inputTokens,
+            result.usage.outputTokens,
+            result.usage.cacheTokens || 0,
+            settings.model
+          );
         }
         if (settings.memoryEnabled && !result.stopped && result.content.trim()) {
           maybeRemember(userMsg, {
@@ -157,21 +182,9 @@ async function beginStream(opts: {
           thinking: result.thinking,
           content: result.content,
           stopped: result.stopped,
+          research: result.research,
           durationSeconds
         });
-
-        // Automatically summarize a concise topic title using the local model
-        if (isFirstTurn && result.content.trim() && !result.stopped) {
-          void generateConversationTitle(opts.content, result.content).then((newTitle) => {
-            if (newTitle && newTitle.trim()) {
-              renameConversation(opts.conversationId, newTitle.trim());
-              opts.win?.webContents.send("chats:renamed", {
-                conversationId: opts.conversationId,
-                title: newTitle.trim()
-              });
-            }
-          });
-        }
       },
       onError: (error) => {
         if (aborts.get(opts.conversationId) !== abort) {
@@ -211,6 +224,26 @@ export function registerIpc(): void {
   ipcMain.handle("models:reconnect", async () => ensureLocalLlama(getSettings(), true));
   ipcMain.handle("models:stop", async () => stopLocalLlama(getSettings()));
   ipcMain.handle("models:benchmark", async (_e, model: string) => benchmarkLocalModel(getSettings(), model));
+  ipcMain.handle("models:refreshCatalog", async (_event, restartRouter = false) => {
+    let settings = getSettings();
+    const status = restartRouter
+      ? await ensureLocalLlama(settings, true)
+      : await probeLlama(settings);
+    const detectedModels = reconcileModelCatalog(settings, status);
+    const selectedExists = detectedModels.some((model) => model.name === settings.model);
+    const nextModel = selectedExists ? settings.model : detectedModels[0]?.name || "";
+    if (
+      JSON.stringify(detectedModels) !== JSON.stringify(settings.llamaModels) ||
+      nextModel !== settings.model
+    ) {
+      settings = setSettings({
+        llamaModels: detectedModels,
+        modelCatalog: detectedModels.map((model) => model.name),
+        model: nextModel
+      });
+    }
+    return { settings, status };
+  });
 
   ipcMain.handle("chats:list", () => listConversations());
   ipcMain.handle("chats:search", (_e, q: string) => searchConversations(q));
@@ -233,26 +266,8 @@ export function registerIpc(): void {
   });
   ipcMain.handle("chats:messages", (_e, id: string) => listMessages(id));
 
-  ipcMain.handle("chats:autoSummarize", async (event) => {
-    const win = senderWin(event);
-    const convs = listConversations();
-    for (const c of convs) {
-      const msgs = listMessages(c.id);
-      const userMsg = msgs.find((m) => m.role === "user");
-      const asstMsg = msgs.find((m) => m.role === "assistant" && m.content.trim());
-      if (userMsg && asstMsg && (c.title === "新对话" || c.title.length > 8 || c.title.includes("为什么你的回答那么像") || c.title.includes("优化 happyhorse") || c.title.includes("你介绍一下自己"))) {
-        const newTitle = await generateConversationTitle(userMsg.content, asstMsg.content);
-        if (newTitle && newTitle.trim() && newTitle !== c.title) {
-          renameConversation(c.id, newTitle.trim());
-          win?.webContents.send("chats:renamed", {
-            conversationId: c.id,
-            title: newTitle.trim()
-          });
-        }
-      }
-    }
-    return listConversations();
-  });
+  // Compatibility API: titles are now generated once, before the first response starts.
+  ipcMain.handle("chats:autoSummarize", () => listConversations());
 
   ipcMain.handle("memory:list", () => listMemories());
   ipcMain.handle("memory:clear", () => {

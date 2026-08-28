@@ -134,7 +134,7 @@ export function CodeTerminal({ theme }: Props) {
     setRestarting(true);
     if (termRef.current) {
       termRef.current.clear();
-      termRef.current.writeln(`\x1b[36m[正在切换工作目录至: ${selected} ...]\x1b[0m\r\n`);
+      termRef.current.writeln(`\x1b[36m[正在切换工作目录至: ${selected}]\x1b[0m\r\n`);
       const res = await window.lumen.terminal.restart({
         cols: termRef.current.cols,
         rows: termRef.current.rows,
@@ -149,7 +149,7 @@ export function CodeTerminal({ theme }: Props) {
     setRestarting(true);
     if (termRef.current) {
       termRef.current.clear();
-      termRef.current.writeln(`\x1b[36m[正在重启 Claude Code 终端会话...]\x1b[0m\r\n`);
+      termRef.current.writeln(`\x1b[36m[正在重启 Claude Code 终端会话]\x1b[0m\r\n`);
       const res = await window.lumen.terminal.restart({
         cols: termRef.current.cols,
         rows: termRef.current.rows,
@@ -192,7 +192,7 @@ export function CodeTerminal({ theme }: Props) {
             onClick={() => void handleRestart()}
             title="重启终端会话"
           >
-            {restarting ? "重启中..." : "重启会话"}
+            {restarting ? "重启中" : "重启会话"}
           </button>
           <button
             type="button"

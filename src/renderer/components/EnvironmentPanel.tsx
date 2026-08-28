@@ -1,4 +1,4 @@
-import type { Attachment, CodexMessage, CoworkCapabilityId, CoworkEngine, CoworkToolStatus, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CoworkMessage, CoworkCapabilityId, CoworkToolStatus, WorkspaceInfo } from "@shared/types";
 import { toolDescription } from "@shared/cowork-status";
 import {
   IconBranch,
@@ -18,9 +18,8 @@ type Props = {
   language?: "zh" | "en";
   workspace: WorkspaceInfo | null;
   running: boolean;
-  engine: CoworkEngine;
   model: string;
-  messages: CodexMessage[];
+  messages: CoworkMessage[];
   attachments: Attachment[];
   toolStatus: CoworkToolStatus | null;
   onSelectWorkspace: () => void;
@@ -32,7 +31,7 @@ function compactNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-function sourceFiles(messages: CodexMessage[], pending: Attachment[]): Attachment[] {
+function sourceFiles(messages: CoworkMessage[], pending: Attachment[]): Attachment[] {
   const files = [...pending, ...messages.flatMap((message) => message.attachments || [])];
   const seen = new Set<string>();
   return files.filter((file) => {
@@ -43,7 +42,7 @@ function sourceFiles(messages: CodexMessage[], pending: Attachment[]): Attachmen
   });
 }
 
-function relevantTools(messages: CodexMessage[]): CoworkCapabilityId[] {
+function relevantTools(messages: CoworkMessage[]): CoworkCapabilityId[] {
   const used = new Set<CoworkCapabilityId>();
   for (const tool of messages.flatMap((message) => message.toolCalls || [])) {
     const name = tool.name.toLowerCase();
@@ -131,7 +130,7 @@ export function EnvironmentPanel(props: Props) {
             <div className="environment-process">
               <IconTerminal size={14} />
               <span title={activeTool ? toolDescription(activeTool) : undefined}>
-                {activeTool ? toolDescription(activeTool) : `${props.engine === "claude-code" ? "Claude Code" : "Codex"} · ${props.model}`}
+                {activeTool ? toolDescription(activeTool) : `Claude Agent · ${props.model}`}
               </span>
               <span className="environment-live-dot" aria-label={isZh ? "执行中" : "Running"} />
             </div>

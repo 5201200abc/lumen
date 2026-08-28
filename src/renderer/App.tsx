@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "./components/Composer";
 import { MessageView } from "./components/Message";
-import { SettingsPanel } from "./components/Settings";
+import { SettingsPanel, type SettingsPage } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
-import { CodexView } from "./components/CodexView";
+import { CoworkView } from "./components/CoworkView";
 import { IconSidebar } from "./components/icons";
-import type { Attachment, ChatMessage, Conversation, CodexTask, CoworkEngine, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
+import type { Attachment, ChatMessage, Conversation, CoworkTask, Effort, GoogleAccount, LlamaStatus, Settings } from "@shared/types";
 import { detectReasoningControl } from "@shared/types";
 import { planChatRequest } from "@shared/chat-plan";
 
@@ -30,44 +30,55 @@ function applyPreferences(settings: Pick<Settings, "theme" | "language" | "fontS
   document.documentElement.style.setProperty("--base-font-size", `${numSize}px`);
 }
 
-function modelsFromStatus(settings: Settings, status: LlamaStatus): Settings["llamaModels"] {
-  const activeEndpoint =
-    settings.llamaEndpoints.find((endpoint) => endpoint.url === settings.llamaUrl) ||
-    settings.llamaEndpoints[0];
-  const localEndpoint = settings.llamaEndpoints.find((endpoint) =>
-    /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/v1\/?$/i.test(endpoint.url)
-  );
-  if (!activeEndpoint || !localEndpoint) return settings.llamaModels;
-  const replacedEndpointIds = new Set(
-    settings.llamaEndpoints
-      .filter((endpoint) => /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/v1\/?$/i.test(endpoint.url))
-      .map((endpoint) => endpoint.id)
-  );
-  const preserved = settings.llamaModels.filter((model) => !replacedEndpointIds.has(model.endpointId));
-  const localModels = status.localModels.map((model) => ({
-    id: `local:${model.name}`,
-    name: model.name,
-    endpointId: localEndpoint.id,
-    reasoningControl: model.reasoningControl,
-    reasoningEfforts: model.reasoningEfforts,
-    source: "local" as const
-  }));
-  const remoteModels = activeEndpoint.id === localEndpoint.id
-    ? []
-    : status.models.map((name) => ({
-        id: `${activeEndpoint.id}:${name}`,
-        name,
-        endpointId: activeEndpoint.id,
-        reasoningControl: detectReasoningControl(name),
-        source: "remote" as const
-      }));
-  return [...preserved, ...localModels, ...remoteModels].slice(0, 5);
-}
-
 export function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [mode, setMode] = useState<"chat" | "code">("chat");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("lumen:sidebar_width");
+      const num = saved ? Number(saved) : NaN;
+      return Number.isFinite(num) && num >= 220 && num <= 560 ? num : 280;
+    } catch {
+      return 280;
+    }
+  });
+  const isResizingRef = useRef(false);
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleResizerMouseDown = (e: React.MouseEvent) => {
+    if (!sidebarOpen) return;
+    e.preventDefault();
+    isResizingRef.current = true;
+    setIsResizing(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const newWidth = Math.max(220, Math.min(560, moveEvent.clientX));
+      setSidebarWidth(newWidth);
+    };
+
+    const onMouseUp = (upEvent: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      isResizingRef.current = false;
+      setIsResizing(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      const finalWidth = Math.max(220, Math.min(560, upEvent.clientX));
+      try {
+        localStorage.setItem("lumen:sidebar_width", String(finalWidth));
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
   const [chats, setChats] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -78,14 +89,14 @@ export function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPage, setSettingsPage] = useState<"general" | "models">("general");
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>("general");
   const [status, setStatus] = useState<LlamaStatus | null>(null);
   const [account, setAccount] = useState<GoogleAccount>({ configured: false, connected: false });
   const [accountBusy, setAccountBusy] = useState(false);
   const [welcomePrompt, setWelcomePrompt] = useState<string>(WELCOME_PROMPTS.en[0]);
 
-  // Codex state
-  const [codexTasks, setCodexTasks] = useState<CodexTask[]>([]);
+  // Cowork state
+  const [coworkTasks, setCoworkTasks] = useState<CoworkTask[]>([]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -99,23 +110,8 @@ export function App() {
   const loginStartedAt = useRef(0);
 
   const refreshDetectedModels = useCallback(async (restartRouter = false) => {
-    let current = await window.lumen.settings.get();
-    const nextStatus = restartRouter
-      ? await window.lumen.models.reconnect()
-      : await window.lumen.models.status();
-    const detectedModels = modelsFromStatus(current, nextStatus);
-    const selectedExists = detectedModels.some((model) => model.name === current.model);
-    const nextModel = selectedExists ? current.model : detectedModels[0]?.name || "";
-    if (
-      JSON.stringify(detectedModels) !== JSON.stringify(current.llamaModels) ||
-      nextModel !== current.model
-    ) {
-      current = await window.lumen.settings.set({
-        llamaModels: detectedModels,
-        modelCatalog: detectedModels.map((model) => model.name),
-        model: nextModel
-      });
-    }
+    const { settings: current, status: nextStatus } =
+      await window.lumen.models.refreshCatalog(restartRouter);
     setSettings(current);
     setStatus(nextStatus);
     return { settings: current, status: nextStatus };
@@ -144,9 +140,9 @@ export function App() {
     return list;
   }, [query]);
 
-  const refreshCodexTasks = useCallback(async () => {
-    const tasks = await window.lumen.codex.listTasks();
-    setCodexTasks(tasks);
+  const refreshCoworkTasks = useCallback(async () => {
+    const tasks = await window.lumen.cowork.listTasks();
+    setCoworkTasks(tasks);
     return tasks;
   }, []);
 
@@ -175,22 +171,22 @@ export function App() {
     nextWelcomePrompt();
   }, [activeId, nextWelcomePrompt, streaming]);
 
-  const handleNewCodexTask = useCallback(async (cwd?: string, engine?: CoworkEngine): Promise<string> => {
-    const t = await window.lumen.codex.createTask({ cwd, engine: engine || settings?.coworkEngine || "claude-code" });
-    setCodexTasks(await window.lumen.codex.listTasks());
+  const handleNewCoworkTask = useCallback(async (cwd?: string): Promise<string> => {
+    const t = await window.lumen.cowork.createTask({ cwd });
+    setCoworkTasks(await window.lumen.cowork.listTasks());
     setActiveTaskId(t.id);
     return t.id;
-  }, [settings?.coworkEngine]);
+  }, []);
 
-  const cleanCodexTask = useCallback(async () => {
-    if (activeTaskId) await window.lumen.codex.stop(activeTaskId);
+  const cleanCoworkTask = useCallback(async () => {
+    if (activeTaskId) await window.lumen.cowork.stop(activeTaskId);
     setActiveTaskId(null);
   }, [activeTaskId]);
 
-  const handleDeleteCodexTask = useCallback(async (id: string) => {
-    await window.lumen.codex.deleteTask(id);
-    const tasks = await window.lumen.codex.listTasks();
-    setCodexTasks(tasks);
+  const handleDeleteCoworkTask = useCallback(async (id: string) => {
+    await window.lumen.cowork.deleteTask(id);
+    const tasks = await window.lumen.cowork.listTasks();
+    setCoworkTasks(tasks);
     if (activeTaskId === id) {
       setActiveTaskId(tasks[0]?.id || null);
     }
@@ -218,12 +214,7 @@ export function App() {
         nextWelcomePrompt();
       }
 
-      // Auto summarize existing long titles in background
-      void window.lumen.chats.autoSummarize?.().then((updated) => {
-        if (updated) setChats(updated);
-      });
-
-      const cTasks = await refreshCodexTasks();
+      const cTasks = await refreshCoworkTasks();
       if (cTasks[0]) setActiveTaskId(cTasks[0].id);
     })();
   }, [refreshDetectedModels]);
@@ -235,9 +226,9 @@ export function App() {
           prev.map((c) => (c.id === d.conversationId ? { ...c, title: d.title } : c))
         );
       }),
-      window.lumen.codex.onEvent((event) => {
+      window.lumen.cowork.onEvent((event) => {
         if (event.type === "renamed" && event.title) {
-          setCodexTasks((prev) =>
+          setCoworkTasks((prev) =>
             prev.map((t) => (t.id === event.taskId ? { ...t, title: event.title } : t))
           );
         }
@@ -253,6 +244,7 @@ export function App() {
                   thinking: d.thinking ?? m.thinking,
                   phase: d.phase ?? m.phase,
                   statusText: d.statusText ?? m.statusText,
+                  research: d.research ?? m.research,
                   phaseStartedAt:
                     d.phase === "thinking" && m.phase !== "thinking"
                       ? Date.now()
@@ -276,6 +268,7 @@ export function App() {
                   thinking: d.thinking,
                   phase: "done",
                   statusText: "",
+                  research: d.research ?? m.research,
                   durationSeconds: d.durationSeconds
                 }
               : m
@@ -304,9 +297,12 @@ export function App() {
           { id: crypto.randomUUID(), mime: "image/png", name: file.name, dataUrl: file.dataUrl }
         ]);
       }),
-      window.lumen.ui.onSettings(() => setSettingsOpen(true)),
+      window.lumen.ui.onSettings(() => {
+        setSettingsPage("general");
+        setSettingsOpen(true);
+      }),
       window.lumen.ui.onNewChat(() => {
-        if (mode === "code") void cleanCodexTask();
+        if (mode === "code") void cleanCoworkTask();
         else void newChat();
       }),
       window.lumen.ui.onSearch(() => searchRef.current?.focus()),
@@ -315,7 +311,7 @@ export function App() {
       })
     ];
     return () => off.forEach((fn) => fn());
-  }, [activeId, cleanCodexTask, mode, newChat, refreshChats]);
+  }, [activeId, cleanCoworkTask, mode, newChat, refreshChats]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -328,7 +324,7 @@ export function App() {
         setSettingsOpen(true);
       }
       if (e.key === "Escape" && settingsOpen) {
-        setSettingsOpen(false);
+        window.dispatchEvent(new Event("lumen:settings-escape"));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -404,7 +400,7 @@ export function App() {
         content,
         attachments: files,
         effort,
-        webSearch
+        webSearch: plan.useWeb
       });
       setMessages((prev) =>
         prev.map((m) => {
@@ -488,7 +484,7 @@ export function App() {
         content,
         attachments: files,
         effort,
-        webSearch
+        webSearch: plan.useWeb
       });
       setMessages((prev) =>
         prev.map((m) => {
@@ -544,7 +540,7 @@ export function App() {
       ];
     });
     try {
-      const res = await window.lumen.chat.regenerate(activeId, effort, webSearch);
+      const res = await window.lumen.chat.regenerate(activeId, effort, plan.useWeb);
       if (!res.ok || !res.assistantId) throw new Error("Could not regenerate because the previous user message was not found.");
       setMessages((prev) => prev.map((m) => (m.id === "tmp-asst" ? { ...m, id: res.assistantId! } : m)));
     } catch (err) {
@@ -562,16 +558,24 @@ export function App() {
   const patchSettings = async (patch: Partial<Settings>): Promise<void> => {
     setSettings((current) => (current ? { ...current, ...patch } : current));
     if (patch.theme !== undefined || patch.language !== undefined || patch.fontSize !== undefined) {
-      const next = { ...settings!, ...patch };
-      applyPreferences(next);
+      applyPreferences({ ...settings!, ...patch });
     }
     if (patch.defaultEffort !== undefined) setEffort(patch.defaultEffort);
 
     const write = settingsWrite.current.then(async () => {
-      await window.lumen.settings.set(patch);
+      const next = await window.lumen.settings.set(patch);
+      setSettings(next);
     });
     settingsWrite.current = write.catch(() => undefined);
-    await write;
+    try {
+      await write;
+    } catch (error) {
+      const current = await window.lumen.settings.get();
+      setSettings(current);
+      applyPreferences(current);
+      setEffort(current.defaultEffort);
+      throw error;
+    }
   };
 
   const runAccountAction = async (action: "login" | "logout" | "sync"): Promise<void> => {
@@ -601,7 +605,6 @@ export function App() {
   }, []);
 
   const deleteAllChats = async (): Promise<boolean> => {
-    if (!window.confirm("Delete all chat? This cannot be undone.")) return false;
     if (streaming && activeId) await window.lumen.chat.stop(activeId);
     await window.lumen.chats.clear();
     chatLoad.current += 1;
@@ -635,7 +638,10 @@ export function App() {
 
   return (
     <>
-      <div className={`app ${!sidebarOpen ? "sidebar-collapsed" : ""}`}>
+      <div
+        className={`app ${!sidebarOpen ? "sidebar-collapsed" : ""}`}
+        style={{ "--sidebar": `${sidebarWidth}px` } as React.CSSProperties}
+      >
         <Sidebar
           language={settings.language}
           mode={mode}
@@ -674,7 +680,14 @@ export function App() {
               }
             }
           }}
-          onSettings={() => setSettingsOpen(true)}
+          onSettings={() => {
+            setSettingsPage("general");
+            setSettingsOpen(true);
+          }}
+          onUsages={() => {
+            setSettingsPage("usages");
+            setSettingsOpen(true);
+          }}
           onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
           account={account}
           accountBusy={accountBusy}
@@ -682,24 +695,36 @@ export function App() {
           onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
           onGoogleLogout={() => void runAccountAction("logout")}
           onGoogleSync={() => void runAccountAction("sync")}
-          codexTasks={codexTasks}
+          coworkTasks={coworkTasks}
           activeTaskId={activeTaskId}
-          onSelectCodexTask={setActiveTaskId}
-          onNewCodexTask={() => void cleanCodexTask()}
-          onDeleteCodexTask={(id) => void handleDeleteCodexTask(id)}
+          onSelectCoworkTask={setActiveTaskId}
+          onNewCoworkTask={() => void cleanCoworkTask()}
+          onDeleteCoworkTask={(id) => void handleDeleteCoworkTask(id)}
         />
-        <div className="v-line" />
+        <div
+          className={`sidebar-resizer ${isResizing ? "is-dragging" : ""}`}
+          onMouseDown={handleResizerMouseDown}
+          onDoubleClick={() => {
+            setSidebarWidth(280);
+            try {
+              localStorage.setItem("lumen:sidebar_width", "280");
+            } catch {
+              // ignore
+            }
+          }}
+          title={settings.language === "zh" ? "拖拽调整侧边栏宽度，双击重置" : "Drag to resize sidebar, double-click to reset"}
+        />
         <section className="main">
           <div className="mode-pane" hidden={mode !== "code"}>
-            <CodexView
+            <CoworkView
               language={settings.language}
               sidebarOpen={sidebarOpen}
               onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
               activeTaskId={activeTaskId}
-              tasks={codexTasks}
+              tasks={coworkTasks}
               onSelectTask={setActiveTaskId}
-              onNewTask={handleNewCodexTask}
-              onDeleteTask={handleDeleteCodexTask}
+              onNewTask={handleNewCoworkTask}
+              onDeleteTask={handleDeleteCoworkTask}
               model={settings.model}
               models={[...new Set(configuredModels.map((model) => model.name))]}
               effort={effort}
@@ -707,24 +732,19 @@ export function App() {
               onEffort={setEffort}
               reasoningControl={reasoningControl}
               reasoningEfforts={reasoningEfforts}
-              engine={settings.coworkEngine}
               capabilityVersion={`${Number(settings.plugins.browser)}${Number(settings.plugins.sites)}${Number(settings.plugins.plugins)}${Number(settings.computerUseChromeEnabled)}`}
               permissionMode={settings.coworkPermissionMode}
               defaultPermissions={settings.coworkDefaultPermissions}
               fullAccess={settings.coworkFullAccess}
               onPermissionMode={(coworkPermissionMode) => void patchSettings({ coworkPermissionMode })}
-              onEngine={(engine) => {
-                void patchSettings({ coworkEngine: engine });
-                setActiveTaskId(null);
-              }}
             />
           </div>
           <div className="mode-pane" hidden={mode !== "chat"}>
-              <div className="thread" ref={threadRef} onScroll={handleScroll}>
+            <div className="chat-top-bar" />
+            <div className="thread" ref={threadRef} onScroll={handleScroll}>
                 <div className="thread-inner">
                   {visible.length === 0 ? (
                     <div className="empty">
-                      <h1>Lumen</h1>
                       <p>{welcomePrompt}</p>
                     </div>
                   ) : (
@@ -749,6 +769,7 @@ export function App() {
                 webSearch={webSearch}
                 streaming={streaming}
                 attachments={attachments}
+                language={settings.language}
                 onChange={setDraft}
                 onModel={(m) => void selectModel(m)}
                 onEffort={setEffort}
@@ -774,6 +795,12 @@ export function App() {
             await window.lumen.memory.clear();
           }}
           onDeleteAllChats={deleteAllChats}
+          account={account}
+          accountBusy={accountBusy}
+          onGoogleLogin={() => void runAccountAction("login")}
+          onGoogleCancelLogin={() => void window.lumen.google.cancelLogin()}
+          onGoogleLogout={() => void runAccountAction("logout")}
+          onGoogleSync={() => void runAccountAction("sync")}
         />
       )}
     </>

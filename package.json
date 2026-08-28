@@ -1,8 +1,8 @@
 {
   "name": "lumen",
   "productName": "Lumen",
-  "version": "0.6.0",
-  "description": "Minimal desktop AI chat & Codex agent for local models",
+  "version": "0.7.0",
+  "description": "Private desktop AI chat and Claude Agent cowork for local models",
   "main": "out/main/index.js",
   "type": "module",
   "author": {
@@ -17,6 +17,14 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "verify:runtime": "node scripts/runtime-smoke.mjs",
+    "verify:cancel": "node scripts/runtime-cancel.mjs",
+    "verify:long-output": "node scripts/runtime-long-output.mjs",
+    "verify:interruption": "node scripts/runtime-interruption.mjs",
+    "verify:benchmark": "node scripts/runtime-benchmark.mjs",
+    "verify:permissions": "node scripts/runtime-permissions.mjs",
+    "verify:checkpoint": "node scripts/runtime-checkpoint.mjs",
+    "verify:style": "node scripts/runtime-style.mjs",
+    "verify:model-sync": "node scripts/runtime-model-sync.mjs",
     "dist": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
     "dist:mac:arm64": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64",
@@ -32,6 +40,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.247",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "electron-store": "^10.1.0",

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Language, LlamaStatus, ModelBenchmarkResult, Settings } from "@shared/types";
+import type { GoogleAccount, Language, LlamaStatus, ModelBenchmarkResult, Settings, TokenUsage } from "@shared/types";
 import { detectReasoningControl, reasoningControlLabel } from "@shared/types";
 import { IconGauge, IconGear, IconGlobe, IconLaptop, IconTrash } from "./icons";
 
-type Page = "general" | "models" | "plugins" | "computer" | "research" | "apikeys" | "instructions" | "data";
+export type SettingsPage = "general" | "models" | "usages" | "plugins" | "computer" | "research" | "apikeys" | "instructions" | "data";
+type Page = SettingsPage;
 type Action = "chat" | "cowork" | "rule" | "memory" | "chats" | "setting";
 type Props = {
   settings: Settings;
@@ -11,6 +12,12 @@ type Props = {
   onClose: () => void;
   onDeleteAllMemories?: () => Promise<void>;
   onDeleteAllChats: () => Promise<boolean>;
+  account: GoogleAccount;
+  accountBusy: boolean;
+  onGoogleLogin: () => void;
+  onGoogleCancelLogin: () => void;
+  onGoogleLogout: () => void;
+  onGoogleSync: () => void;
   initialPage?: Page;
   onRefreshModels?: () => Promise<void>;
 };
@@ -22,32 +29,41 @@ const COPY = {
     pluginsHelp: "Choose which built-in Cowork plugins are available. All plugins are enabled by default.",
     browserPlugin: "Browser", browserPluginHelp: "Control Lumen's isolated in-app browser.",
     sitesPlugin: "Sites", sitesPluginHelp: "Preview local sites and verify them in Browser.",
-    pluginManagement: "Plugin Management", pluginManagementHelp: "Discover locally installed Codex plugins.",
+    pluginManagement: "Plugin Management", pluginManagementHelp: "Discover locally installed Claude Agent and Lumen plugins.",
     computerHelp: "Manage how Cowork controls applications on this computer.",
     coworkPermissions: "Permissions",
     defaultPermissions: "Default permissions",
     defaultPermissionsHelp: "Cowork can read and edit files in its workspace and asks when additional access is needed.",
     fullAccess: "Full access",
     fullAccessHelp: "Allow editing any file and running networked commands without approval. This significantly increases risk.",
-    googleChrome: "Google Chrome", chromeInstalled: "Installed", chromeMissing: "Not installed", checking: "Checking…",
+    googleChrome: "Google Chrome", chromeInstalled: "Installed", chromeMissing: "Not installed", checking: "Checking",
     chromeHelp: "Control a dedicated Google Chrome profile through Computer use.",
     permissions: "Permissions", approval: "Opening websites", history: "Browser history",
     downloads: "Downloads", uploads: "Uploads", alwaysAsk: "Always ask", allow: "Allow", block: "Block",
     instructions: "Instructions", data: "Data", language: "Language",
     languageHelp: "Choose the interface language.", fontSize: "Font size",
     fontHelp: "Adjust font size.", theme: "Theme",
-    modelService: "Local model service", modelServiceHelp: "Persistent llama-server router discovered from its listening port.",
-    servicePort: "Listening port", automaticPort: "Automatic", autoStart: "Start automatically",
+    modelService: "Llama", modelServiceHelp: "Local llama-server instance.",
+    autoStart: "Start automatically",
     start: "Start", stop: "Stop", restart: "Restart", running: "Running", stopped: "Stopped",
     llamaConfig: "Model Configuration", llamaConfigHelp: "Manage the permanent local multi-model router.",
     configure: "Configure",
     active: "Active", use: "Use", name: "Name", url: "API URL",
     refreshModels: "Model Refresh",
-    testSpeed: "Test speed", testingSpeed: "Testing…",
+    testSpeed: "Test speed", testingSpeed: "Testing",
+    usages: "Usages",
+    usagesHelp: "Counted from the model API: input, output, and prompt cache.",
+    usagesEmpty: "No usage recorded yet.",
+    usagesIn: "Input",
+    usagesOut: "Output",
+    usagesCache: "Cache",
+    usagesTotal: "Total",
+    usagesEarlier: "Earlier (unattributed)",
+    usagesUnknown: "Unknown model",
     defaultEffort: "Default effort", defaultEffortHelp: "Default reasoning strength for models.",
     low: "Low", mediumLabel: "Medium", high: "High", xhigh: "Extra high (xhigh)",
     tavilyTitle: "Tavily API",
-    tavilyHelp: "Cloud Search + Extract. Search finds sources; Extract returns clean Markdown from up to 20 URLs.",
+    tavilyHelp: "",
     tavilyKeys: "Tavily API",
     tavilyKeysHelp: "Configure the cloud Tavily API used by Search and Extract.",
     cloud: "Cloud", selfHosted: "Self-hosted", pageExtractor: "Page extractor",
@@ -59,9 +75,9 @@ const COPY = {
     firecrawlUrl: "API URL",
     firecrawlKey: "API key (optional for self-hosted)",
     firecrawlConfigure: "Configure Firecrawl",
-    llamaKeyTitle: "Llama API key",
+    llamaKeyTitle: "Llama API",
     llamaKeyHelp: "Optional authorization token for custom llama server.",
-    llamaKeys: "Llama API keys",
+    llamaKeys: "Llama API",
     llamaKeysHelp: "Configure and manage multiple Llama authorization API keys.",
     addKey: "Add API key",
     keyName: "Key label",
@@ -73,9 +89,18 @@ const COPY = {
     rule: "Model rule style", modify: "Modify", lock: "Lock", saveLock: "Save & lock",
     protected: "Style rule protected",
     protectedHelp: "Includes concise reasoning and loop prevention. Modify only to change output style.",
-    memory: "Enable memory",
+    memory: "Enable memories",
     memoryHelp: "Keeps key facts and context inside the current conversation only.",
-    deleteMemory: "Delete all memory", deleteChat: "Delete all chat",
+    deleteMemory: "Delete all memories", deleteChat: "Delete all chats",
+    googleBackup: "Google Backup",
+    googleBackupHelp: "Backs up lumen.sqlite to Drive app data.",
+    googleUnavailable: "Google sign-in is unavailable in this local build.",
+    googleSignIn: "Continue with Google",
+    googleCancel: "Cancel sign-in",
+    googleSync: "Sync now",
+    googleSyncing: "Syncing",
+    googleLogout: "Log out",
+    googleBackupOn: "Google Backup on",
     dataHelp: "These actions affect local data and the next Google backup.",
     save: "Save", saved: "Saved", saving: "Saving", unsaved: "Unsaved changes",
     cancel: "Cancel", close: "Close"
@@ -86,32 +111,41 @@ const COPY = {
     pluginsHelp: "选择 Cowork 可使用的内置插件；默认全部开启。",
     browserPlugin: "Browser", browserPluginHelp: "控制 Lumen 隔离的内置浏览器。",
     sitesPlugin: "Sites", sitesPluginHelp: "预览本地网站并在 Browser 中验证。",
-    pluginManagement: "Plugin Management", pluginManagementHelp: "发现本机已安装的 Codex 插件。",
+    pluginManagement: "Plugin Management", pluginManagementHelp: "发现本机已安装的 Claude Agent 与 Lumen 插件。",
     computerHelp: "管理 Cowork 如何控制这台电脑上的应用。",
     coworkPermissions: "权限",
     defaultPermissions: "默认权限",
     defaultPermissionsHelp: "Cowork 可以读取和编辑工作区文件，并在需要额外访问时询问。",
     fullAccess: "完全访问",
     fullAccessHelp: "允许不经批准编辑任意文件并运行联网命令；这会显著提高数据泄露或误操作风险。",
-    googleChrome: "Google Chrome", chromeInstalled: "已安装", chromeMissing: "未安装", checking: "检查中…",
+    googleChrome: "Google Chrome", chromeInstalled: "已安装", chromeMissing: "未安装", checking: "检查中",
     chromeHelp: "通过 Computer use 控制独立的 Google Chrome 配置。",
     permissions: "权限", approval: "打开网站", history: "浏览器历史记录",
     downloads: "下载", uploads: "上传", alwaysAsk: "始终询问", allow: "允许", block: "阻止",
     instructions: "指令",
     data: "数据", language: "语言", languageHelp: "选择界面显示语言。", fontSize: "字体大小",
     fontHelp: "调整界面字体大小。", theme: "主题",
-    modelService: "本地模型服务", modelServiceHelp: "按真实监听端口发现并永久管理 llama-server 路由。",
-    servicePort: "监听端口", automaticPort: "自动分配", autoStart: "自动启动",
+    modelService: "Llama", modelServiceHelp: "本地 llama-server 服务实例。",
+    autoStart: "自动启动",
     start: "启动", stop: "停止", restart: "重启", running: "运行中", stopped: "已停止",
     llamaConfig: "Model Configuration", llamaConfigHelp: "管理永久运行的本地多模型路由服务。",
     configure: "配置",
     active: "当前", use: "使用", name: "名称", url: "API 地址",
     refreshModels: "模型刷新",
-    testSpeed: "测速", testingSpeed: "测试中…",
+    testSpeed: "测速", testingSpeed: "测试中",
+    usages: "Usages",
+    usagesHelp: "按模型 API 计数：输入、输出与 prompt cache。",
+    usagesEmpty: "暂无用量记录。",
+    usagesIn: "输入",
+    usagesOut: "输出",
+    usagesCache: "Cache",
+    usagesTotal: "合计",
+    usagesEarlier: "此前（未分模型）",
+    usagesUnknown: "未知模型",
     defaultEffort: "默认思考强度", defaultEffortHelp: "模型的默认推理/思考强度级别。",
     low: "低 (low)", mediumLabel: "中 (medium)", high: "高 (high)", xhigh: "极高 (xhigh)",
     tavilyTitle: "Tavily API",
-    tavilyHelp: "云端 Search + Extract：先找来源，再从最多 20 个 URL 提取清洗后的 Markdown。",
+    tavilyHelp: "",
     tavilyKeys: "Tavily API",
     tavilyKeysHelp: "配置供 Tavily Search 与 Extract 共用的云端 API。",
     cloud: "云端", selfHosted: "自托管", pageExtractor: "网页抓取器",
@@ -123,9 +157,9 @@ const COPY = {
     firecrawlUrl: "API 地址",
     firecrawlKey: "API 密钥（自托管可选）",
     firecrawlConfigure: "配置 Firecrawl",
-    llamaKeyTitle: "Llama API 密钥",
+    llamaKeyTitle: "Llama API",
     llamaKeyHelp: "用于远程自定义 Llama 服务的授权令牌。",
-    llamaKeys: "Llama API 密钥",
+    llamaKeys: "Llama API",
     llamaKeysHelp: "配置并管理多个 Llama 服务授权密钥。",
     addKey: "新增 API 密钥",
     keyName: "密钥备注名称",
@@ -137,14 +171,35 @@ const COPY = {
     rule: "模型规则风格",
     modify: "修改", lock: "锁定", saveLock: "保存并锁定", protected: "规则已保护",
     protectedHelp: "包含简洁推理和防止循环的规则，仅在需要改变输出风格时修改。",
-    memory: "Enable memory",
+    memory: "启用记忆",
     memoryHelp: "仅在当前对话内保留关键信息与上下文，不与其他对话混用。",
     deleteMemory: "删除全部记忆", deleteChat: "删除全部对话",
+    googleBackup: "Google Backup",
+    googleBackupHelp: "把 lumen.sqlite 备份到 Drive 应用数据。",
+    googleUnavailable: "此本地构建未配置 Google 登录。",
+    googleSignIn: "使用 Google 登录",
+    googleCancel: "取消登录",
+    googleSync: "立即同步",
+    googleSyncing: "同步中",
+    googleLogout: "退出登录",
+    googleBackupOn: "Google 备份已开启",
     dataHelp: "这些操作会影响本地数据和下一次 Google 备份。", save: "保存",
     saved: "已保存", saving: "保存中", unsaved: "未保存",
     cancel: "取消", close: "关闭"
   }
 } as const;
+
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const value = tokens / 1_000_000;
+    return `${value >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (tokens >= 1_000) {
+    const value = tokens / 1_000;
+    return `${value >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return String(tokens);
+}
 
 function maskApiKey(key: string): string {
   if (!key) return "";
@@ -259,7 +314,7 @@ function NumberStepper({
           tabIndex={-1}
           aria-label="Increase font size"
         >
-          <svg width="8" height="5" viewBox="0 0 8 5" fill="currentColor">
+          <svg width="6" height="4" viewBox="0 0 8 5" fill="currentColor">
             <path d="M4 0.5L7.5 4.5H0.5L4 0.5Z" />
           </svg>
         </button>
@@ -271,7 +326,7 @@ function NumberStepper({
           tabIndex={-1}
           aria-label="Decrease font size"
         >
-          <svg width="8" height="5" viewBox="0 0 8 5" fill="currentColor">
+          <svg width="6" height="4" viewBox="0 0 8 5" fill="currentColor">
             <path d="M4 4.5L0.5 0.5H7.5L4 4.5Z" />
           </svg>
         </button>
@@ -309,7 +364,15 @@ export function SettingsPanel(props: Props) {
   const [showLlamaKeyModal, setShowLlamaKeyModal] = useState(false);
   const [showFirecrawlModal, setShowFirecrawlModal] = useState(false);
   const [chromeStatus, setChromeStatus] = useState<{ installed: boolean; running: boolean; executable: string | null } | null>(null);
+  const [usage, setUsage] = useState<TokenUsage>({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheTokens: 0,
+    totalTokens: 0,
+    models: []
+  });
   const t = COPY[s?.language === "zh" ? "zh" : "en"] || COPY.en;
+  const isZh = s?.language === "zh";
   const activeReasoningEfforts = s.llamaModels.find((model) => model.name === s.model)?.reasoningEfforts;
 
   useEffect(() => setChatInstructions(s.chatInstructions), [s.chatInstructions]);
@@ -325,6 +388,11 @@ export function SettingsPanel(props: Props) {
     if (page !== "general") return;
     void window.lumen.models.status().then(setLlamaStatus).catch(() => setLlamaStatus(null));
   }, [page, s.llamaUrl]);
+  useEffect(() => {
+    if (page !== "usages") return;
+    void window.lumen.usage.get().then(setUsage).catch(() => undefined);
+    return window.lumen.usage.onUpdated(setUsage);
+  }, [page]);
   useEffect(() => {
     if (page !== "computer") return;
     setChromeStatus(null);
@@ -354,9 +422,14 @@ export function SettingsPanel(props: Props) {
 
   const patch = (value: Partial<Settings>) => run("setting", () => props.onChange(value));
   const requestClose = () => {
-    if (dirty && !window.confirm("Discard unsaved settings changes?")) return;
+    if (dirty && !window.confirm(isZh ? "放弃未保存的设置更改？" : "Discard unsaved settings changes?")) return;
     props.onClose();
   };
+  useEffect(() => {
+    const onEscape = () => requestClose();
+    window.addEventListener("lumen:settings-escape", onEscape);
+    return () => window.removeEventListener("lumen:settings-escape", onEscape);
+  }, [dirty, isZh, props.onClose]);
   const deleteModel = async (id: string) => {
     const remaining = s.llamaModels.filter((model) => model.id !== id);
     const deleting = s.llamaModels.find((model) => model.id === id);
@@ -482,6 +555,7 @@ export function SettingsPanel(props: Props) {
   const nav: Array<{ id: Page; label: string }> = [
     { id: "general", label: t.general },
     { id: "models", label: t.models },
+    { id: "usages", label: t.usages },
     { id: "plugins", label: t.pluginsPage },
     { id: "computer", label: t.computerUse },
     { id: "research", label: t.webResearch },
@@ -525,27 +599,15 @@ export function SettingsPanel(props: Props) {
               </div>
               <div className="service-actions">
                 <button type="button" disabled={serviceAction !== null || Boolean(llamaStatus?.online)} onClick={() => void controlModelService("start")}>
-                  {serviceAction === "start" ? "…" : t.start}
+                  {serviceAction === "start" ? (isZh ? "启动中" : "Starting") : t.start}
                 </button>
                 <button type="button" disabled={serviceAction !== null || !llamaStatus?.online} onClick={() => void controlModelService("restart")}>
-                  {serviceAction === "restart" ? "…" : t.restart}
+                  {serviceAction === "restart" ? (isZh ? "重启中" : "Restarting") : t.restart}
                 </button>
                 <button type="button" disabled={serviceAction !== null || !llamaStatus?.online} onClick={() => void controlModelService("stop")}>
-                  {serviceAction === "stop" ? "…" : t.stop}
+                  {serviceAction === "stop" ? (isZh ? "停止中" : "Stopping") : t.stop}
                 </button>
               </div>
-            </div>
-            <div className="setting-row">
-              <div><strong>{t.servicePort}</strong><small>{t.modelServiceHelp}</small></div>
-              <input
-                className="port-input"
-                inputMode="numeric"
-                value={llamaPortDraft}
-                placeholder={t.automaticPort}
-                onChange={(event) => setLlamaPortDraft(event.target.value.replace(/\D/g, "").slice(0, 5))}
-                onBlur={() => void saveLlamaPort()}
-                onKeyDown={(event) => { if (event.key === "Enter") void saveLlamaPort(); }}
-              />
             </div>
             <div className="setting-row">
               <div><strong>{t.autoStart}</strong><small>{t.modelServiceHelp}</small></div>
@@ -669,15 +731,45 @@ export function SettingsPanel(props: Props) {
             </div>
           </div>}
 
+          {page === "usages" && <div className="settings-page">
+            <div className="page-intro">
+              <p>{t.usagesHelp}</p>
+            </div>
+            <div className="setting-row usage-total-row">
+              <div>
+                <strong>{t.usagesTotal}</strong>
+                <small>{`${t.usagesIn} ${compactTokens(usage.inputTokens)} · ${t.usagesOut} ${compactTokens(usage.outputTokens)} · ${t.usagesCache} ${compactTokens(usage.cacheTokens)}`}</small>
+              </div>
+              <span className="usage-total">{compactTokens(usage.totalTokens)}</span>
+            </div>
+            {usage.models.length === 0 ? (
+              <p className="data-note">{t.usagesEmpty}</p>
+            ) : usage.models.map((item) => (
+              <div className="setting-row usage-model-row" key={item.model}>
+                <div>
+                  <strong>
+                    {item.model === "(earlier)"
+                      ? t.usagesEarlier
+                      : item.model === "(unknown)"
+                        ? t.usagesUnknown
+                        : item.model}
+                  </strong>
+                  <small>{`${t.usagesIn} ${compactTokens(item.inputTokens)} · ${t.usagesOut} ${compactTokens(item.outputTokens)} · ${t.usagesCache} ${compactTokens(item.cacheTokens)}`}</small>
+                </div>
+                <span className="usage-total">{compactTokens(item.totalTokens)}</span>
+              </div>
+            ))}
+          </div>}
+
           {page === "plugins" && <div className="settings-page">
             <div className="page-intro">
               <h4>{t.pluginsPage}</h4>
               <p>{t.pluginsHelp}</p>
             </div>
             {([
-              { id: "browser", title: t.browserPlugin, help: t.browserPluginHelp, icon: <IconGlobe size={17} /> },
-              { id: "sites", title: t.sitesPlugin, help: t.sitesPluginHelp, icon: <IconLaptop size={17} /> },
-              { id: "plugins", title: t.pluginManagement, help: t.pluginManagementHelp, icon: <IconGear size={17} /> }
+              { id: "browser", title: t.browserPlugin, help: t.browserPluginHelp, icon: <IconGlobe size={14} /> },
+              { id: "sites", title: t.sitesPlugin, help: t.sitesPluginHelp, icon: <IconLaptop size={14} /> },
+              { id: "plugins", title: t.pluginManagement, help: t.pluginManagementHelp, icon: <IconGear size={14} /> }
             ] as const).map((item) => (
               <div className="setting-row integration-row" key={item.id}>
                 <div className="integration-copy">
@@ -689,6 +781,7 @@ export function SettingsPanel(props: Props) {
                   type="button"
                   aria-label={item.title}
                   aria-pressed={s.plugins[item.id]}
+                  disabled={saving !== null}
                   onClick={() => void patch({ plugins: { ...s.plugins, [item.id]: !s.plugins[item.id] } })}
                 >
                   <i />
@@ -714,9 +807,9 @@ export function SettingsPanel(props: Props) {
                 </span>
               </div>
               <button
-                className={`toggle ${s.computerUseChromeEnabled && chromeStatus?.installed ? "on" : ""}`}
+                className={`toggle ${s.computerUseChromeEnabled ? "on" : ""}`}
                 type="button"
-                disabled={!chromeStatus?.installed}
+                disabled={saving !== null || (!chromeStatus?.installed && !s.computerUseChromeEnabled)}
                 aria-label={t.googleChrome}
                 aria-pressed={s.computerUseChromeEnabled}
                 onClick={() => void patch({ computerUseChromeEnabled: !s.computerUseChromeEnabled })}
@@ -751,7 +844,7 @@ export function SettingsPanel(props: Props) {
 
           {page === "research" && <div className="settings-page">
             <div className="setting-row">
-              <div><strong>{t.pageExtractor}</strong><small>{s.researchExtractor === "tavily" ? t.tavilyHelp : t.firecrawlHelp}</small></div>
+              <div><strong>{t.pageExtractor}</strong></div>
               <DropdownSelect
                 value={s.researchExtractor}
                 direction="down"
@@ -763,11 +856,6 @@ export function SettingsPanel(props: Props) {
               />
             </div>
             <div className="research-group-heading">{t.cloud}</div>
-            <div className="setting-row">
-              <div>
-                <strong>Tavily Search + Extract</strong>
-              </div>
-            </div>
             <div className="setting-row">
               <div><strong>{t.extractDepth}</strong><small>{t.extractDepthHelp}</small></div>
               <DropdownSelect
@@ -804,7 +892,7 @@ export function SettingsPanel(props: Props) {
             <div className="setting-row">
               <div>
                 <strong>{t.tavilyTitle}</strong>
-                <small>{s.tavilyApiKey ? `Active: ${maskApiKey(s.tavilyApiKey)}` : t.tavilyHelp}</small>
+                {s.tavilyApiKey && <small>Active: {maskApiKey(s.tavilyApiKey)}</small>}
               </div>
               <button
                 type="button"
@@ -841,7 +929,7 @@ export function SettingsPanel(props: Props) {
               <span className="rule-label-row">
                 <span>{t.rule}</span>
                 {!ruleEditable ? (
-                  <button type="button" className="text-button" onClick={() => window.confirm("Changing this rule alters the model's voice and output style. Continue?") && setRuleEditable(true)}>
+                  <button type="button" className="text-button" onClick={() => window.confirm(isZh ? "修改此规则会改变模型语气与输出风格。继续？" : "Changing this rule alters the model's voice and output style. Continue?") && setRuleEditable(true)}>
                     {t.modify}
                   </button>
                 ) : (
@@ -849,7 +937,7 @@ export function SettingsPanel(props: Props) {
                     type="button"
                     className="text-button"
                     onClick={() => {
-                      if (rule === s.systemPrompt || window.confirm("Discard changes and lock?")) {
+                      if (rule === s.systemPrompt || window.confirm(isZh ? "放弃更改并锁定？" : "Discard changes and lock?")) {
                         setRule(s.systemPrompt);
                         setRuleEditable(false);
                       }
@@ -890,6 +978,51 @@ export function SettingsPanel(props: Props) {
           </div>}
 
           {page === "data" && <div className="settings-page">
+            <div className="setting-row google-backup-row">
+              <div>
+                <strong>{t.googleBackup}</strong>
+                <small>
+                  {props.account.connected
+                    ? `${t.googleBackupOn}${props.account.name || props.account.email ? ` · ${props.account.name || props.account.email}` : ""}${props.account.lastSyncedAt ? ` · ${new Date(props.account.lastSyncedAt).toLocaleString()}` : ""}`
+                    : props.account.configured
+                      ? t.googleBackupHelp
+                      : t.googleUnavailable}
+                </small>
+              </div>
+              {props.account.connected ? (
+                <button
+                  className="settings-save"
+                  type="button"
+                  disabled={props.accountBusy}
+                  onClick={props.onGoogleSync}
+                >
+                  {props.accountBusy ? t.googleSyncing : t.googleSync}
+                </button>
+              ) : (
+                <button
+                  className="settings-save"
+                  type="button"
+                  disabled={!props.account.configured}
+                  onClick={props.accountBusy ? props.onGoogleCancelLogin : props.onGoogleLogin}
+                >
+                  {props.accountBusy ? t.googleCancel : t.googleSignIn}
+                </button>
+              )}
+            </div>
+            {props.account.configured && props.account.error ? <p className="data-note" role="alert">{props.account.error}</p> : null}
+            {props.account.connected ? (
+              <div className="danger-row">
+                <span>{t.googleLogout}</span>
+                <button
+                  className="settings-save"
+                  type="button"
+                  disabled={props.accountBusy}
+                  onClick={props.onGoogleLogout}
+                >
+                  {t.googleLogout}
+                </button>
+              </div>
+            ) : null}
             <div className="setting-row">
               <div>
                 <strong>{t.memory}</strong>
@@ -913,7 +1046,7 @@ export function SettingsPanel(props: Props) {
                 disabled={saving !== null}
                 aria-label={t.deleteMemory}
                 onClick={() => {
-                  if (window.confirm("Delete all memory? This cannot be undone.")) {
+                  if (window.confirm(isZh ? "删除全部记忆？该操作无法撤销。" : "Delete all memories? This cannot be undone.")) {
                     void run("memory", async () => {
                       if (!props.onDeleteAllMemories) throw new Error("Memory deletion is unavailable.");
                       await props.onDeleteAllMemories();
@@ -931,7 +1064,11 @@ export function SettingsPanel(props: Props) {
                 type="button"
                 disabled={saving !== null}
                 aria-label={t.deleteChat}
-                onClick={() => void run("chats", props.onDeleteAllChats)}
+                onClick={() => {
+                  if (window.confirm(isZh ? "删除全部对话？该操作无法撤销。" : "Delete all chats? This cannot be undone.")) {
+                    void run("chats", props.onDeleteAllChats);
+                  }
+                }}
               >
                 <IconTrash />
               </button>
@@ -1081,7 +1218,7 @@ export function SettingsPanel(props: Props) {
               disabled={!props.onRefreshModels || refreshingModels}
               onClick={() => void refreshModels()}
             >
-              <span>{refreshingModels ? "…" : "↻"} {t.refreshModels}</span>
+              <span>↻ {refreshingModels ? (isZh ? "刷新中" : "Refreshing") : t.refreshModels}</span>
             </button>
           </div>
         </div>

@@ -335,8 +335,8 @@ async function sitesPreview(rawDirectory: unknown, workspace?: string): Promise<
 function pluginManifests(): Array<Record<string, unknown>> {
   if (pluginCache.length && Date.now() - pluginCacheAt < 30_000) return pluginCache;
   const roots = [
-    path.join(os.homedir(), ".codex", "plugins", "cache"),
-    path.join(os.homedir(), ".codex", ".tmp", "bundled-marketplaces")
+    path.join(os.homedir(), ".claude", "plugins"),
+    path.join(app.getPath("userData"), "plugins")
   ];
   const manifests: Array<Record<string, unknown>> = [];
   const seen = new Set<string>();
@@ -352,7 +352,11 @@ function pluginManifests(): Array<Record<string, unknown>> {
       const candidate = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         visit(candidate, depth + 1);
-      } else if (entry.isFile() && entry.name === "plugin.json" && path.basename(path.dirname(candidate)) === ".codex-plugin") {
+      } else if (
+        entry.isFile() &&
+        entry.name === "plugin.json" &&
+        [".claude-plugin", ".lumen-plugin"].includes(path.basename(path.dirname(candidate)))
+      ) {
         try {
           const data = JSON.parse(fs.readFileSync(candidate, "utf8")) as Record<string, unknown>;
           const key = `${String(data.name || "")}:${String(data.version || "")}`;

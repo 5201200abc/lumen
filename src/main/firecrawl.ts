@@ -37,7 +37,14 @@ export async function firecrawlScrape(
         ? { ...options, onlyCleanContent: undefined }
         : options
     );
-    res = await fetch(endpoint, { method: "POST", headers, body, signal });
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body,
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(75_000)])
+        : AbortSignal.timeout(75_000)
+    });
     if (res.status !== 404) break;
   }
   if (!res) throw new Error("Firecrawl request could not be started");

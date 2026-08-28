@@ -1,0 +1,1239 @@
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { execFile, spawn, type ChildProcess } from "child_process";
+import crypto from "node:crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import type { PermissionResult, PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
+import type { Attachment, ChatMessage, CoworkMessage, CoworkTask, CoworkToolCall, CoworkApproval, CoworkApprovalDecision, CoworkEngine, Effort, Settings, WorkspaceInfo } from "@shared/types";
+import { detectReasoningControl } from "@shared/types";
+import { toolActivity } from "@shared/cowork-status";
+import { isCoworkDirectConversation } from "@shared/cowork-routing";
+import { generateConversationTitle } from "./title";
+import { getSettings, SYSTEM_PROMPT_PATH } from "./store";
+import { probeLlama } from "./models";
+import { ensureToolHost } from "./tool-host";
+import { parseModelUsage, recordTokenUsage } from "./usage";
+import { streamChat } from "./llama";
+import { startClaudeAgentRuntime, type ClaudeAgentRuntime } from "./claude-agent-runtime";
+import {
+  deleteCoworkTask as deletePersistedCoworkTask,
+  listCoworkMessages,
+  listCoworkTasks,
+  saveCoworkMessage,
+  saveCoworkTask
+} from "./db";
+
+const tasks = new Map<string, CoworkTask>();
+const messages = new Map<string, CoworkMessage[]>();
+const activeDirectAnswers = new Map<string, AbortController>();
+type PersistentRunHandlers = {
+  onMessage: (message: unknown) => void;
+  onStderr: (data: string) => void;
+  canUseTool: (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: {
+      signal: AbortSignal;
+      suggestions?: PermissionUpdate[];
+      blockedPath?: string;
+      title?: string;
+    }
+  ) => Promise<PermissionResult>;
+  finish: (exitCode: number, error?: string) => void;
+};
+type PersistentAgentSession = {
+  runtime: ClaudeAgentRuntime;
+  configKey: string;
+  current?: PersistentRunHandlers;
+};
+const persistentAgentSessions = new Map<string, PersistentAgentSession>();
+type ClaudeSessionState = { id?: string; started: boolean };
+const claudeSessions = new Map<string, ClaudeSessionState>();
+const compactContexts = new Map<string, string>();
+let bridgeProcess: ChildProcess | null = null;
+let bridgeStartup: Promise<void> | null = null;
+let bridgeConfig = "";
+const CLAUDE_BRIDGE_URL = "http://127.0.0.1:18086";
+type PendingApproval = {
+  taskId: string;
+  messageId: string;
+  approval: CoworkApproval;
+  suggestions?: PermissionUpdate[];
+  resolve: (result: PermissionResult) => void;
+};
+const pendingApprovals = new Map<string, PendingApproval>();
+const taskAllowedTools = new Map<string, Set<string>>();
+
+function persistTask(task: CoworkTask): void {
+  saveCoworkTask(task, claudeSessions.get(task.id)?.id, compactContexts.get(task.id));
+}
+
+function restoreCoworkState(): void {
+  for (const record of listCoworkTasks()) {
+    const task = record.task;
+    const restoredMessages = listCoworkMessages(task.id).map((message) => {
+      if (message.status !== "streaming") return message;
+      message.status = "error";
+      message.activity = "Task interrupted";
+      message.runtimeOutput = [
+        message.runtimeOutput,
+        "Lumen restarted before this run completed."
+      ].filter(Boolean).join("\n");
+      message.approvals = message.approvals?.map((approval) => (
+        approval.status === "pending" ? { ...approval, status: "denied" as const } : approval
+      ));
+      saveCoworkMessage(message);
+      return message;
+    });
+    tasks.set(task.id, task);
+    messages.set(task.id, restoredMessages);
+    if (record.claudeSessionId) {
+      claudeSessions.set(task.id, { id: record.claudeSessionId, started: true });
+    }
+    if (record.compactContext) compactContexts.set(task.id, record.compactContext);
+  }
+}
+
+function emitApproval(win: BrowserWindow | null, message: CoworkMessage, approval: CoworkApproval): void {
+  const existing = message.approvals || [];
+  const index = existing.findIndex((item) => item.id === approval.id);
+  if (index >= 0) existing[index] = approval;
+  else existing.push(approval);
+  message.approvals = [...existing];
+  saveCoworkMessage(message);
+  if (win && !win.isDestroyed()) {
+    win.webContents.send("cowork:event", {
+      taskId: message.taskId,
+      messageId: message.id,
+      type: "permission_request",
+      approval,
+      approvals: message.approvals
+    });
+  }
+}
+
+function cancelTaskApprovals(taskId: string, reason = "Task stopped before approval."): void {
+  for (const [id, pending] of pendingApprovals) {
+    if (pending.taskId !== taskId) continue;
+    pending.approval.status = "denied";
+    pending.resolve({ behavior: "deny", message: reason, interrupt: true });
+    pendingApprovals.delete(id);
+  }
+}
+
+function compactTaskContext(taskMessages: CoworkMessage[]): string {
+  return taskMessages
+    .filter((message) => message.role !== "system" && message.content.trim())
+    .slice(-16)
+    .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${message.content.trim().slice(0, 1600)}`)
+    .join("\n\n")
+    .slice(-12000);
+}
+
+function modelStyleHash(style: string): string {
+  return crypto.createHash("sha256").update(style.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。").digest("hex").slice(0, 16);
+}
+
+function reasoningCapability(settings: Settings): {
+  control: ReturnType<typeof detectReasoningControl>;
+  efforts: string;
+} {
+  const model = settings.llamaModels.find((item) => item.name === settings.model);
+  return {
+    control: model?.reasoningControl ?? detectReasoningControl(settings.model),
+    efforts: (model?.reasoningEfforts || []).join(",")
+  };
+}
+
+function bridgeFingerprint(settings: Settings): string {
+  const capability = reasoningCapability(settings);
+  return `${settings.llamaUrl}\n${settings.model}\n${capability.control}\n${capability.efforts}\n${modelStyleHash(settings.systemPrompt)}`;
+}
+
+const homeDir = process.env.HOME || os.homedir();
+const launchCwd = process.env.PWD;
+let defaultCwd =
+  launchCwd && launchCwd !== "/" && fs.existsSync(launchCwd)
+    ? path.resolve(launchCwd)
+    : homeDir;
+
+function resolveWorkingDir(rawPath?: string): string {
+  if (!rawPath || rawPath === "~" || rawPath.trim() === "") return homeDir;
+  if (rawPath.startsWith("~/")) return path.join(homeDir, rawPath.slice(2));
+  try {
+    const abs = path.resolve(rawPath);
+    if (fs.existsSync(abs)) return abs;
+  } catch (e) {}
+  return homeDir;
+}
+
+function coworkHistory(taskId: string, taskMessages: CoworkMessage[]): ChatMessage[] {
+  return taskMessages
+    .filter((message) => message.role !== "system" && message.content.trim())
+    .map((message) => ({
+      id: message.id,
+      conversationId: taskId,
+      role: message.role as "user" | "assistant",
+      content: message.content,
+      thinking: "",
+      attachments: message.attachments || [],
+      createdAt: message.createdAt
+    }));
+}
+
+function startDirectAnswer(opts: {
+  win: BrowserWindow | null;
+  task: CoworkTask;
+  taskMessages: CoworkMessage[];
+  assistant: CoworkMessage;
+  prompt: string;
+  settings: Settings;
+  effort: Effort;
+  vision: boolean;
+}): void {
+  const { win, task, assistant, settings } = opts;
+  const abort = new AbortController();
+  let finished = false;
+  let timedOut = false;
+  const startedAt = Date.now();
+  activeDirectAnswers.get(task.id)?.abort();
+  activeDirectAnswers.set(task.id, abort);
+  assistant.activity = "Answering";
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    abort.abort();
+  }, 90_000);
+
+  const finish = (
+    status: "done" | "error",
+    content: string,
+    usage?: { inputTokens: number; outputTokens: number; cacheTokens?: number }
+  ): void => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timeout);
+    if (activeDirectAnswers.get(task.id) === abort) activeDirectAnswers.delete(task.id);
+    assistant.content = content;
+    assistant.status = status;
+    assistant.activity = status === "done" ? "Completed" : "Task failed";
+    assistant.durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    if (usage) {
+      const cacheTokens = usage.cacheTokens || 0;
+      const used = usage.inputTokens + usage.outputTokens + cacheTokens;
+      recordTokenUsage(usage.inputTokens, usage.outputTokens, cacheTokens, settings.model);
+      task.contextUsed = used;
+      assistant.contextUsed = used;
+    }
+    task.updatedAt = Date.now();
+    saveCoworkMessage(assistant);
+    persistTask(task);
+    win?.webContents.send("cowork:event", {
+      taskId: task.id,
+      messageId: assistant.id,
+      type: "done",
+      content: assistant.content,
+      toolCalls: [],
+      contextUsed: task.contextUsed,
+      contextTotal: task.contextTotal || 16384,
+      durationSeconds: assistant.durationSeconds,
+      exitCode: status === "done" ? 0 : 1
+    });
+  };
+
+  void streamChat({
+    settings,
+    conversationId: task.id,
+    history: coworkHistory(task.id, opts.taskMessages),
+    userText: opts.prompt,
+    attachments: [],
+    effort: opts.effort,
+    webSearch: false,
+    vision: opts.vision,
+    abort,
+    instructionMode: "cowork",
+    handlers: {
+      onStatus: () => {
+        saveCoworkMessage(assistant);
+        win?.webContents.send("cowork:event", {
+          taskId: task.id,
+          messageId: assistant.id,
+          type: "activity",
+          activity: "Answering"
+        });
+      },
+      onDelta: ({ content }) => {
+        if (content === undefined) return;
+        assistant.content = content;
+        saveCoworkMessage(assistant);
+        win?.webContents.send("cowork:event", {
+          taskId: task.id,
+          messageId: assistant.id,
+          type: "text",
+          content,
+          activity: "Answering"
+        });
+      },
+      onResearch: () => {},
+      onDone: (result) => {
+        const fallback = timedOut
+          ? (settings.language === "zh" ? "回答超时，请重试。" : "The answer timed out. Please try again.")
+          : result.stopped && !result.content.trim()
+            ? (settings.language === "zh" ? "已停止。" : "Stopped.")
+            : result.content;
+        finish(timedOut ? "error" : "done", fallback, result.usage);
+      },
+      onError: (error) => finish("error", error)
+    }
+  }).catch((error) => {
+    finish("error", error instanceof Error ? error.message : String(error));
+  });
+}
+
+export function shutdownCoworkRuntime(): void {
+  for (const abort of activeDirectAnswers.values()) abort.abort();
+  activeDirectAnswers.clear();
+  for (const session of persistentAgentSessions.values()) {
+    session.runtime.abortController.abort();
+    session.runtime.close();
+  }
+  persistentAgentSessions.clear();
+  for (const taskId of new Set(Array.from(pendingApprovals.values()).map((item) => item.taskId))) {
+    cancelTaskApprovals(taskId, "Lumen is shutting down.");
+  }
+  bridgeProcess?.kill("SIGTERM");
+  bridgeProcess = null;
+  bridgeStartup = null;
+  bridgeConfig = "";
+}
+
+function runtimeResource(name: string): string | null {
+  const candidates = [
+    path.join(process.resourcesPath, "runtime", name),
+    path.join(app.getAppPath(), "resources", "runtime", name)
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+async function bridgeReady(settings?: Settings): Promise<boolean> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 800);
+  try {
+    const response = await fetch(`${CLAUDE_BRIDGE_URL}/health`, { signal: abort.signal });
+    if (!response.ok) return false;
+    if (!settings) return true;
+    const status = await response.json() as Record<string, string>;
+    const capability = reasoningCapability(settings);
+    return status.bridge === "lumen-claude" &&
+      status.backend?.replace(/\/+$/, "") === settings.llamaUrl.replace(/\/+$/, "") &&
+      status.model === settings.model &&
+      status.reasoningControl === capability.control &&
+      status.reasoningEfforts === capability.efforts &&
+      status.styleHash === modelStyleHash(settings.systemPrompt);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function startClaudeBridge(settings = getSettings()): Promise<void> {
+  // A user's existing bridge may serve active Cowork sessions. Never replace it.
+  if (await bridgeReady(settings)) return;
+  const script = runtimeResource("claude-bridge.mjs");
+  if (!script) throw new Error("The bundled Cowork bridge is missing from this installation.");
+  const capability = reasoningCapability(settings);
+  bridgeProcess = spawn(process.execPath, [script], {
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      LLAMA_URL: settings.llamaUrl,
+      LLAMA_API_KEY: settings.llamaApiKey,
+      LLAMA_MODEL_ALIAS: settings.model,
+      LLAMA_REASONING_CONTROL: capability.control,
+      LLAMA_REASONING_EFFORTS: capability.efforts,
+      LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
+      LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
+      CLAUDE_BRIDGE_HOST: "127.0.0.1",
+      CLAUDE_BRIDGE_PORT: "18086"
+    },
+    detached: false,
+    stdio: "ignore"
+  });
+  bridgeProcess.once("exit", () => {
+    bridgeProcess = null;
+    bridgeConfig = "";
+  });
+  bridgeConfig = bridgeFingerprint(settings);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (await bridgeReady(settings)) return;
+  }
+  bridgeProcess?.kill();
+  bridgeProcess = null;
+  throw new Error("The bundled Cowork bridge could not start on port 18086.");
+}
+
+export async function ensureClaudeBridge(): Promise<void> {
+  const settings = getSettings();
+  const wantedConfig = bridgeFingerprint(settings);
+  if (bridgeProcess && bridgeConfig !== wantedConfig) {
+    bridgeProcess.kill();
+    for (let attempt = 0; attempt < 20 && await bridgeReady(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    bridgeProcess = null;
+    bridgeConfig = "";
+  }
+  if (await bridgeReady(settings)) return;
+  if (!bridgeStartup) {
+    bridgeStartup = startClaudeBridge(settings).finally(() => {
+      bridgeStartup = null;
+    });
+  }
+  await bridgeStartup;
+}
+
+function persistentSessionKey(opts: {
+  cwd: string;
+  model: string;
+  effort?: string;
+  settings: Settings;
+  tools: string[];
+}): string {
+  return JSON.stringify({
+    cwd: opts.cwd,
+    model: opts.model,
+    effort: opts.effort || "medium",
+    permission: opts.settings.coworkPermissionMode,
+    plugins: opts.settings.plugins,
+    chrome: opts.settings.computerUseChromeEnabled,
+    tools: opts.tools
+  });
+}
+
+function startPersistentClaudeRun(opts: {
+  win: BrowserWindow | null;
+  task: CoworkTask;
+  assistant: CoworkMessage;
+  checkpointId: string;
+  effectivePrompt: string;
+  cwd: string;
+  model: string;
+  effort?: string;
+  settings: Settings;
+  toolHost: Awaited<ReturnType<typeof ensureToolHost>>;
+  permissionMode: Settings["coworkPermissionMode"];
+  tools: string[];
+  session: ClaudeSessionState;
+}): void {
+  const { win, task, assistant, settings } = opts;
+  const taskId = task.id;
+  const messageId = assistant.id;
+  const startedAt = Date.now();
+  const toolCalls = new Map<string, CoworkToolCall>();
+  const streamingTools = new Map<number, { id: string; partialJson: string }>();
+  const committedText: string[] = [];
+  let partialText = "";
+  let finalUsage: ReturnType<typeof parseModelUsage>;
+  let finished = false;
+
+  assistant.checkpointId = opts.checkpointId;
+  assistant.rewindAvailable = false;
+
+  const send = (event: Record<string, unknown>) => {
+    saveCoworkMessage(assistant);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("cowork:event", { taskId, messageId, ...event });
+    }
+  };
+  const publishText = () => {
+    assistant.content = [...committedText, partialText]
+      .filter((part) => part.trim())
+      .join("\n\n");
+    assistant.activity = "Writing";
+    send({ type: "text", content: assistant.content, activity: assistant.activity });
+  };
+  const commitText = (text: string) => {
+    const value = text.trim();
+    if (value && committedText.at(-1) !== value) committedText.push(value);
+    partialText = "";
+    publishText();
+  };
+  const publishActivity = (activity: string) => {
+    assistant.activity = activity;
+    send({ type: "activity", activity });
+  };
+  const publishTools = (type: "tool_use" | "tool_result", toolCall?: CoworkToolCall) => {
+    assistant.toolCalls = Array.from(toolCalls.values());
+    if (toolCall) assistant.activity = type === "tool_use" ? toolActivity(toolCall) : "Reviewing";
+    send({ type, toolCall, toolCalls: assistant.toolCalls, activity: assistant.activity });
+  };
+  const absorbUsage = (raw: unknown) => {
+    const usage = parseModelUsage(raw);
+    if (!usage) return;
+    finalUsage = usage;
+    const used = usage.inputTokens + usage.outputTokens + usage.cacheTokens;
+    task.contextUsed = used;
+    task.contextTotal = 16384;
+    assistant.contextUsed = used;
+    assistant.contextTotal = 16384;
+    task.updatedAt = Date.now();
+    persistTask(task);
+    send({ type: "usage", contextUsed: used, contextTotal: 16384 });
+  };
+  const appendRuntimeOutput = (data: string) => {
+    assistant.runtimeOutput = `${assistant.runtimeOutput || ""}${data}`
+      .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\[claude-code:unrecognized_model\][^\n]*(?:\n|$)/g, "")
+      .slice(-262_144);
+    send({ type: "runtime_output", runtimeOutput: assistant.runtimeOutput });
+  };
+  const canUseTool: PersistentRunHandlers["canUseTool"] = (toolName, input, options) => {
+    if (taskAllowedTools.get(taskId)?.has(toolName)) {
+      return Promise.resolve({ behavior: "allow" });
+    }
+    const id = crypto.randomUUID();
+    const approval: CoworkApproval = {
+      id,
+      taskId,
+      toolName,
+      title: options.title || `${toolName} requires approval`,
+      input,
+      blockedPath: options.blockedPath,
+      status: "pending",
+      createdAt: Date.now()
+    };
+    emitApproval(win, assistant, approval);
+    publishActivity("Waiting for approval");
+    return new Promise((resolve) => {
+      const abort = () => {
+        if (!pendingApprovals.has(id)) return;
+        approval.status = "denied";
+        emitApproval(win, assistant, approval);
+        pendingApprovals.delete(id);
+        resolve({ behavior: "deny", message: "Task stopped before approval.", interrupt: true });
+      };
+      options.signal.addEventListener("abort", abort, { once: true });
+      pendingApprovals.set(id, {
+        taskId,
+        messageId,
+        approval,
+        suggestions: options.suggestions,
+        resolve: (result) => {
+          options.signal.removeEventListener("abort", abort);
+          resolve(result);
+        }
+      });
+    });
+  };
+
+  const configKey = persistentSessionKey(opts);
+  let agentSession = persistentAgentSessions.get(taskId);
+  if (agentSession && agentSession.configKey !== configKey) {
+    agentSession.runtime.abortController.abort();
+    agentSession.runtime.close();
+    persistentAgentSessions.delete(taskId);
+    agentSession = undefined;
+  }
+  if (agentSession?.current) {
+    throw new Error("This Cowork task is already running.");
+  }
+  if (!agentSession) {
+    const holder: PersistentAgentSession = {
+      runtime: undefined as unknown as ClaudeAgentRuntime,
+      configKey
+    };
+    const permissionMode =
+      opts.permissionMode === "full" ? "bypassPermissions"
+        : opts.permissionMode === "approve" ? "auto"
+          : "default";
+    holder.runtime = startClaudeAgentRuntime({
+      prompt: "",
+      persistent: true,
+      cwd: opts.cwd,
+      model: opts.model,
+      effort: opts.effort,
+      resume: opts.session.started ? opts.session.id : undefined,
+      tools: opts.tools,
+      mcpServer: {
+        command: process.execPath,
+        args: [opts.toolHost.script],
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          LUMEN_TOOL_HOST_URL: opts.toolHost.url,
+          LUMEN_TOOL_HOST_TOKEN: opts.toolHost.token,
+          LUMEN_TOOL_WORKSPACE: opts.cwd,
+          LUMEN_PLUGIN_BROWSER: settings.plugins.browser ? "1" : "0",
+          LUMEN_PLUGIN_SITES: settings.plugins.sites ? "1" : "0",
+          LUMEN_PLUGIN_MANAGEMENT: settings.plugins.plugins ? "1" : "0",
+          LUMEN_COMPUTER_USE_CHROME: settings.computerUseChromeEnabled ? "1" : "0"
+        }
+      },
+      env: {
+        ...process.env,
+        ANTHROPIC_BASE_URL: CLAUDE_BRIDGE_URL,
+        ANTHROPIC_API_KEY: "sk-local-llama",
+        PATH: `${homeDir}/.local/bin:${process.env.PATH || ""}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`,
+        HOME: homeDir,
+        LANG: "en_US.UTF-8",
+        CLAUDE_EFFORT: opts.effort || "medium",
+        LLAMA_MODEL_ALIAS: opts.model,
+        LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
+        LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
+        ELECTRON_RUN_AS_NODE: "1",
+        LUMEN_TOOL_HOST_URL: opts.toolHost.url,
+        LUMEN_TOOL_HOST_TOKEN: opts.toolHost.token,
+        LUMEN_TOOL_WORKSPACE: opts.cwd,
+        LUMEN_PLUGIN_BROWSER: settings.plugins.browser ? "1" : "0",
+        LUMEN_PLUGIN_SITES: settings.plugins.sites ? "1" : "0",
+        LUMEN_PLUGIN_MANAGEMENT: settings.plugins.plugins ? "1" : "0",
+        LUMEN_COMPUTER_USE_CHROME: settings.computerUseChromeEnabled ? "1" : "0",
+        LUMEN_COWORK_PERMISSION_MODE: opts.permissionMode,
+        CLAUDE_AGENT_SDK_CLIENT_APP: "lumen/0.7.0"
+      },
+      permissionMode,
+      canUseTool: permissionMode === "bypassPermissions"
+        ? undefined
+        : (toolName, input, options) => {
+            const current = holder.current;
+            if (!current) {
+              return Promise.resolve({
+                behavior: "deny",
+                message: "No active Lumen Cowork turn.",
+                interrupt: true
+              });
+            }
+            return current.canUseTool(toolName, input, options);
+          },
+      onStderr: (data) => holder.current?.onStderr(data),
+      onMessage: (message) => holder.current?.onMessage(message)
+    });
+    holder.runtime.done
+      .catch((error) => {
+        holder.current?.finish(1, error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        persistentAgentSessions.delete(taskId);
+      });
+    agentSession = holder;
+    persistentAgentSessions.set(taskId, holder);
+  }
+
+  const finish = (exitCode: number, error?: string) => {
+    if (finished) return;
+    finished = true;
+    if (error) appendRuntimeOutput(`${error}\n`);
+    cancelTaskApprovals(taskId, "Agent run ended before approval.");
+    assistant.status = exitCode === 0 ? "done" : "error";
+    assistant.activity = exitCode === 0 ? "Completed" : "Task failed";
+    assistant.durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    task.updatedAt = Date.now();
+    if (finalUsage) {
+      recordTokenUsage(
+        finalUsage.inputTokens,
+        finalUsage.outputTokens,
+        finalUsage.cacheTokens,
+        opts.model
+      );
+    }
+    persistTask(task);
+    send({
+      type: "done",
+      content: assistant.content,
+      toolCalls: assistant.toolCalls,
+      approvals: assistant.approvals,
+      runtimeOutput: assistant.runtimeOutput,
+      contextUsed: task.contextUsed,
+      contextTotal: task.contextTotal || 16384,
+      durationSeconds: assistant.durationSeconds,
+      exitCode
+    });
+    const currentSession = persistentAgentSessions.get(taskId);
+    if (currentSession) currentSession.current = undefined;
+    if (exitCode === 0) {
+      void agentSession!.runtime.query
+        .rewindFiles(opts.checkpointId, { dryRun: true })
+        .then((result) => {
+          assistant.rewindAvailable = result.canRewind;
+          saveCoworkMessage(assistant);
+          send({ type: "checkpoint", rewindAvailable: assistant.rewindAvailable });
+        })
+        .catch(() => {
+          assistant.rewindAvailable = false;
+          saveCoworkMessage(assistant);
+        });
+    }
+  };
+
+  const onMessage = (raw: unknown) => {
+    const message = raw as any;
+    if (message.session_id) {
+      claudeSessions.set(taskId, { id: message.session_id, started: true });
+      persistTask(task);
+    }
+    if (message.type === "system") {
+      if (message.subtype === "init") publishActivity("Initializing");
+      else if (message.subtype === "hook_started") publishActivity("Running hooks");
+      else if (message.subtype === "api_retry") {
+        publishActivity("Retrying");
+        appendRuntimeOutput(`${message.error?.message || "Model request retry"}\n`);
+      } else if (message.subtype === "compact_boundary") publishActivity("Compacting context");
+      else if (message.subtype === "task_started") publishActivity("Starting subtask");
+      else if (message.subtype === "task_progress") publishActivity("Running subtask");
+      else if (message.subtype === "status") publishActivity("Working");
+      return;
+    }
+    if (message.type === "stream_event" && message.event) {
+      const event = message.event;
+      const index = Number(event.index ?? -1);
+      if (event.type === "message_start") {
+        partialText = "";
+      } else if (event.type === "content_block_start") {
+        const block = event.content_block;
+        if (block?.type === "tool_use") {
+          const id = block.id || crypto.randomUUID();
+          const toolCall: CoworkToolCall = toolCalls.get(id) || {
+            id,
+            name: block.name || "Tool",
+            input: block.input || {},
+            status: "running"
+          };
+          toolCalls.set(id, toolCall);
+          streamingTools.set(index, { id, partialJson: "" });
+          publishTools("tool_use", toolCall);
+        } else if (block?.type === "thinking") {
+          publishActivity("Thinking");
+        }
+      } else if (event.type === "content_block_delta") {
+        const delta = event.delta;
+        if (delta?.type === "text_delta" && typeof delta.text === "string") {
+          partialText += delta.text;
+          publishText();
+        } else if (delta?.type === "thinking_delta") {
+          publishActivity("Thinking");
+        } else if (delta?.type === "input_json_delta") {
+          const streamed = streamingTools.get(index);
+          if (streamed) {
+            streamed.partialJson += delta.partial_json || "";
+            const toolCall = toolCalls.get(streamed.id);
+            if (toolCall) {
+              try {
+                toolCall.input = JSON.parse(streamed.partialJson);
+              } catch {
+                toolCall.input = { partial: streamed.partialJson };
+              }
+              publishTools("tool_use", toolCall);
+            }
+          }
+        }
+      } else if (event.type === "content_block_stop") {
+        const streamed = streamingTools.get(index);
+        if (streamed) streamingTools.delete(index);
+      }
+      return;
+    }
+    if (message.type === "assistant" && Array.isArray(message.message?.content)) {
+      absorbUsage(message.message.usage);
+      const text = message.message.content
+        .filter((block: any) => block.type === "text" && block.text)
+        .map((block: any) => block.text)
+        .join("\n\n");
+      if (message.parent_tool_use_id) {
+        if (text) appendRuntimeOutput(`[Subagent]\n${text}\n`);
+        return;
+      }
+      if (text || partialText) commitText(text || partialText);
+      for (const block of message.message.content) {
+        if (block.type !== "tool_use") continue;
+        const id = block.id || crypto.randomUUID();
+        const toolCall: CoworkToolCall = toolCalls.get(id) || {
+          id,
+          name: block.name || "Tool",
+          input: block.input || {},
+          status: "running"
+        };
+        toolCall.name = block.name || toolCall.name;
+        toolCall.input = block.input || toolCall.input;
+        toolCalls.set(id, toolCall);
+        publishTools("tool_use", toolCall);
+      }
+      return;
+    }
+    if (message.type === "user" && Array.isArray(message.message?.content)) {
+      for (const block of message.message.content) {
+        if (block.type !== "tool_result" || !block.tool_use_id) continue;
+        const toolCall = toolCalls.get(block.tool_use_id);
+        if (!toolCall) continue;
+        toolCall.status = block.is_error ? "error" : "completed";
+        toolCall.output = (
+          typeof block.content === "string" ? block.content : JSON.stringify(block.content, null, 2)
+        ).slice(-262_144);
+        publishTools("tool_result", toolCall);
+      }
+      return;
+    }
+    if (message.type === "result") {
+      if (!assistant.content && typeof message.result === "string") commitText(message.result);
+      absorbUsage(message.usage);
+      if (Array.isArray(message.errors) && message.errors.length) {
+        appendRuntimeOutput(`${message.errors.join("\n")}\n`);
+      }
+      finish(message.subtype === "success" && !message.is_error ? 0 : 1);
+    }
+  };
+
+  agentSession.current = {
+    onMessage,
+    onStderr: appendRuntimeOutput,
+    canUseTool,
+    finish
+  };
+  agentSession.runtime.send(opts.effectivePrompt, opts.checkpointId);
+}
+
+async function workspaceInfo(rawPath?: string): Promise<WorkspaceInfo> {
+  const cwd = resolveWorkingDir(rawPath);
+  const git = (args: string[]): Promise<string | null> => new Promise((resolve) => {
+    execFile(
+      "git",
+      ["-C", cwd, ...args],
+      { timeout: 2500, encoding: "utf8" },
+      (error, stdout) => resolve(error ? null : stdout.trim() || null)
+    );
+  });
+  const [branch, numstat, untracked, remote] = await Promise.all([
+    git(["symbolic-ref", "--quiet", "--short", "HEAD"]),
+    git(["diff", "--numstat", "HEAD"]),
+    git(["ls-files", "--others", "--exclude-standard"]),
+    git(["remote"])
+  ]);
+  let additions = 0;
+  let deletions = 0;
+  let trackedFiles = 0;
+  for (const line of numstat?.split("\n").filter(Boolean) || []) {
+    const [added, deleted] = line.split(/\s+/);
+    additions += Number.isFinite(Number(added)) ? Number(added) : 0;
+    deletions += Number.isFinite(Number(deleted)) ? Number(deleted) : 0;
+    trackedFiles += 1;
+  }
+  const untrackedFiles = untracked?.split("\n").filter(Boolean).length || 0;
+  return {
+    cwd,
+    name: path.basename(cwd) || cwd,
+    branch,
+    location: "Local",
+    changes: {
+      files: trackedFiles + untrackedFiles,
+      additions,
+      deletions
+    },
+    hasRemote: Boolean(remote)
+  };
+}
+
+let coworkIpcRegistered = false;
+
+function stopCoworkTask(taskId: string): boolean {
+  let stopped = false;
+  const direct = activeDirectAnswers.get(taskId);
+  if (direct) {
+    direct.abort();
+    activeDirectAnswers.delete(taskId);
+    stopped = true;
+  }
+  const session = persistentAgentSessions.get(taskId);
+  if (session?.current) {
+    void session.runtime.interrupt().catch(() => undefined);
+    session.current.finish(1, "Stopped by user.");
+    stopped = true;
+  }
+  cancelTaskApprovals(taskId);
+  return stopped;
+}
+
+export function registerCoworkIpc(): void {
+  if (coworkIpcRegistered) return;
+  coworkIpcRegistered = true;
+  restoreCoworkState();
+
+  ipcMain.handle("cowork:getHome", () => defaultCwd);
+  ipcMain.handle("cowork:workspaceInfo", (_event, cwd?: string) => workspaceInfo(cwd));
+  ipcMain.handle("cowork:listTasks", () => (
+    Array.from(tasks.values()).sort((a, b) => b.updatedAt - a.updatedAt)
+  ));
+  ipcMain.handle("cowork:createTask", (_event, opts: { title?: string; cwd?: string } = {}) => {
+    const now = Date.now();
+    const task: CoworkTask = {
+      id: crypto.randomUUID(),
+      title: opts.title || "新任务",
+      cwd: resolveWorkingDir(opts.cwd),
+      engine: "claude-agent",
+      contextUsed: 0,
+      contextTotal: 16384,
+      createdAt: now,
+      updatedAt: now
+    };
+    tasks.set(task.id, task);
+    messages.set(task.id, []);
+    persistTask(task);
+    return task;
+  });
+  ipcMain.handle("cowork:getMessages", (_event, taskId: string) => messages.get(taskId) || []);
+  ipcMain.handle("cowork:deleteTask", (_event, taskId: string) => {
+    stopCoworkTask(taskId);
+    const agentSession = persistentAgentSessions.get(taskId);
+    if (agentSession) {
+      agentSession.runtime.abortController.abort();
+      agentSession.runtime.close();
+      persistentAgentSessions.delete(taskId);
+    }
+    tasks.delete(taskId);
+    messages.delete(taskId);
+    claudeSessions.delete(taskId);
+    compactContexts.delete(taskId);
+    taskAllowedTools.delete(taskId);
+    deletePersistedCoworkTask(taskId);
+    return true;
+  });
+  ipcMain.handle("cowork:setGoal", (_event, taskId: string, rawGoal: string) => {
+    const task = tasks.get(taskId);
+    if (!task) throw new Error("Cowork task not found.");
+    const goal = rawGoal.trim().slice(0, 4000);
+    if (!goal) throw new Error("Goal cannot be empty.");
+    task.goal = goal;
+    task.updatedAt = Date.now();
+    const message: CoworkMessage = {
+      id: crypto.randomUUID(),
+      taskId,
+      role: "system",
+      content: `Goal set: ${goal}`,
+      status: "done",
+      activity: "Goal updated",
+      createdAt: Date.now()
+    };
+    const taskMessages = messages.get(taskId) || [];
+    taskMessages.push(message);
+    messages.set(taskId, taskMessages);
+    saveCoworkMessage(message);
+    persistTask(task);
+    return { task, message };
+  });
+  ipcMain.handle("cowork:compact", (_event, taskId: string) => {
+    const task = tasks.get(taskId);
+    if (!task) throw new Error("Cowork task not found.");
+    const agentSession = persistentAgentSessions.get(taskId);
+    if (agentSession) {
+      agentSession.runtime.abortController.abort();
+      agentSession.runtime.close();
+      persistentAgentSessions.delete(taskId);
+    }
+    compactContexts.set(taskId, compactTaskContext(messages.get(taskId) || []));
+    claudeSessions.set(taskId, { started: false });
+    taskAllowedTools.delete(taskId);
+    task.contextUsed = 0;
+    task.compactedAt = Date.now();
+    task.updatedAt = Date.now();
+    const message: CoworkMessage = {
+      id: crypto.randomUUID(),
+      taskId,
+      role: "system",
+      content: "Context compacted. The next turn will continue from a bounded summary.",
+      status: "done",
+      activity: "Context compacted",
+      createdAt: Date.now()
+    };
+    const taskMessages = messages.get(taskId) || [];
+    taskMessages.push(message);
+    messages.set(taskId, taskMessages);
+    saveCoworkMessage(message);
+    persistTask(task);
+    return { task, message };
+  });
+  ipcMain.handle("cowork:selectDirectory", async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      properties: ["openDirectory", "createDirectory"],
+      title: "选择工程目录 (Working Directory)"
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    defaultCwd = result.filePaths[0];
+    return defaultCwd;
+  });
+  ipcMain.handle("cowork:stop", (_event, taskId: string) => stopCoworkTask(taskId));
+  ipcMain.handle("cowork:rewind", async (_event, taskId: string, messageId: string, dryRun = false) => {
+    const message = (messages.get(taskId) || []).find((item) => item.id === messageId);
+    if (!message?.checkpointId) {
+      return { canRewind: false, error: "This turn has no file checkpoint." };
+    }
+    const agentSession = persistentAgentSessions.get(taskId);
+    if (!agentSession || agentSession.current) {
+      return {
+        canRewind: false,
+        error: agentSession ? "Stop the running turn before rewinding." : "The task session must be open to rewind files."
+      };
+    }
+    try {
+      const result = await agentSession.runtime.query.rewindFiles(message.checkpointId, { dryRun });
+      if (!dryRun && result.canRewind) {
+        message.rewindAvailable = false;
+        message.activity = "Files restored";
+        saveCoworkMessage(message);
+      }
+      return result;
+    } catch (error) {
+      return {
+        canRewind: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  });
+  ipcMain.handle(
+    "cowork:resolveApproval",
+    (event, requestId: string, decision: CoworkApprovalDecision) => {
+      if (!["allow_once", "allow_session", "deny"].includes(decision)) {
+        throw new Error("Invalid Cowork approval decision.");
+      }
+      const pending = pendingApprovals.get(requestId);
+      if (!pending) return false;
+      pendingApprovals.delete(requestId);
+      pending.approval.status = decision === "deny" ? "denied" : "allowed";
+      const message = (messages.get(pending.taskId) || [])
+        .find((item) => item.id === pending.messageId);
+      if (message) {
+        emitApproval(BrowserWindow.fromWebContents(event.sender), message, pending.approval);
+      }
+      if (decision === "deny") {
+        pending.resolve({
+          behavior: "deny",
+          message: "The user denied this action.",
+          interrupt: false
+        });
+        return true;
+      }
+      if (decision === "allow_session") {
+        const allowed = taskAllowedTools.get(pending.taskId) || new Set<string>();
+        allowed.add(pending.approval.toolName);
+        taskAllowedTools.set(pending.taskId, allowed);
+      }
+      const updatedPermissions = decision === "allow_session"
+        ? pending.suggestions?.map((suggestion) => ({ ...suggestion, destination: "session" })) as PermissionUpdate[] | undefined
+        : undefined;
+      pending.resolve({ behavior: "allow", updatedPermissions });
+      return true;
+    }
+  );
+  ipcMain.handle("cowork:run", async (event, opts: {
+    taskId: string;
+    prompt: string;
+    attachments?: Attachment[];
+    cwd?: string;
+    effort?: string;
+    model?: string;
+  }) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const settings = getSettings();
+    const attachments = opts.attachments || [];
+    const prompt = opts.prompt.trim();
+    if (!prompt && attachments.length === 0) {
+      throw new Error("Cowork prompt cannot be empty.");
+    }
+    const llamaStatus = await probeLlama(settings);
+    if (!llamaStatus.online) {
+      throw new Error("模型服务未就绪，请先按 Settings → Models 的步骤启动 llama-server。");
+    }
+    if (
+      llamaStatus.runningModelPath &&
+      llamaStatus.runningModel &&
+      llamaStatus.runningModel !== settings.model
+    ) {
+      throw new Error(
+        llamaStatus.error || `当前服务加载的是 ${llamaStatus.runningModel}，不是所选 ${settings.model}。`
+      );
+    }
+
+    const resolvedCwd = resolveWorkingDir(opts.cwd || defaultCwd);
+    let task = tasks.get(opts.taskId);
+    if (!task) {
+      const now = Date.now();
+      task = {
+        id: opts.taskId,
+        title: prompt.slice(0, 16) || "新任务",
+        cwd: resolvedCwd,
+        engine: "claude-agent",
+        contextUsed: 0,
+        contextTotal: 16384,
+        createdAt: now,
+        updatedAt: now
+      };
+      tasks.set(task.id, task);
+      messages.set(task.id, []);
+    } else {
+      task.cwd = resolvedCwd;
+      task.engine = "claude-agent";
+      task.updatedAt = Date.now();
+    }
+
+    const taskMessages = messages.get(task.id) || [];
+    const previousMessages = taskMessages.slice();
+    if (taskMessages.length === 0 && prompt) {
+      try {
+        task.title = await generateConversationTitle(prompt);
+      } catch {
+        task.title = prompt.replace(/\s+/g, " ").slice(0, 16) || "新任务";
+      }
+      persistTask(task);
+      win?.webContents.send("cowork:event", {
+        taskId: task.id,
+        type: "renamed",
+        title: task.title
+      });
+    }
+
+    const userMessage: CoworkMessage = {
+      id: crypto.randomUUID(),
+      taskId: task.id,
+      role: "user",
+      content: prompt,
+      attachments,
+      createdAt: Date.now()
+    };
+    const assistant: CoworkMessage = {
+      id: crypto.randomUUID(),
+      taskId: task.id,
+      role: "assistant",
+      content: "",
+      runtimeOutput: "",
+      toolCalls: [],
+      approvals: [],
+      status: "streaming",
+      activity: "Planning",
+      contextUsed: task.contextUsed || 0,
+      contextTotal: task.contextTotal || 16384,
+      createdAt: Date.now() + 1
+    };
+    taskMessages.push(userMessage, assistant);
+    messages.set(task.id, taskMessages);
+    saveCoworkMessage(userMessage);
+    saveCoworkMessage(assistant);
+    persistTask(task);
+
+    if (isCoworkDirectConversation(prompt, attachments.length > 0)) {
+      startDirectAnswer({
+        win,
+        task,
+        taskMessages: previousMessages,
+        assistant,
+        prompt,
+        settings,
+        effort: "none",
+        vision: llamaStatus.vision
+      });
+      return {
+        ok: true,
+        taskId: task.id,
+        userMsgId: userMessage.id,
+        asstMsgId: assistant.id
+      };
+    }
+
+    const compactedContext = compactContexts.get(task.id);
+    const attachmentBlock = attachments.length
+      ? `<attachments>\n${attachments
+          .map((file) => `- ${file.path || file.name}${file.relativePath ? ` (${file.relativePath})` : ""}`)
+          .join("\n")}\nUse these user-selected local files or folders as task inputs. Read them only as needed.\n</attachments>`
+      : "";
+    const effectivePrompt = [
+      settings.coworkInstructions.trim()
+        ? `<custom_instructions>\n${settings.coworkInstructions.trim()}\n</custom_instructions>`
+        : "",
+      task.goal
+        ? `<active_goal>\n${task.goal}\nKeep this goal active until it is achieved or explicitly replaced.</active_goal>`
+        : "",
+      compactedContext
+        ? `<compacted_context>\n${compactedContext}\n</compacted_context>`
+        : "",
+      "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach.</reasoning_discipline>",
+      "<lumen_agent>Lumen Cowork uses Claude Agent SDK with local Llama inference. Use Lumen tools directly; do not delegate to another coding agent.</lumen_agent>",
+      attachmentBlock,
+      prompt
+    ].filter(Boolean).join("\n\n");
+    const selectedModel = opts.model || settings.model;
+    const session = claudeSessions.get(task.id) || { started: false };
+    const tools = [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "mcp__lumen__browser_open",
+      "mcp__lumen__browser_snapshot",
+      "mcp__lumen__browser_click",
+      "mcp__lumen__browser_type",
+      "mcp__lumen__browser_screenshot",
+      "mcp__lumen__sites_preview",
+      "mcp__lumen__sites_status",
+      "mcp__lumen__plugins_list",
+      "mcp__lumen__chrome_open",
+      "mcp__lumen__chrome_snapshot",
+      "mcp__lumen__chrome_click",
+      "mcp__lumen__chrome_type",
+      "mcp__lumen__chrome_screenshot"
+    ].filter((tool) => {
+      if (tool.includes("__browser_")) return settings.plugins.browser;
+      if (tool.includes("__sites_")) return settings.plugins.sites;
+      if (tool.includes("__plugins_")) return settings.plugins.plugins;
+      if (tool.includes("__chrome_")) return settings.computerUseChromeEnabled;
+      return true;
+    });
+
+    try {
+      await ensureClaudeBridge();
+      const toolHost = await ensureToolHost();
+      if (compactedContext) compactContexts.delete(task.id);
+      startPersistentClaudeRun({
+        win,
+        task,
+        assistant,
+        checkpointId: userMessage.id,
+        effectivePrompt,
+        cwd: resolvedCwd,
+        model: selectedModel,
+        effort: opts.effort || settings.defaultEffort,
+        settings,
+        toolHost,
+        permissionMode: settings.coworkPermissionMode,
+        tools,
+        session
+      });
+      return {
+        ok: true,
+        taskId: task.id,
+        userMsgId: userMessage.id,
+        asstMsgId: assistant.id
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      assistant.status = "error";
+      assistant.activity = "Task failed";
+      assistant.content = `启动失败: ${reason}`;
+      saveCoworkMessage(assistant);
+      win?.webContents.send("cowork:event", {
+        taskId: task.id,
+        messageId: assistant.id,
+        type: "error",
+        error: reason
+      });
+      return {
+        ok: false,
+        taskId: task.id,
+        userMsgId: userMessage.id,
+        asstMsgId: assistant.id,
+        error: reason
+      };
+    }
+  });
+}

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Attachment, CodexMessage, CodexTask, CodexToolCall, CoworkEngine, CoworkPermissionMode, CoworkToolStatus, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CoworkMessage, CoworkTask, CoworkToolCall, CoworkApproval, CoworkApprovalDecision, CoworkPermissionMode, CoworkToolStatus, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
 import { toolActivity, toolDescription } from "@shared/cowork-status";
+import { isCoworkDirectConversation } from "@shared/cowork-routing";
 import { AttachmentAddButton, AttachmentImage, AttachmentList, readDroppedFiles } from "./AttachmentControls";
 import { EnvironmentPanel } from "./EnvironmentPanel";
 import { PermissionPicker } from "./PermissionPicker";
@@ -27,9 +28,9 @@ type Props = {
   sidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   activeTaskId: string | null;
-  tasks: CodexTask[];
+  tasks: CoworkTask[];
   onSelectTask: (taskId: string) => void;
-  onNewTask: (cwd?: string, engine?: CoworkEngine) => Promise<string>;
+  onNewTask: (cwd?: string) => Promise<string>;
   onDeleteTask: (taskId: string) => void;
   model: string;
   models: string[];
@@ -38,8 +39,6 @@ type Props = {
   onEffort: (e: Effort) => void;
   reasoningControl: ReasoningControl;
   reasoningEfforts?: Effort[];
-  engine: CoworkEngine;
-  onEngine: (engine: CoworkEngine) => void;
   capabilityVersion?: string;
   permissionMode: CoworkPermissionMode;
   defaultPermissions: boolean;
@@ -82,6 +81,24 @@ function formatActivity(activity: string | undefined, isZh = false): string {
   if (act === "Writing") {
     return isZh ? "正在编写" : "Writing";
   }
+  if (act === "Answering") {
+    return isZh ? "正在回答" : "Answering";
+  }
+  if (act === "Initializing") {
+    return isZh ? "正在初始化" : "Initializing";
+  }
+  if (act === "Running hooks") {
+    return isZh ? "正在运行挂钩" : "Running hooks";
+  }
+  if (act === "Working") {
+    return isZh ? "正在处理" : "Working";
+  }
+  if (act === "Thinking") {
+    return isZh ? "正在思考" : "Thinking";
+  }
+  if (act === "Waiting for approval") {
+    return isZh ? "等待批准" : "Waiting for approval";
+  }
   if (act === "Using a tool") {
     return isZh ? "正在使用工具" : "Using a tool";
   }
@@ -111,7 +128,7 @@ function getToolIcon(name: string) {
   return <IconPencil size={13} />;
 }
 
-function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language?: "zh" | "en" }) {
+function ToolCallCard({ tool, language = "en" }: { tool: CoworkToolCall; language?: "zh" | "en" }) {
   const isZh = language === "zh";
   const desc = toolDescription(tool);
   const errorDetail = tool.status === "error" && tool.output
@@ -130,6 +147,10 @@ function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language
         }
       })().replace(/\s+/g, " ").trim()
     : "";
+  const input = Object.keys(tool.input || {}).length > 0
+    ? JSON.stringify(tool.input, null, 2)
+    : "";
+  const output = tool.output || "";
 
   return (
     <div className={`tool-card ${tool.status}`}>
@@ -146,10 +167,7 @@ function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language
         <div className="tool-card-right">
           <span className={`tool-status-badge ${tool.status}`} title={tool.status === "completed" ? (isZh ? "已完成" : "Completed") : tool.status === "error" ? (isZh ? "执行失败" : "Failed") : (isZh ? "执行中" : "Running")}>
             {tool.status === "running" && (
-              <>
-                <span className="spin" />
-                <span className="tool-status-text">{isZh ? "执行中" : "Running"}</span>
-              </>
+              <span className="tool-status-text thinking-shimmer">{isZh ? "执行中" : "Running"}</span>
             )}
             {tool.status === "completed" && <IconCheck size={13} />}
             {tool.status === "error" && (
@@ -166,11 +184,61 @@ function ToolCallCard({ tool, language = "en" }: { tool: CodexToolCall; language
           {errorDetail}
         </div>
       )}
+      {(input || output) && (
+        <details className="tool-details">
+          <summary>{isZh ? "查看输入与输出" : "View input and output"}</summary>
+          {input && (
+            <div className="tool-detail-section">
+              <strong>{isZh ? "输入" : "Input"}</strong>
+              <pre>{input}</pre>
+            </div>
+          )}
+          {output && (
+            <div className="tool-detail-section">
+              <strong>{isZh ? "输出" : "Output"}</strong>
+              <pre>{output}</pre>
+            </div>
+          )}
+        </details>
+      )}
     </div>
   );
 }
 
-function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessage; language?: "zh" | "en" }) {
+function ApprovalCard({ approval, language = "en" }: { approval: CoworkApproval; language?: "zh" | "en" }) {
+  const isZh = language === "zh";
+  const decide = (decision: CoworkApprovalDecision) => {
+    void window.lumen.cowork.resolveApproval(approval.id, decision);
+  };
+  return (
+    <div className={`approval-card ${approval.status}`}>
+      <div className="approval-card-title">
+        <strong>{approval.title}</strong>
+        <span>{approval.toolName}</span>
+      </div>
+      {approval.blockedPath ? <div className="approval-path">{approval.blockedPath}</div> : null}
+      <details>
+        <summary>{isZh ? "查看操作参数" : "View action input"}</summary>
+        <pre>{JSON.stringify(approval.input, null, 2)}</pre>
+      </details>
+      {approval.status === "pending" ? (
+        <div className="approval-actions">
+          <button type="button" onClick={() => decide("deny")}>{isZh ? "拒绝" : "Deny"}</button>
+          <button type="button" onClick={() => decide("allow_once")}>{isZh ? "允许一次" : "Allow once"}</button>
+          <button type="button" className="primary" onClick={() => decide("allow_session")}>
+            {isZh ? "本任务始终允许" : "Allow for task"}
+          </button>
+        </div>
+      ) : (
+        <div className={`approval-result ${approval.status}`}>
+          {approval.status === "allowed" ? (isZh ? "已允许" : "Allowed") : (isZh ? "已拒绝" : "Denied")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssistantCoworkTurn({ message, language = "en" }: { message: CoworkMessage; language?: "zh" | "en" }) {
   const [seconds, setSeconds] = useState(() =>
     message.status === "streaming"
       ? Math.max(0, Math.floor((Date.now() - message.createdAt) / 1000))
@@ -178,6 +246,7 @@ function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessag
   );
   const [finalSeconds, setFinalSeconds] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [rewindState, setRewindState] = useState<"idle" | "working" | "restored" | "error">("idle");
   const copyReset = useRef<number | null>(null);
 
   useEffect(() => {
@@ -227,23 +296,45 @@ function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessag
     }
   };
 
+  const rewind = async (): Promise<void> => {
+    setRewindState("working");
+    const preview = await window.lumen.cowork.rewind(message.taskId, message.id, true);
+    if (!preview.canRewind) {
+      setRewindState("error");
+      return;
+    }
+    const confirmed = window.confirm(
+      isZh
+        ? "将工作区文件恢复到此轮任务开始前的状态？"
+        : "Restore workspace files to their state before this turn?"
+    );
+    if (!confirmed) {
+      setRewindState("idle");
+      return;
+    }
+    const result = await window.lumen.cowork.rewind(message.taskId, message.id, false);
+    setRewindState(result.canRewind ? "restored" : "error");
+  };
+
   const isZh = language === "zh";
   const displaySec = finalSeconds ?? seconds;
   const workedSeconds = message.durationSeconds ?? displaySec;
+  const isDirectAnswer = message.activity === "Answering";
 
   return (
     <div className="turn assistant-turn">
       {message.status === "streaming" ? (
         <>
           <div className="thought-header streaming">
-            <span className="spin" />
-            <span>
+            <span className="thinking-shimmer">
               {formatActivity(message.activity, isZh)} · {formatDuration(seconds, isZh)}
             </span>
           </div>
-          <div className="cowork-executing-hint">
-            <span>Implementing…</span>
-          </div>
+          {!isDirectAnswer && (
+            <div className="cowork-executing-hint">
+              <span className="thinking-shimmer">{isZh ? "正在执行" : "Implementing"}</span>
+            </div>
+          )}
         </>
       ) : (
         <div className="thought-header done">
@@ -255,8 +346,16 @@ function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessag
         </div>
       )}
 
+      {message.approvals && message.approvals.length > 0 && (
+        <div className="approval-list">
+          {message.approvals.map((approval) => (
+            <ApprovalCard key={approval.id} approval={approval} language={language} />
+          ))}
+        </div>
+      )}
+
       {message.toolCalls && message.toolCalls.length > 0 && (
-        <div className="codex-tools-list">
+        <div className="cowork-tools-list">
           {message.toolCalls.map((tc) => (
             <ToolCallCard key={tc.id} tool={tc} language={language} />
           ))}
@@ -264,6 +363,13 @@ function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessag
       )}
 
       {message.content && <MarkdownView text={message.content} />}
+
+      {message.runtimeOutput && (
+        <details className="runtime-output">
+          <summary>{isZh ? "运行时输出" : "Runtime output"}</summary>
+          <pre>{message.runtimeOutput}</pre>
+        </details>
+      )}
 
       {message.status !== "streaming" && message.content ? (
         <div className="turn-actions">
@@ -276,15 +382,32 @@ function AssistantCodexTurn({ message, language = "en" }: { message: CodexMessag
           >
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
           </button>
+          {message.rewindAvailable && rewindState !== "restored" ? (
+            <button
+              className="icon-btn ghost-icon message-action"
+              type="button"
+              title={isZh ? "恢复此轮修改的文件" : "Restore files changed by this turn"}
+              aria-label={isZh ? "恢复文件" : "Restore files"}
+              disabled={rewindState === "working"}
+              onClick={() => void rewind()}
+            >
+              <IconBranch size={14} />
+            </button>
+          ) : null}
+          {rewindState === "restored" ? (
+            <span className="rewind-result">{isZh ? "文件已恢复" : "Files restored"}</span>
+          ) : rewindState === "error" ? (
+            <span className="rewind-result error">{isZh ? "无法恢复" : "Restore unavailable"}</span>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-export function CodexView(props: Props) {
+export function CoworkView(props: Props) {
   const isZh = (props.language ?? "en") === "zh";
-  const [messages, setMessages] = useState<CodexMessage[]>([]);
+  const [messages, setMessages] = useState<CoworkMessage[]>([]);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [running, setRunning] = useState(false);
@@ -327,7 +450,7 @@ export function CodexView(props: Props) {
     if (activeTask?.cwd) {
       setCwd(activeTask.cwd);
     } else {
-      void window.lumen.codex.getHome().then((h) => {
+      void window.lumen.cowork.getHome().then((h) => {
         setCwd((prev) => prev || h);
       });
     }
@@ -343,7 +466,7 @@ export function CodexView(props: Props) {
     if (!cwd) return;
     let current = true;
     const refresh = () => {
-      void window.lumen.codex.workspaceInfo(cwd).then((info) => {
+      void window.lumen.cowork.workspaceInfo(cwd).then((info) => {
         if (current) setWorkspace(info);
       });
     };
@@ -371,7 +494,7 @@ export function CodexView(props: Props) {
   }, [props.capabilityVersion]);
 
   const selectWorkspace = async (): Promise<void> => {
-    const selected = await window.lumen.codex.selectDirectory();
+    const selected = await window.lumen.cowork.selectDirectory();
     if (selected) setCwd(selected);
   };
 
@@ -398,7 +521,7 @@ export function CodexView(props: Props) {
     if (creatingTask.current || startingTask.current === props.activeTaskId) return;
     const taskId = props.activeTaskId;
     let current = true;
-    void window.lumen.codex.getMessages(taskId).then((list) => {
+    void window.lumen.cowork.getMessages(taskId).then((list) => {
       if (!current || props.activeTaskId !== taskId) return;
       setMessages(list);
       setRunning(list.some((message) => message.status === "streaming"));
@@ -417,10 +540,10 @@ export function CodexView(props: Props) {
 
   // Listen to streaming events from the agent backend
   useEffect(() => {
-    const off = window.lumen.codex.onEvent((event) => {
+    const off = window.lumen.cowork.onEvent((event) => {
       if (event.taskId !== props.activeTaskId) return;
 
-      if (event.contextUsed) {
+      if (event.contextUsed !== undefined) {
         setContextTokens({
           used: event.contextUsed,
           total: event.contextTotal || 16384
@@ -431,10 +554,13 @@ export function CodexView(props: Props) {
         return prev.map((m) => {
           if (m.id === event.messageId) {
             if (event.type === "text") {
-              return { ...m, content: event.content, activity: "Writing" };
+              return { ...m, content: event.content, activity: event.activity || "Writing" };
+            }
+            if (event.type === "activity") {
+              return { ...m, activity: event.activity };
             }
             if (event.type === "tool_use") {
-              const activeTool = event.toolCall || event.toolCalls?.find((tool: CodexToolCall) => tool.status === "running");
+              const activeTool = event.toolCall || event.toolCalls?.find((tool: CoworkToolCall) => tool.status === "running");
               return {
                 ...m,
                 toolCalls: event.toolCalls,
@@ -449,6 +575,19 @@ export function CodexView(props: Props) {
                 ...m,
                 contextUsed: event.contextUsed,
                 contextTotal: event.contextTotal
+              };
+            }
+            if (event.type === "runtime_output") {
+              return { ...m, runtimeOutput: event.runtimeOutput };
+            }
+            if (event.type === "checkpoint") {
+              return { ...m, rewindAvailable: event.rewindAvailable === true };
+            }
+            if (event.type === "permission_request") {
+              return {
+                ...m,
+                approvals: event.approvals,
+                activity: event.approval?.status === "pending" ? "Waiting for approval" : "Working"
               };
             }
             if (event.type === "done") {
@@ -516,7 +655,7 @@ export function CodexView(props: Props) {
       if (!commandTaskId) {
         creatingTask.current = true;
         try {
-          commandTaskId = await props.onNewTask(cwd, props.engine);
+          commandTaskId = await props.onNewTask(cwd);
         } finally {
           creatingTask.current = false;
         }
@@ -524,10 +663,10 @@ export function CodexView(props: Props) {
       setPrompt("");
       setAttachments([]);
       const result = goalMatch
-        ? await window.lumen.codex.setGoal(commandTaskId, goalMatch[1]!.trim())
-        : await window.lumen.codex.compact(commandTaskId);
+        ? await window.lumen.cowork.setGoal(commandTaskId, goalMatch[1]!.trim())
+        : await window.lumen.cowork.compact(commandTaskId);
       startingTask.current = null;
-      setMessages(await window.lumen.codex.getMessages(commandTaskId));
+      setMessages(await window.lumen.cowork.getMessages(commandTaskId));
       if (isCompact) setContextTokens({ used: 0, total: result.task.contextTotal || 16384 });
       return;
     }
@@ -539,7 +678,7 @@ export function CodexView(props: Props) {
     if (!taskId) {
       creatingTask.current = true;
       try {
-        taskId = await props.onNewTask(cwd, props.engine);
+        taskId = await props.onNewTask(cwd);
       } catch {
         creatingTask.current = false;
         setRunning(false);
@@ -551,7 +690,7 @@ export function CodexView(props: Props) {
 
     setPrompt("");
     setAttachments([]);
-    const userMsg: CodexMessage = {
+    const userMsg: CoworkMessage = {
       id: "tmp-user-" + Date.now(),
       taskId,
       role: "user",
@@ -560,7 +699,8 @@ export function CodexView(props: Props) {
       createdAt: Date.now()
     };
 
-    const asstMsg: CodexMessage = {
+    const directAnswer = isCoworkDirectConversation(text, files.length > 0);
+    const asstMsg: CoworkMessage = {
       id: "tmp-asst-" + Date.now(),
       taskId,
       role: "assistant",
@@ -569,21 +709,20 @@ export function CodexView(props: Props) {
       status: "streaming",
       contextUsed: contextTokens.used,
       contextTotal: contextTokens.total,
-      activity: "Planning",
+      activity: directAnswer ? "Answering" : "Planning",
       createdAt: Date.now() + 1
     };
 
     setMessages((prev) => [...prev, userMsg, asstMsg]);
 
     try {
-      const res = await window.lumen.codex.run({
+      const res = await window.lumen.cowork.run({
         taskId,
         prompt: text,
         attachments: files,
         cwd,
         effort: props.effort,
         model: props.model,
-        engine: props.tasks.find((task) => task.id === taskId)?.engine || props.engine
       });
 
       if (res.ok && res.userMsgId && res.asstMsgId) {
@@ -614,7 +753,7 @@ export function CodexView(props: Props) {
 
   const handleStop = async () => {
     if (props.activeTaskId) {
-      await window.lumen.codex.stop(props.activeTaskId);
+      await window.lumen.cowork.stop(props.activeTaskId);
       setRunning(false);
     }
   };
@@ -633,8 +772,8 @@ export function CodexView(props: Props) {
   };
 
   return (
-    <div className={`codex-view ${environmentOpen ? "environment-open" : ""}`}>
-      <div className="codex-primary">
+    <div className={`cowork-view ${environmentOpen ? "environment-open" : ""}`}>
+      <div className="cowork-primary">
       {/* Top Header Bar */}
       <header className="main-top cowork-topbar">
         {!props.sidebarOpen && props.onToggleSidebar && (
@@ -661,8 +800,8 @@ export function CodexView(props: Props) {
       </header>
 
       {/* Main Conversation Thread */}
-      <div className="codex-thread" ref={threadRef} onScroll={handleScroll}>
-        <div className="codex-thread-inner">
+      <div className="cowork-thread" ref={threadRef} onScroll={handleScroll}>
+        <div className="cowork-thread-inner">
           {messages.length === 0 ? (
             <div className="empty">
               <h1>Lumen Cowork</h1>
@@ -688,7 +827,7 @@ export function CodexView(props: Props) {
                     )}
                     {otherFiles.length > 0 && (
                       <div className="user-attachments">
-                        <AttachmentList attachments={otherFiles} />
+                        <AttachmentList attachments={otherFiles} language={props.language} />
                       </div>
                     )}
                     {m.content ? (
@@ -699,7 +838,7 @@ export function CodexView(props: Props) {
                   </div>
                 );
               }
-              return <AssistantCodexTurn key={m.id} message={m} language={props.language} />;
+              return <AssistantCoworkTurn key={m.id} message={m} language={props.language} />;
             })
           )}
         </div>
@@ -740,6 +879,7 @@ export function CodexView(props: Props) {
           <AttachmentList
             attachments={attachments}
             onRemove={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
+            language={props.language}
           />
           {slashCommands.length ? (
             <div className="slash-command-menu" role="listbox" aria-label={isZh ? "Cowork 命令" : "Cowork commands"}>
@@ -799,25 +939,26 @@ export function CodexView(props: Props) {
                 attachments={attachments}
                 onAdd={(files) => setAttachments((current) => [...current, ...files])}
                 onRemove={(id) => setAttachments((current) => current.filter((file) => file.id !== id))}
+                language={props.language}
                 pluginActions={[
                   {
                     id: "sites",
                     label: "Sites",
-                    description: isZh ? "预览并验证本地网站" : "Preview and verify a local site",
+                    description: isZh ? "本地预览" : "Local preview",
                     available: Boolean(toolStatus?.capabilities.find((item) => item.id === "sites")?.available),
                     onSelect: () => prepareEnvironmentPrompt(isZh ? "检查当前工作区的网站构建产物，使用 Lumen Sites 启动本地预览并在内置浏览器中验证。" : "Inspect the current workspace's built website, start a local preview with Lumen Sites, and verify it in the built-in browser.")
                   },
                   {
                     id: "browser",
                     label: "Browser",
-                    description: isZh ? "打开并操作内置浏览器" : "Open and control the built-in browser",
+                    description: isZh ? "内置浏览器" : "In-app browser",
                     available: Boolean(toolStatus?.capabilities.find((item) => item.id === "browser")?.available),
                     onSelect: () => prepareEnvironmentPrompt(isZh ? "使用 Lumen 内置浏览器完成这个任务；先打开页面，再读取页面快照并按需要交互。" : "Use Lumen's built-in browser for this task: open the page, inspect a snapshot, and interact as needed.")
                   },
                   {
                     id: "plugins",
-                    label: "Plugin Management",
-                    description: isZh ? "查看本机插件及可用能力" : "Inspect installed plugins and capabilities",
+                    label: isZh ? "插件" : "Plugins",
+                    description: isZh ? "能力管理" : "Capabilities",
                     available: Boolean(toolStatus?.capabilities.find((item) => item.id === "plugins")?.available),
                     onSelect: () => prepareEnvironmentPrompt(isZh ? "使用 Lumen Plugin Management 列出本机已安装插件，并说明与当前任务相关的能力。" : "Use Lumen Plugin Management to list installed plugins and identify capabilities relevant to this task.")
                   }
@@ -844,8 +985,6 @@ export function CodexView(props: Props) {
                 onEffort={props.onEffort}
                 reasoningControl={props.reasoningControl}
                 reasoningEfforts={props.reasoningEfforts}
-                engine={props.tasks.find((task) => task.id === props.activeTaskId)?.engine || props.engine}
-                onEngine={props.onEngine}
               />
               {running ? (
                 <button
@@ -879,7 +1018,6 @@ export function CodexView(props: Props) {
           language={props.language}
           workspace={workspace}
           running={running}
-          engine={props.tasks.find((task) => task.id === props.activeTaskId)?.engine || props.engine}
           model={props.model}
           messages={messages}
           attachments={attachments}

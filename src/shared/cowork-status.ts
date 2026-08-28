@@ -1,4 +1,4 @@
-import type { CodexToolCall } from "./types";
+import type { CoworkToolCall } from "./types";
 
 function compact(value: unknown, fallback: string): string {
   if (typeof value !== "string" || !value.trim()) return fallback;
@@ -11,7 +11,7 @@ function fileName(value: unknown): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path;
 }
 
-export function toolDescription(tool: CodexToolCall): string {
+export function toolDescription(tool: CoworkToolCall): string {
   const name = tool.name.toLowerCase();
   if (name === "bash" || name === "sh" || name.includes("command") || name.includes("shell")) {
     return compact(tool.input?.command, "command");
@@ -25,7 +25,7 @@ export function toolDescription(tool: CodexToolCall): string {
   return "";
 }
 
-export function toolActivity(tool: CodexToolCall): string {
+export function toolActivity(tool: CoworkToolCall): string {
   const name = tool.name.toLowerCase();
   if (name === "bash" || name === "sh" || name.includes("command") || name.includes("shell")) {
     return `Running ${compact(tool.input?.command, "a command")}`;

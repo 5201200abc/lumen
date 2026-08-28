@@ -10,8 +10,8 @@ import type {
   Settings,
   StreamDelta,
   StreamDone,
-  CodexMessage,
-  CodexTask, CoworkEngine,
+  CoworkMessage,
+  CoworkTask, CoworkApprovalDecision, CoworkRewindResult,
   CoworkToolStatus,
   GoogleAccount,
   TokenUsage,
@@ -42,6 +42,7 @@ interface LumenAPI {
     reconnect: () => Promise<LlamaStatus>;
     stop: () => Promise<LlamaStatus>;
     benchmark: (model: string) => Promise<ModelBenchmarkResult>;
+    refreshCatalog: (restartRouter?: boolean) => Promise<{ settings: Settings; status: LlamaStatus }>;
   };
   chats: {
     list: () => Promise<Conversation[]>;
@@ -84,18 +85,20 @@ interface LumenAPI {
     onData: (fn: (data: string) => void) => Unlisten;
     onExit: (fn: (exitCode: number) => void) => Unlisten;
   };
-  codex: {
+  cowork: {
     getHome: () => Promise<string>;
     workspaceInfo: (cwd?: string) => Promise<WorkspaceInfo>;
-    listTasks: () => Promise<CodexTask[]>;
-    createTask: (opts?: { title?: string; cwd?: string; engine?: CoworkEngine }) => Promise<CodexTask>;
-    getMessages: (taskId: string) => Promise<CodexMessage[]>;
+    listTasks: () => Promise<CoworkTask[]>;
+    createTask: (opts?: { title?: string; cwd?: string }) => Promise<CoworkTask>;
+    getMessages: (taskId: string) => Promise<CoworkMessage[]>;
     deleteTask: (taskId: string) => Promise<boolean>;
-    setGoal: (taskId: string, goal: string) => Promise<{ task: CodexTask; message: CodexMessage }>;
-    compact: (taskId: string) => Promise<{ task: CodexTask; message: CodexMessage }>;
+    setGoal: (taskId: string, goal: string) => Promise<{ task: CoworkTask; message: CoworkMessage }>;
+    compact: (taskId: string) => Promise<{ task: CoworkTask; message: CoworkMessage }>;
     selectDirectory: () => Promise<string | null>;
     stop: (taskId: string) => Promise<boolean>;
-    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string; engine?: CoworkEngine }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
+    rewind: (taskId: string, messageId: string, dryRun?: boolean) => Promise<CoworkRewindResult>;
+    resolveApproval: (requestId: string, decision: CoworkApprovalDecision) => Promise<boolean>;
+    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
     onEvent: (fn: (event: any) => void) => Unlisten;
   };
   tools: {

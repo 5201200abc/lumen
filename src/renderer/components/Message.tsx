@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Attachment, ChatMessage } from "@shared/types";
+import type { Attachment, ChatMessage, ResearchProgress, ResearchStep } from "@shared/types";
 import { IconCheck, IconCopy, IconPencil, IconRefresh } from "./icons";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { AttachmentImage, AttachmentList } from "./AttachmentControls";
@@ -26,12 +26,82 @@ function formatDuration(sec: number, isZh = false): string {
 }
 
 function renderLiveStatusText(text: string) {
-  const clean = text.replace(/(\s*[.·…]+)+$/, "").trim();
+  return text.replace(/(\s*[.·…]+)+$/, "").trim();
+}
+
+function researchStepLabel(step: ResearchStep, isZh: boolean): string {
+  const count = step.count ?? 0;
+  if (step.kind === "search") {
+    if (step.status === "active") return isZh ? "正在搜索网页" : "Searching websites";
+    return isZh ? `已搜索 ${count} 个网站` : `Searched ${count} websites`;
+  }
+  if (step.kind === "read") {
+    if (step.status === "active") return isZh ? `正在读取 ${count} 个来源` : `Reading ${count} sources`;
+    return isZh ? `已读取 ${count} 个来源` : `Read ${count} sources`;
+  }
+  if (step.status === "active") return isZh ? "正在交叉验证证据" : "Cross-checking evidence";
+  return step.detail || (isZh ? "已完成交叉验证" : "Cross-check complete");
+}
+
+function ResearchTrace({
+  progress,
+  streaming,
+  isZh
+}: {
+  progress: ResearchProgress;
+  streaming: boolean;
+  isZh: boolean;
+}) {
   return (
-    <>
-      {clean}
-      <span className="status-dots">...</span>
-    </>
+    <div className={`research-trace ${streaming ? "is-live" : "is-complete"}`}>
+      {progress.steps.map((step) => {
+        const domains = step.domains || [];
+        const sites = step.sites || [];
+        const row = (
+          <span className="research-step-heading">
+            <span className={`research-step-mark ${step.kind} ${step.status}`}>
+              {step.kind === "read" ? "↯" : step.kind === "verify" ? "✓" : null}
+            </span>
+            <span className={step.status === "active" ? "thinking-shimmer" : undefined}>
+              {researchStepLabel(step, isZh)}
+            </span>
+          </span>
+        );
+        if (!sites.length && !domains.length) {
+          return (
+            <div className={`research-step ${step.kind} ${step.status}`} key={step.id} title={step.detail}>
+              {row}
+            </div>
+          );
+        }
+        return (
+          <details
+            className={`research-step ${step.kind} ${step.status}`}
+            key={step.id}
+            open={streaming}
+          >
+            <summary title={step.detail}>
+              {row}
+              <span className="research-step-chevron">⌄</span>
+            </summary>
+            <div className="research-domains">
+              {sites.length ? sites.map((site) => (
+                <a key={site.url} href={site.url} target="_blank" rel="noreferrer" title={site.title}>
+                  {site.domain}
+                </a>
+              )) : domains.map((domain) => {
+                const source = progress.sources?.find((item) => item.domain === domain);
+                return source ? (
+                  <a key={domain} href={source.url} target="_blank" rel="noreferrer" title={source.title}>
+                    {domain}
+                  </a>
+                ) : <span key={domain}>{domain}</span>;
+              })}
+            </div>
+          </details>
+        );
+      })}
+    </div>
   );
 }
 
@@ -109,7 +179,7 @@ export function MessageView({ message, streaming, language, onRegenerate, onEdit
 
         {otherFiles.length > 0 && (
           <div className="user-attachments">
-            <AttachmentList attachments={otherFiles} />
+            <AttachmentList attachments={otherFiles} language={language} />
           </div>
         )}
 
@@ -206,36 +276,45 @@ export function MessageView({ message, streaming, language, onRegenerate, onEdit
   const activelyThinking = Boolean(streaming && message.phase === "thinking");
   const showThought = Boolean(activelyThinking || (thinking && !streaming));
   const showLiveStatus = Boolean(streaming && !activelyThinking && message.statusText);
+  const researchIntro = message.research?.strategy ||
+    (streaming && message.phase === "searching" ? message.introText : undefined);
   const workedLabel = isZh
     ? `已深度思考 ${formatDuration(message.durationSeconds ?? 0, true)}`
     : `Thought for ${formatDuration(message.durationSeconds ?? 0, false)}`;
   const thinkingLabel = isZh
     ? `正在深度思考 ${formatDuration(seconds, true)}`
     : `Thinking ${formatDuration(seconds, false)}`;
+  const thoughtBlock = showThought ? (
+    <details className={`thought ${activelyThinking ? "is-thinking" : "is-complete"}`} open={activelyThinking || undefined}>
+      <summary>
+        <span className={activelyThinking ? "thinking-shimmer" : undefined}>
+          {activelyThinking ? thinkingLabel : workedLabel}
+        </span>
+      </summary>
+      {visibleThinking ? <pre>{visibleThinking}</pre> : null}
+    </details>
+  ) : !streaming && message.durationSeconds ? (
+    <div className="worked-status">{workedLabel}</div>
+  ) : null;
 
   if (!streaming && !showThought && !message.content) return null;
 
   return (
     <div className="turn assistant-turn">
-      {showLiveStatus ? (
+      {!message.research ? thoughtBlock : null}
+      {researchIntro || (activelyThinking && message.introText) ? (
+        <p className="assistant-intro research-strategy">
+          {researchIntro || message.introText}
+        </p>
+      ) : null}
+      {message.research ? (
+        <ResearchTrace progress={message.research} streaming={Boolean(streaming)} isZh={isZh} />
+      ) : null}
+      {message.research ? thoughtBlock : null}
+      {showLiveStatus && !message.research ? (
         <div className={`assistant-live-status ${message.phase || "preparing"}`}>
-          <span className="spin" />
-          <span>{renderLiveStatusText(message.statusText!)}</span>
+          <span className="thinking-shimmer">{renderLiveStatusText(message.statusText!)}</span>
         </div>
-      ) : null}
-      {showThought ? (
-        <details className={`thought ${activelyThinking ? "is-thinking" : "is-complete"}`} open={activelyThinking || undefined}>
-          <summary>
-            {activelyThinking ? <span className="spin" /> : null}
-            <span>{activelyThinking ? thinkingLabel : workedLabel}</span>
-          </summary>
-          {visibleThinking ? <pre>{visibleThinking}</pre> : null}
-        </details>
-      ) : !streaming && message.durationSeconds ? (
-        <div className="worked-status">{workedLabel}</div>
-      ) : null}
-      {activelyThinking && message.introText ? (
-        <p className="assistant-intro">{message.introText}</p>
       ) : null}
       <MarkdownView text={message.content} />
       {!streaming && message.content ? (

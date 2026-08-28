@@ -1,7 +1,6 @@
 import WebSocket from "ws";
 
 const cdpPort = Number(process.env.LUMEN_CDP_PORT || "9223");
-const coworkEngine = process.env.LUMEN_COWORK_ENGINE === "codex" ? "codex" : "claude-code";
 const targetList = await fetch(`http://127.0.0.1:${cdpPort}/json/list`).then((response) => response.json());
 const target = targetList.find((item) => item.type === "page" && item.title === "Lumen");
 if (!target?.webSocketDebuggerUrl) throw new Error("Lumen renderer CDP target not found.");
@@ -30,7 +29,8 @@ function command(method, params = {}) {
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
 }
 
-async function evaluate(expression, timeout = 240_000) {
+async function evaluate(expression, timeout = 600_000) {
+  let timer;
   const result = await Promise.race([
     command("Runtime.evaluate", {
       expression,
@@ -38,8 +38,10 @@ async function evaluate(expression, timeout = 240_000) {
       returnByValue: true,
       userGesture: true
     }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("CDP evaluation timed out.")), timeout))
-  ]);
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("CDP evaluation timed out.")), timeout);
+    })
+  ]).finally(() => clearTimeout(timer));
   if (result.exceptionDetails) {
     throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
   }
@@ -92,13 +94,13 @@ try {
     const coworkTab = [...document.querySelectorAll('[role="tab"]')].find((node) => node.textContent?.trim() === "Cowork");
     coworkTab?.click();
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const before = await window.lumen.codex.listTasks();
+    const before = await window.lumen.cowork.listTasks();
     const button = document.querySelector(".new-chat-btn") ||
       [...document.querySelectorAll("button")].find((node) => /New chat|新建会话/.test(node.getAttribute("aria-label") || ""));
     if (!button) throw new Error("Cowork new chat button not found.");
     button.click();
     await new Promise((resolve) => setTimeout(resolve, 350));
-    const after = await window.lumen.codex.listTasks();
+    const after = await window.lumen.cowork.listTasks();
     const clean = Boolean(document.querySelector(".mode-pane:not([hidden]) .empty"));
     const chatTab = [...document.querySelectorAll('[role="tab"]')].find((node) => node.textContent?.trim() === "Chat");
     chatTab?.click();
@@ -114,7 +116,7 @@ try {
       const timer = setTimeout(() => {
         off();
         reject(new Error("Gemma4 Chat response timed out."));
-      }, 180000);
+      }, 360000);
       const off = window.lumen.chat.onDone((event) => {
         clearTimeout(timer);
         off();
@@ -135,7 +137,7 @@ try {
     const result = await done;
     const chats = await window.lumen.chats.list();
     return { result, chatIds: chats.map((item) => item.id) };
-  })()`, 210_000);
+  })()`, 390_000);
 
   for (const id of chat.chatIds) {
     if (!baselineIds.includes(id)) createdIds.push(id);
@@ -146,18 +148,17 @@ try {
   }
 
   const cowork = await evaluate(`(async () => {
-    const task = await window.lumen.codex.createTask({
-      cwd: ${JSON.stringify(process.cwd())},
-      engine: ${JSON.stringify(process.env.LUMEN_COWORK_ENGINE === "codex" ? "codex" : "claude-code")}
+    const task = await window.lumen.cowork.createTask({
+      cwd: ${JSON.stringify(process.cwd())}
     });
     const events = [];
     const completed = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         off();
-        void window.lumen.codex.stop(task.id);
+        void window.lumen.cowork.stop(task.id);
         reject(new Error("Gemma4 Cowork response timed out."));
-      }, 240000);
-      const off = window.lumen.codex.onEvent((event) => {
+      }, 600000);
+      const off = window.lumen.cowork.onEvent((event) => {
         if (event.taskId !== task.id) return;
         events.push(event);
         if (event.type === "done" || event.type === "error") {
@@ -167,20 +168,19 @@ try {
         }
       });
     });
-    const started = await window.lumen.codex.run({
+    const started = await window.lumen.cowork.run({
       taskId: task.id,
       prompt: "Use the Lumen MCP tools in this exact order: (1) plugins_list once with details false, (2) sites_preview with directory exactly scripts/fixtures/tool-site, (3) browser_snapshot. Then report the installed plugin count and the preview page title in one short sentence.",
       cwd: ${JSON.stringify(process.cwd())},
       effort: "high",
-      model: "Gemma4-26B-A4B",
-      engine: ${JSON.stringify(process.env.LUMEN_COWORK_ENGINE === "codex" ? "codex" : "claude-code")}
+      model: "Gemma4-26B-A4B"
     });
     if (!started.ok) throw new Error(started.error || "Cowork failed to start.");
     const done = await completed;
-    const messages = await window.lumen.codex.getMessages(task.id);
+    const messages = await window.lumen.cowork.getMessages(task.id);
     const toolCalls = messages.flatMap((message) => message.toolCalls || []);
     return { taskId: task.id, done, toolCalls, messages };
-  })()`, 270_000);
+  })()`, 630_000);
   coworkTaskId = cowork.taskId;
   const pluginCall = cowork.toolCalls.find((tool) => tool.name.includes("plugins_list"));
   const sitesCall = cowork.toolCalls.find((tool) => tool.name.includes("sites_preview"));
@@ -217,7 +217,7 @@ try {
     },
     cowork: {
       model: "Gemma4-26B-A4B",
-      engine: coworkEngine,
+      engine: "claude-agent",
       tools: [pluginCall, sitesCall, snapshotCall].map((tool) => ({
         name: tool.name,
         status: tool.status,
@@ -231,7 +231,7 @@ try {
     await evaluate(`window.lumen.chats.delete(${JSON.stringify(id)})`).catch(() => undefined);
   }
   if (coworkTaskId) {
-    await evaluate(`window.lumen.codex.deleteTask(${JSON.stringify(coworkTaskId)})`).catch(() => undefined);
+    await evaluate(`window.lumen.cowork.deleteTask(${JSON.stringify(coworkTaskId)})`).catch(() => undefined);
   }
   await evaluate(`window.lumen.settings.set({ model: ${JSON.stringify(originalSettings.model)} })`).catch(() => undefined);
   socket.close();

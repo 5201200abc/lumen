@@ -7,7 +7,16 @@ import type { Attachment } from "@shared/types";
 const MAX_FILES = 120;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TEXT_CHARS = 180_000;
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tiff"]);
+const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp", ".ts"]);
+const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma", ".aiff"]);
+const ARCHIVE_EXTENSIONS = new Set([".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz"]);
+const PDF_EXTENSIONS = new Set([".pdf"]);
+const CODE_EXTENSIONS = new Set([
+  ".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".rs", ".java", ".kt", ".swift",
+  ".c", ".h", ".cpp", ".hpp", ".cs", ".php", ".sh", ".zsh", ".bash", ".sql",
+  ".graphql", ".html", ".htm", ".css", ".scss", ".json", ".yaml", ".yml", ".toml", ".xml", ".env"
+]);
 const TEXT_EXTENSIONS = new Set([
   ".txt", ".md", ".markdown", ".json", ".jsonl", ".csv", ".tsv", ".xml", ".yaml", ".yml",
   ".toml", ".ini", ".log", ".html", ".htm", ".css", ".scss", ".js", ".jsx", ".ts", ".tsx",
@@ -18,6 +27,12 @@ const TEXT_EXTENSIONS = new Set([
 const MIME: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
   ".webp": "image/webp", ".bmp": "image/bmp", ".svg": "image/svg+xml", ".pdf": "application/pdf",
+  ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+  ".mkv": "video/x-matroska", ".webm": "video/webm", ".m4v": "video/x-m4v",
+  ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/m4a",
+  ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg",
+  ".zip": "application/zip", ".rar": "application/vnd.rar", ".7z": "application/x-7z-compressed",
+  ".tar": "application/x-tar", ".gz": "application/gzip",
   ".ppt": "application/vnd.ms-powerpoint",
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".doc": "application/msword",
@@ -85,6 +100,16 @@ async function serializeFile(path: string, relativePath?: string): Promise<Attac
   if (!info.isFile()) return null;
   const extension = extname(path).toLowerCase();
   const mime = MIME[extension] || (TEXT_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream");
+  let kind: Attachment["kind"] = "file";
+  if (IMAGE_EXTENSIONS.has(extension)) kind = "image";
+  else if (VIDEO_EXTENSIONS.has(extension)) kind = "video";
+  else if (AUDIO_EXTENSIONS.has(extension)) kind = "audio";
+  else if (PDF_EXTENSIONS.has(extension)) kind = "pdf";
+  else if (ARCHIVE_EXTENSIONS.has(extension)) kind = "archive";
+  else if (extension === ".pptx" || extension === ".docx" || extension === ".xlsx" || extension === ".ppt" || extension === ".doc" || extension === ".xls") kind = "document";
+  else if (CODE_EXTENSIONS.has(extension)) kind = "code";
+  else if (TEXT_EXTENSIONS.has(extension)) kind = "text";
+
   const base: Attachment = {
     id: crypto.randomUUID(),
     mime,
@@ -92,7 +117,7 @@ async function serializeFile(path: string, relativePath?: string): Promise<Attac
     path,
     relativePath,
     size: info.size,
-    kind: "file"
+    kind
   };
   // Large files remain valid local attachments. Avoid copying their entire
   // payload into renderer memory; Cowork can read the selected path directly.
@@ -102,7 +127,7 @@ async function serializeFile(path: string, relativePath?: string): Promise<Attac
     return { ...base, kind: "image", dataUrl: `data:${mime};base64,${buffer.toString("base64")}` };
   }
   if (TEXT_EXTENSIONS.has(extension)) {
-    return { ...base, kind: "text", text: (await readFile(path, "utf8")).slice(0, MAX_TEXT_CHARS) };
+    return { ...base, kind: base.kind, text: (await readFile(path, "utf8")).slice(0, MAX_TEXT_CHARS) };
   }
   if (extension === ".pptx" || extension === ".docx" || extension === ".xlsx") {
     try {

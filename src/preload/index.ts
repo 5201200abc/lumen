@@ -11,8 +11,8 @@ import type {
   Settings,
   StreamDelta,
   StreamDone,
-  CodexMessage,
-  CodexTask, CoworkEngine,
+  CoworkMessage,
+  CoworkTask, CoworkApprovalDecision, CoworkRewindResult,
   CoworkToolStatus,
   GoogleAccount,
   TokenUsage,
@@ -48,7 +48,9 @@ const api = {
     ensure: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:ensure"),
     reconnect: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:reconnect"),
     stop: (): Promise<LlamaStatus> => ipcRenderer.invoke("models:stop"),
-    benchmark: (model: string): Promise<ModelBenchmarkResult> => ipcRenderer.invoke("models:benchmark", model)
+    benchmark: (model: string): Promise<ModelBenchmarkResult> => ipcRenderer.invoke("models:benchmark", model),
+    refreshCatalog: (restartRouter = false): Promise<{ settings: Settings; status: LlamaStatus }> =>
+      ipcRenderer.invoke("models:refreshCatalog", restartRouter)
   },
   chats: {
     list: (): Promise<Conversation[]> => ipcRenderer.invoke("chats:list"),
@@ -95,22 +97,26 @@ const api = {
     onData: (fn: (data: string) => void): Unlisten => on("terminal:data", fn),
     onExit: (fn: (exitCode: number) => void): Unlisten => on("terminal:exit", fn)
   },
-  codex: {
-    getHome: (): Promise<string> => ipcRenderer.invoke("codex:getHome"),
-    workspaceInfo: (cwd?: string): Promise<WorkspaceInfo> => ipcRenderer.invoke("codex:workspaceInfo", cwd),
-    listTasks: (): Promise<CodexTask[]> => ipcRenderer.invoke("codex:listTasks"),
-    createTask: (opts?: { title?: string; cwd?: string; engine?: CoworkEngine }): Promise<CodexTask> => ipcRenderer.invoke("codex:createTask", opts || {}),
-    getMessages: (taskId: string): Promise<CodexMessage[]> => ipcRenderer.invoke("codex:getMessages", taskId),
-    deleteTask: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:deleteTask", taskId),
-    setGoal: (taskId: string, goal: string): Promise<{ task: CodexTask; message: CodexMessage }> =>
-      ipcRenderer.invoke("codex:setGoal", taskId, goal),
-    compact: (taskId: string): Promise<{ task: CodexTask; message: CodexMessage }> =>
-      ipcRenderer.invoke("codex:compact", taskId),
-    selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("codex:selectDirectory"),
-    stop: (taskId: string): Promise<boolean> => ipcRenderer.invoke("codex:stop", taskId),
-    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string; engine?: CoworkEngine }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
-      ipcRenderer.invoke("codex:run", opts),
-    onEvent: (fn: (event: any) => void): Unlisten => on("codex:event", fn)
+  cowork: {
+    getHome: (): Promise<string> => ipcRenderer.invoke("cowork:getHome"),
+    workspaceInfo: (cwd?: string): Promise<WorkspaceInfo> => ipcRenderer.invoke("cowork:workspaceInfo", cwd),
+    listTasks: (): Promise<CoworkTask[]> => ipcRenderer.invoke("cowork:listTasks"),
+    createTask: (opts?: { title?: string; cwd?: string }): Promise<CoworkTask> => ipcRenderer.invoke("cowork:createTask", opts || {}),
+    getMessages: (taskId: string): Promise<CoworkMessage[]> => ipcRenderer.invoke("cowork:getMessages", taskId),
+    deleteTask: (taskId: string): Promise<boolean> => ipcRenderer.invoke("cowork:deleteTask", taskId),
+    setGoal: (taskId: string, goal: string): Promise<{ task: CoworkTask; message: CoworkMessage }> =>
+      ipcRenderer.invoke("cowork:setGoal", taskId, goal),
+    compact: (taskId: string): Promise<{ task: CoworkTask; message: CoworkMessage }> =>
+      ipcRenderer.invoke("cowork:compact", taskId),
+    selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("cowork:selectDirectory"),
+    stop: (taskId: string): Promise<boolean> => ipcRenderer.invoke("cowork:stop", taskId),
+    rewind: (taskId: string, messageId: string, dryRun = false): Promise<CoworkRewindResult> =>
+      ipcRenderer.invoke("cowork:rewind", taskId, messageId, dryRun),
+    resolveApproval: (requestId: string, decision: CoworkApprovalDecision): Promise<boolean> =>
+      ipcRenderer.invoke("cowork:resolveApproval", requestId, decision),
+    run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
+      ipcRenderer.invoke("cowork:run", opts),
+    onEvent: (fn: (event: any) => void): Unlisten => on("cowork:event", fn)
   },
   tools: {
     status: (): Promise<CoworkToolStatus> => ipcRenderer.invoke("tools:status"),

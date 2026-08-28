@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, globalShortcut, nativeTheme } from "electron";
 import { registerIpc } from "./ipc";
 import { registerTerminalIpc } from "./terminal";
-import { registerCodexIpc, shutdownCodexRuntime } from "./codex-agent";
+import { registerCoworkIpc, shutdownCoworkRuntime } from "./cowork-agent";
 import { initDb, flushDb, closeDb, setAfterPersist } from "./db";
 import { getSettings } from "./store";
 import { ensureLocalLlama } from "./models";
@@ -116,7 +116,7 @@ async function ready(): Promise<void> {
   applyTheme(settings.theme);
   registerIpc();
   registerTerminalIpc();
-  registerCodexIpc();
+  registerCoworkIpc();
   registerAttachmentIpc();
   registerToolHostIpc();
   win = createWindow();
@@ -152,7 +152,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", () => {
     stopScreenshotWatch();
-    shutdownCodexRuntime();
+    shutdownCoworkRuntime();
     shutdownToolHost();
     setAfterPersist(null);
     cancelGoogleSync();

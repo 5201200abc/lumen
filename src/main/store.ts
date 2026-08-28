@@ -65,10 +65,10 @@ const store = new Store<Disk>({
     modelsDir: DEFAULT_MODELS_DIR,
     chatInstructions: "",
     coworkInstructions: "",
-    coworkEngine: "claude-code",
-    coworkPermissionMode: "full",
-    coworkDefaultPermissions: true,
-    coworkFullAccess: true,
+    coworkEngine: "claude-agent",
+    coworkPermissionMode: "ask",
+    coworkDefaultPermissions: false,
+    coworkFullAccess: false,
     plugins: { browser: true, sites: true, plugins: true },
     computerUseChromeEnabled: true,
     computerUsePermissions: { approval: "ask", history: "ask", downloads: "ask", uploads: "ask" },
@@ -80,6 +80,11 @@ const store = new Store<Disk>({
     llamaEndpoints: [{ id: "local", name: "Current model", url: "http://127.0.0.1/v1" }]
   }
 });
+
+// Keep the persisted field only as a migration marker; Cowork has one runtime.
+if (store.get("coworkEngine") !== "claude-agent") {
+  store.set("coworkEngine", "claude-agent");
+}
 
 function localLlamaUrl(port: number): string {
   return port > 0 ? `http://127.0.0.1:${port}/v1` : "http://127.0.0.1/v1";
@@ -155,7 +160,10 @@ export function getSettings(): Settings {
   const storedUrl = store.get("llamaUrl");
   const storedPort = store.get("llamaPort") || portFromUrl(storedUrl);
   if (storedPort && storedPort !== store.get("llamaPort")) store.set("llamaPort", storedPort);
-  const activeUrl = storedPort ? localLlamaUrl(storedPort) : storedUrl;
+  const localUrl = storedPort ? localLlamaUrl(storedPort) : storedUrl;
+  const activeUrl = portFromUrl(storedUrl) || /(?:127\.0\.0\.1|localhost|\[::1\])/i.test(storedUrl)
+    ? localUrl
+    : storedUrl;
   if (activeUrl !== storedUrl) store.set("llamaUrl", activeUrl);
   const storedEndpoints = store.get("llamaEndpoints") || [];
   let normalizedEndpoints = storedEndpoints.map((endpoint) =>
@@ -163,9 +171,9 @@ export function getSettings(): Settings {
       ? { ...endpoint, name: "Current model" }
       : endpoint
   );
-  const localUrl = localLlamaUrl(storedPort);
+  const routerUrl = localLlamaUrl(storedPort);
   normalizedEndpoints = [
-    { id: "local", name: "Current model", url: localUrl },
+    { id: "local", name: "Current model", url: routerUrl },
     ...normalizedEndpoints.filter((endpoint) => endpoint.id !== "local")
   ];
   if (!normalizedEndpoints.some((endpoint) => endpoint.url === activeUrl)) {
@@ -232,10 +240,10 @@ export function getSettings(): Settings {
     systemPromptPath: SYSTEM_PROMPT_PATH,
     chatInstructions: store.get("chatInstructions"),
     coworkInstructions: store.get("coworkInstructions"),
-    coworkEngine: store.get("coworkEngine") || "claude-code",
-    coworkPermissionMode: store.get("coworkPermissionMode") || "full",
-    coworkDefaultPermissions: store.get("coworkDefaultPermissions") ?? true,
-    coworkFullAccess: store.get("coworkFullAccess") ?? true,
+    coworkEngine: "claude-agent",
+    coworkPermissionMode: store.get("coworkPermissionMode") || "ask",
+    coworkDefaultPermissions: store.get("coworkDefaultPermissions") ?? false,
+    coworkFullAccess: store.get("coworkFullAccess") ?? false,
     plugins: store.get("plugins") || { browser: true, sites: true, plugins: true },
     computerUseChromeEnabled: store.get("computerUseChromeEnabled") ?? true,
     computerUsePermissions: store.get("computerUsePermissions") || { approval: "ask", history: "ask", downloads: "ask", uploads: "ask" },
@@ -307,8 +315,8 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.coworkInstructions !== undefined && patch.coworkInstructions.length > 20_000) {
     throw new Error("Cowork custom instructions cannot exceed 20,000 characters.");
   }
-  if (patch.coworkEngine !== undefined && !["claude-code", "codex"].includes(patch.coworkEngine)) {
-    throw new Error("Cowork engine must be claude-code or codex.");
+  if (patch.coworkEngine !== undefined && patch.coworkEngine !== "claude-agent") {
+    throw new Error("Cowork engine is fixed to Claude Agent.");
   }
   if (patch.coworkPermissionMode !== undefined && !["ask", "approve", "full"].includes(patch.coworkPermissionMode)) {
     throw new Error("Cowork permission mode must be ask, approve, or full.");

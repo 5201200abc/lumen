@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { CoworkEngine, Effort, ReasoningControl } from "@shared/types";
+import type { Effort, ReasoningControl } from "@shared/types";
 
-type Page = "root" | "engine" | "model" | "effort";
+type Page = "root" | "model" | "effort";
 
 const EFFORTS: { id: Effort; label: string }[] = [
   { id: "none", label: "none" },
@@ -33,8 +33,6 @@ type Props = {
   onEffort: (e: Effort) => void;
   reasoningControl?: ReasoningControl;
   reasoningEfforts?: Effort[];
-  engine?: CoworkEngine;
-  onEngine?: (engine: CoworkEngine) => void;
 };
 
 export function ModelPicker(props: Props) {
@@ -96,15 +94,6 @@ export function ModelPicker(props: Props) {
         <div className="picker-panel" style={{ right: pos.right, bottom: pos.bottom }}>
           {page === "root" && (
             <>
-              {props.engine && props.onEngine && (
-                <button className="picker-row" type="button" onClick={() => setPage("engine")}>
-                  <span>Agent</span>
-                  <span className="picker-val">
-                    {props.engine === "claude-code" ? "Claude Code" : "Codex"}
-                    <Chevron />
-                  </span>
-                </button>
-              )}
               <button className="picker-row" type="button" onClick={() => setPage("model")}>
                 <span>Model</span>
                 <span className="picker-val">
@@ -189,30 +178,6 @@ export function ModelPicker(props: Props) {
                   </div>
                 </div>
               )}
-            </>
-          )}
-          {page === "engine" && props.engine && props.onEngine && (
-            <>
-              <button className="picker-row back" type="button" onClick={() => setPage("root")}>
-                <span>Agent</span>
-              </button>
-              {([
-                ["claude-code", "Claude Code"],
-                ["codex", "Codex"]
-              ] as const).map(([id, label]) => (
-                <button
-                  key={id}
-                  className={`picker-row sub ${id === props.engine ? "active" : ""}`}
-                  type="button"
-                  onClick={() => {
-                    props.onEngine?.(id);
-                    setOpen(false);
-                    setPage("root");
-                  }}
-                >
-                  <span>{label}</span>
-                </button>
-              ))}
             </>
           )}
           {page === "model" && (
