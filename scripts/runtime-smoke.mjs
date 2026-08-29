@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 
 const cdpPort = Number(process.env.LUMEN_CDP_PORT || "9223");
+const runtimeModel = process.env.LUMEN_RUNTIME_MODEL || "Gemma4-26B-A4B";
+const verifyAutoCompact = process.env.LUMEN_VERIFY_AUTO_COMPACT === "1";
 const targetList = await fetch(`http://127.0.0.1:${cdpPort}/json/list`).then((response) => response.json());
 const target = targetList.find((item) => item.type === "page" && item.title === "Lumen");
 if (!target?.webSocketDebuggerUrl) throw new Error("Lumen renderer CDP target not found.");
@@ -66,7 +68,12 @@ const createdIds = [];
 let coworkTaskId = "";
 
 try {
-  await evaluate(`window.lumen.settings.set({ model: "Gemma4-26B-A4B" })`);
+  await evaluate(`window.lumen.settings.set({
+    model: ${JSON.stringify(runtimeModel)},
+    coworkPermissionMode: "full",
+    coworkFullAccess: true,
+    plugins: { browser: true, sites: true, plugins: true }
+  })`);
 
   const newChat = await evaluate(`(async () => {
     const chatTab = [...document.querySelectorAll('[role="tab"]')].find((node) => node.textContent?.trim() === "Chat");
@@ -156,7 +163,7 @@ try {
       const timer = setTimeout(() => {
         off();
         void window.lumen.cowork.stop(task.id);
-        reject(new Error("Gemma4 Cowork response timed out."));
+        reject(new Error(${JSON.stringify(`${runtimeModel} Cowork response timed out.`)}));
       }, 600000);
       const off = window.lumen.cowork.onEvent((event) => {
         if (event.taskId !== task.id) return;
@@ -173,13 +180,47 @@ try {
       prompt: "Use the Lumen MCP tools in this exact order: (1) plugins_list once with details false, (2) sites_preview with directory exactly scripts/fixtures/tool-site, (3) browser_snapshot. Then report the installed plugin count and the preview page title in one short sentence.",
       cwd: ${JSON.stringify(process.cwd())},
       effort: "high",
-      model: "Gemma4-26B-A4B"
+      model: ${JSON.stringify(runtimeModel)}
     });
     if (!started.ok) throw new Error(started.error || "Cowork failed to start.");
     const done = await completed;
-    const messages = await window.lumen.cowork.getMessages(task.id);
+    let messages = await window.lumen.cowork.getMessages(task.id);
     const toolCalls = messages.flatMap((message) => message.toolCalls || []);
-    return { taskId: task.id, done, toolCalls, messages };
+    const assistant = messages.filter((message) => message.role === "assistant").at(-1);
+    if (${JSON.stringify(verifyAutoCompact)}) {
+      const followupDone = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          off();
+          reject(new Error("Automatic context compaction follow-up timed out."));
+        }, 180000);
+        const off = window.lumen.cowork.onEvent((event) => {
+          if (event.taskId !== task.id) return;
+          if (event.type !== "done" && event.type !== "error") return;
+          clearTimeout(timer);
+          off();
+          resolve(event);
+        });
+      });
+      const followup = await window.lumen.cowork.run({
+        taskId: task.id,
+        prompt: "Continue from the compacted context and reply only AUTO_COMPACT_OK.",
+        cwd: ${JSON.stringify(process.cwd())},
+        effort: "none",
+        model: ${JSON.stringify(runtimeModel)}
+      });
+      if (!followup.ok) throw new Error(followup.error || "Automatic context compaction follow-up failed.");
+      await followupDone;
+      messages = await window.lumen.cowork.getMessages(task.id);
+    }
+    return {
+      taskId: task.id,
+      done,
+      toolCalls,
+      messages,
+      contextUsed: assistant?.contextUsed || 0,
+      thinkingLength: assistant?.thinking?.length || 0,
+      autoCompacted: messages.some((message) => message.activity === "Context automatically compacted")
+    };
   })()`, 630_000);
   coworkTaskId = cowork.taskId;
   const pluginCall = cowork.toolCalls.find((tool) => tool.name.includes("plugins_list"));
@@ -191,6 +232,9 @@ try {
       toolCalls: cowork.toolCalls,
       messages: cowork.messages
     })}`);
+  }
+  if (verifyAutoCompact && !cowork.autoCompacted) {
+    throw new Error(`Automatic context compaction did not run: ${JSON.stringify(cowork.messages)}`);
   }
   if (!String(sitesCall.output).includes("scripts/fixtures/tool-site") ||
       !String(snapshotCall.output).includes("LUMEN_SITE_OK") ||
@@ -205,19 +249,38 @@ try {
   if (!tools.online || tools.capabilities.some((item) => !item.available)) {
     throw new Error(`Tool Host capability status is invalid: ${JSON.stringify(tools)}`);
   }
+  const browserWindow = tools.capabilities.find((item) => item.id === "browser")?.window;
+  if (!browserWindow?.visible || !browserWindow.parentBounds) {
+    throw new Error(`Lumen browser window is not docked: ${JSON.stringify(browserWindow)}`);
+  }
+  const bounds = browserWindow.bounds;
+  const parentBounds = browserWindow.parentBounds;
+  const rightGap = parentBounds.x + parentBounds.width - (bounds.x + bounds.width);
+  const bottomGap = parentBounds.y + parentBounds.height - (bounds.y + bounds.height);
+  if (
+    bounds.width >= parentBounds.width ||
+    bounds.height >= parentBounds.height ||
+    Math.abs(rightGap - 16) > 2 ||
+    Math.abs(bottomGap - 16) > 2
+  ) {
+    throw new Error(`Lumen browser bounds are not bottom-right docked: ${JSON.stringify(browserWindow)}`);
+  }
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
     newChat,
     newCowork,
     chat: {
-      model: "Gemma4-26B-A4B",
+      model: runtimeModel,
       content: chat.result.content,
       createdConversations: createdIds.length
     },
     cowork: {
-      model: "Gemma4-26B-A4B",
+      model: runtimeModel,
       engine: "claude-agent",
+      contextUsed: cowork.contextUsed,
+      thinkingLength: cowork.thinkingLength,
+      autoCompacted: cowork.autoCompacted,
       tools: [pluginCall, sitesCall, snapshotCall].map((tool) => ({
         name: tool.name,
         status: tool.status,
@@ -233,6 +296,11 @@ try {
   if (coworkTaskId) {
     await evaluate(`window.lumen.cowork.deleteTask(${JSON.stringify(coworkTaskId)})`).catch(() => undefined);
   }
-  await evaluate(`window.lumen.settings.set({ model: ${JSON.stringify(originalSettings.model)} })`).catch(() => undefined);
+  await evaluate(`window.lumen.settings.set({
+    model: ${JSON.stringify(originalSettings.model)},
+    coworkPermissionMode: ${JSON.stringify(originalSettings.coworkPermissionMode)},
+    coworkFullAccess: ${JSON.stringify(originalSettings.coworkFullAccess)},
+    plugins: ${JSON.stringify(originalSettings.plugins)}
+  })`).catch(() => undefined);
   socket.close();
 }

@@ -64,6 +64,11 @@ type PendingApproval = {
 };
 const pendingApprovals = new Map<string, PendingApproval>();
 const taskAllowedTools = new Map<string, Set<string>>();
+const DEFAULT_CONTEXT_TOTAL = 16_384;
+const configuredAutoCompactRatio = Number(process.env.LUMEN_AUTO_COMPACT_RATIO || 0.62);
+const AUTO_COMPACT_RATIO = Number.isFinite(configuredAutoCompactRatio)
+  ? Math.min(0.9, Math.max(0.35, configuredAutoCompactRatio))
+  : 0.62;
 
 function persistTask(task: CoworkTask): void {
   saveCoworkTask(task, claudeSessions.get(task.id)?.id, compactContexts.get(task.id));
@@ -129,6 +134,66 @@ function compactTaskContext(taskMessages: CoworkMessage[]): string {
     .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${message.content.trim().slice(0, 1600)}`)
     .join("\n\n")
     .slice(-12000);
+}
+
+function isContextOverflowError(value: unknown): boolean {
+  const text = typeof value === "string" ? value : JSON.stringify(value || "");
+  return /exceeds the available context size|exceedcontextsizeerror|exceed_context_size|n_prompt_tokens.{0,80}n_ctx/i.test(text);
+}
+
+function estimateCoworkContext(task: CoworkTask, taskMessages: CoworkMessage[]): number {
+  let characters = task.compactedAt ? 11_200 : 0;
+  let assistantTurns = 0;
+  for (const message of taskMessages) {
+    if (message.role === "system" || message.createdAt <= (task.compactedAt || 0)) continue;
+    characters += message.content.length + (message.thinking?.length || 0);
+    if (message.role !== "assistant") continue;
+    assistantTurns += 1;
+    for (const toolCall of message.toolCalls || []) {
+      characters += JSON.stringify(toolCall.input || {}).length;
+      characters += Math.min(48_000, toolCall.output?.length || 0);
+    }
+  }
+  const sdkAndToolSchemaTokens = 6_000;
+  return Math.ceil(characters / 3.2) + sdkAndToolSchemaTokens + assistantTurns * 160;
+}
+
+function compactCoworkTask(
+  task: CoworkTask,
+  mode: "manual" | "automatic"
+): CoworkMessage {
+  const taskId = task.id;
+  const agentSession = persistentAgentSessions.get(taskId);
+  if (agentSession) {
+    agentSession.current = undefined;
+    agentSession.runtime.abortController.abort();
+    agentSession.runtime.close();
+    persistentAgentSessions.delete(taskId);
+  }
+  compactContexts.set(taskId, compactTaskContext(messages.get(taskId) || []));
+  claudeSessions.set(taskId, { started: false });
+  taskAllowedTools.delete(taskId);
+  task.contextUsed = 0;
+  task.compactedAt = Date.now();
+  task.updatedAt = Date.now();
+  const automatic = mode === "automatic";
+  const message: CoworkMessage = {
+    id: crypto.randomUUID(),
+    taskId,
+    role: "system",
+    content: automatic
+      ? "Context automatically compacted before the next turn."
+      : "Context compacted. The next turn will continue from a bounded summary.",
+    status: "done",
+    activity: automatic ? "Context automatically compacted" : "Context compacted",
+    createdAt: Date.now()
+  };
+  const taskMessages = messages.get(taskId) || [];
+  taskMessages.push(message);
+  messages.set(taskId, taskMessages);
+  saveCoworkMessage(message);
+  persistTask(task);
+  return message;
 }
 
 function modelStyleHash(style: string): string {
@@ -234,6 +299,7 @@ function startDirectAnswer(opts: {
       messageId: assistant.id,
       type: "done",
       content: assistant.content,
+      thinking: assistant.thinking,
       toolCalls: [],
       contextUsed: task.contextUsed,
       contextTotal: task.contextTotal || 16384,
@@ -263,9 +329,20 @@ function startDirectAnswer(opts: {
           activity: "Answering"
         });
       },
-      onDelta: ({ content }) => {
+      onDelta: ({ content, thinking }) => {
+        if (thinking !== undefined) assistant.thinking = thinking;
+        if (content !== undefined) assistant.content = content;
+        if (thinking !== undefined) {
+          saveCoworkMessage(assistant);
+          win?.webContents.send("cowork:event", {
+            taskId: task.id,
+            messageId: assistant.id,
+            type: "thinking",
+            thinking,
+            activity: content ? "Answering" : "Thinking"
+          });
+        }
         if (content === undefined) return;
-        assistant.content = content;
         saveCoworkMessage(assistant);
         win?.webContents.send("cowork:event", {
           taskId: task.id,
@@ -455,14 +532,18 @@ function startPersistentClaudeRun(opts: {
   permissionMode: Settings["coworkPermissionMode"];
   tools: string[];
   session: ClaudeSessionState;
+  autoCompactAttempt?: number;
 }): void {
   const { win, task, assistant, settings } = opts;
   const taskId = task.id;
   const messageId = assistant.id;
   const startedAt = Date.now();
-  const toolCalls = new Map<string, CoworkToolCall>();
+  const toolCalls = new Map<string, CoworkToolCall>(
+    (assistant.toolCalls || []).map((toolCall) => [toolCall.id, toolCall])
+  );
   const streamingTools = new Map<number, { id: string; partialJson: string }>();
-  const committedText: string[] = [];
+  const committedText: string[] = assistant.content ? [assistant.content] : [];
+  let thinkingText = assistant.thinking || "";
   let partialText = "";
   let finalUsage: ReturnType<typeof parseModelUsage>;
   let finished = false;
@@ -520,6 +601,13 @@ function startPersistentClaudeRun(opts: {
     if (assistant.activity === activity) return;
     assistant.activity = activity;
     send({ type: "activity", activity });
+  };
+  const publishThinking = (thinking: string) => {
+    if (!thinking) return;
+    thinkingText = thinking.slice(-48_000);
+    assistant.thinking = thinkingText;
+    assistant.activity = "Thinking";
+    send({ type: "thinking", thinking: thinkingText, activity: assistant.activity });
   };
   const publishTools = (type: "tool_use" | "tool_result", toolCall?: CoworkToolCall) => {
     if (textTimer) flushText();
@@ -707,6 +795,10 @@ function startPersistentClaudeRun(opts: {
       persistTimer = null;
     }
     task.updatedAt = Date.now();
+    const estimatedContext = estimateCoworkContext(task, messages.get(taskId) || []);
+    task.contextUsed = Math.max(task.contextUsed || 0, estimatedContext);
+    assistant.contextUsed = task.contextUsed;
+    assistant.contextTotal = task.contextTotal || DEFAULT_CONTEXT_TOTAL;
     if (finalUsage) {
       recordTokenUsage(
         finalUsage.inputTokens,
@@ -719,6 +811,7 @@ function startPersistentClaudeRun(opts: {
     send({
       type: "done",
       content: assistant.content,
+      thinking: assistant.thinking,
       toolCalls: assistant.toolCalls,
       approvals: assistant.approvals,
       runtimeOutput: assistant.runtimeOutput,
@@ -742,6 +835,65 @@ function startPersistentClaudeRun(opts: {
           saveCoworkMessage(assistant);
         });
     }
+  };
+
+  const recoverFromContextOverflow = () => {
+    if (finished || (opts.autoCompactAttempt || 0) >= 1) return false;
+    finished = true;
+    if (textTimer) clearTimeout(textTimer);
+    if (runtimeTimer) clearTimeout(runtimeTimer);
+    if (persistTimer) clearTimeout(persistTimer);
+    textTimer = null;
+    runtimeTimer = null;
+    persistTimer = null;
+    cancelTaskApprovals(taskId, "Context was compacted before retrying.");
+    assistant.activity = "Compacting context";
+    assistant.runtimeOutput = `${assistant.runtimeOutput || ""}\nContext automatically compacted; continuing the same task.\n`;
+    saveCoworkMessage(assistant);
+    send({
+      type: "activity",
+      activity: assistant.activity,
+      runtimeOutput: assistant.runtimeOutput
+    }, true);
+    compactCoworkTask(task, "automatic");
+    const compactedContext = compactContexts.get(taskId) || "";
+    const recoveryPrompt = [
+      `<compacted_context>\n${compactedContext}\n</compacted_context>`,
+      "<context_recovery>Continue the interrupted task from this bounded context. Reuse completed results and do not repeat completed tool calls.</context_recovery>",
+      opts.effectivePrompt.slice(-6000)
+    ].join("\n\n");
+    setTimeout(() => {
+      try {
+        startPersistentClaudeRun({
+          ...opts,
+          effectivePrompt: recoveryPrompt,
+          session: { started: false },
+          autoCompactAttempt: (opts.autoCompactAttempt || 0) + 1
+        });
+        compactContexts.delete(taskId);
+        persistTask(task);
+      } catch (error) {
+        assistant.status = "error";
+        assistant.activity = "Task failed";
+        assistant.runtimeOutput = `${assistant.runtimeOutput || ""}${error instanceof Error ? error.message : String(error)}\n`;
+        saveCoworkMessage(assistant);
+        if (win && !win.isDestroyed()) {
+          win.webContents.send("cowork:event", {
+            taskId,
+            messageId,
+            type: "done",
+            content: assistant.content,
+            thinking: assistant.thinking,
+            toolCalls: assistant.toolCalls,
+            runtimeOutput: assistant.runtimeOutput,
+            contextUsed: task.contextUsed,
+            contextTotal: task.contextTotal || DEFAULT_CONTEXT_TOTAL,
+            exitCode: 1
+          });
+        }
+      }
+    }, 0);
+    return true;
   };
 
   const onMessage = (raw: unknown) => {
@@ -782,7 +934,9 @@ function startPersistentClaudeRun(opts: {
           streamingTools.set(index, { id, partialJson: "" });
           publishTools("tool_use", toolCall);
         } else if (block?.type === "thinking") {
-          publishActivity("Thinking");
+          const initialThinking = block.thinking || block.text || "";
+          if (initialThinking) publishThinking(`${thinkingText}${initialThinking}`);
+          else publishActivity("Thinking");
         }
       } else if (event.type === "content_block_delta") {
         const delta = event.delta;
@@ -790,7 +944,9 @@ function startPersistentClaudeRun(opts: {
           partialText += delta.text;
           publishText();
         } else if (delta?.type === "thinking_delta") {
-          publishActivity("Thinking");
+          const thinking = delta.thinking || delta.text || delta.reasoning_content || "";
+          if (thinking) publishThinking(`${thinkingText}${thinking}`);
+          else publishActivity("Thinking");
         } else if (delta?.type === "input_json_delta") {
           const streamed = streamingTools.get(index);
           if (streamed) {
@@ -817,6 +973,11 @@ function startPersistentClaudeRun(opts: {
     }
     if (message.type === "assistant" && Array.isArray(message.message?.content)) {
       absorbUsage(message.message.usage);
+      const thinking = message.message.content
+        .filter((block: any) => block.type === "thinking")
+        .map((block: any) => block.thinking || block.text || "")
+        .join("\n\n");
+      if (thinking && thinking.length >= thinkingText.length) publishThinking(thinking);
       const text = message.message.content
         .filter((block: any) => block.type === "text" && block.text)
         .map((block: any) => block.text)
@@ -860,6 +1021,13 @@ function startPersistentClaudeRun(opts: {
     if (message.type === "result") {
       if (!assistant.content && typeof message.result === "string") commitText(message.result);
       absorbUsage(message.usage);
+      if (
+        isContextOverflowError(message.result) ||
+        isContextOverflowError(message.error) ||
+        isContextOverflowError(message.errors)
+      ) {
+        if (recoverFromContextOverflow()) return;
+      }
       if (Array.isArray(message.errors) && message.errors.length) {
         appendRuntimeOutput(`${message.errors.join("\n")}\n`);
       }
@@ -1007,32 +1175,7 @@ export function registerCoworkIpc(): void {
   ipcMain.handle("cowork:compact", (_event, taskId: string) => {
     const task = tasks.get(taskId);
     if (!task) throw new Error("Cowork task not found.");
-    const agentSession = persistentAgentSessions.get(taskId);
-    if (agentSession) {
-      agentSession.runtime.abortController.abort();
-      agentSession.runtime.close();
-      persistentAgentSessions.delete(taskId);
-    }
-    compactContexts.set(taskId, compactTaskContext(messages.get(taskId) || []));
-    claudeSessions.set(taskId, { started: false });
-    taskAllowedTools.delete(taskId);
-    task.contextUsed = 0;
-    task.compactedAt = Date.now();
-    task.updatedAt = Date.now();
-    const message: CoworkMessage = {
-      id: crypto.randomUUID(),
-      taskId,
-      role: "system",
-      content: "Context compacted. The next turn will continue from a bounded summary.",
-      status: "done",
-      activity: "Context compacted",
-      createdAt: Date.now()
-    };
-    const taskMessages = messages.get(taskId) || [];
-    taskMessages.push(message);
-    messages.set(taskId, taskMessages);
-    saveCoworkMessage(message);
-    persistTask(task);
+    const message = compactCoworkTask(task, "manual");
     return { task, message };
   });
   ipcMain.handle("cowork:selectDirectory", async (event) => {
@@ -1167,6 +1310,18 @@ export function registerCoworkIpc(): void {
       task.updatedAt = Date.now();
     }
 
+    const contextTotal = task.contextTotal || DEFAULT_CONTEXT_TOTAL;
+    const estimatedContext = estimateCoworkContext(task, messages.get(task.id) || []);
+    task.contextUsed = Math.max(task.contextUsed || 0, estimatedContext);
+    if (
+      (task.contextUsed || 0) >= contextTotal * AUTO_COMPACT_RATIO &&
+      (messages.get(task.id) || []).some(
+        (message) => message.role !== "system" && message.createdAt > (task.compactedAt || 0)
+      )
+    ) {
+      compactCoworkTask(task, "automatic");
+    }
+
     const taskMessages = messages.get(task.id) || [];
     const previousMessages = taskMessages.slice();
     if (taskMessages.length === 0 && prompt) {
@@ -1258,7 +1413,7 @@ export function registerCoworkIpc(): void {
       compactedContext
         ? `<compacted_context>\n${compactedContext}\n</compacted_context>`
         : "",
-      "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach.</reasoning_discipline>",
+      "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach. Never call Glob, Grep, Read, or any other tool with the exact same input twice in one turn; reuse the existing result. After the same operation fails twice, stop retrying and report the exact blocker.</reasoning_discipline>",
       "<lumen_agent>Lumen Cowork uses Claude Agent SDK with local Llama inference. Use Lumen tools directly; do not delegate to another coding agent.</lumen_agent>",
       "<web_research>When the user asks for public-web research or current information, use mcp__lumen__web_search. Run distinct precise queries as needed, then use Browser only to inspect selected results. Search queries and results are retained as task Sources.</web_research>",
       attachmentBlock,

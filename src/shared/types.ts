@@ -219,6 +219,11 @@ export type CoworkToolStatus = {
     id: CoworkCapabilityId;
     available: boolean;
     detail: string;
+    window?: {
+      visible: boolean;
+      bounds: { x: number; y: number; width: number; height: number };
+      parentBounds: { x: number; y: number; width: number; height: number } | null;
+    };
   }>;
 };
 
@@ -387,6 +392,7 @@ export type CoworkMessage = {
   taskId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  thinking?: string;
   runtimeOutput?: string;
   checkpointId?: string;
   rewindAvailable?: boolean;

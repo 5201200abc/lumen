@@ -25,6 +25,8 @@ let hostServer: Server | null = null;
 let hostStart: Promise<{ url: string; token: string }> | null = null;
 let hostUrl = "";
 let browserWindow: BrowserWindow | null = null;
+let browserParent: BrowserWindow | null = null;
+let browserParentListener: (() => void) | null = null;
 let siteServer: Server | null = null;
 let siteRoot = "";
 let siteUrl = "";
@@ -106,17 +108,66 @@ function validBrowserUrl(raw: unknown): string {
   return parsed.toString();
 }
 
+function mainAppWindow(): BrowserWindow | null {
+  const candidates = BrowserWindow.getAllWindows().filter(
+    (candidate) => candidate !== browserWindow && !candidate.isDestroyed()
+  );
+  return candidates.find((candidate) => candidate.getTitle() === "Lumen") ||
+    candidates.sort((a, b) => {
+      const aBounds = a.getBounds();
+      const bBounds = b.getBounds();
+      return bBounds.width * bBounds.height - aBounds.width * aBounds.height;
+    })[0] ||
+    null;
+}
+
+function dockBrowserWindow(win: BrowserWindow, parent = browserParent || mainAppWindow()): void {
+  if (!parent || parent.isDestroyed() || win.isDestroyed()) return;
+  const bounds = parent.getBounds();
+  const margin = 16;
+  const width = Math.min(720, Math.max(440, Math.round(bounds.width * 0.52)));
+  const height = Math.min(560, Math.max(340, Math.round(bounds.height * 0.66)));
+  if (win.isFullScreen()) win.setFullScreen(false);
+  if (win.isMaximized()) win.unmaximize();
+  win.setBounds({
+    x: bounds.x + bounds.width - width - margin,
+    y: bounds.y + bounds.height - height - margin,
+    width,
+    height
+  });
+}
+
+function detachBrowserParent(): void {
+  if (browserParent && !browserParent.isDestroyed() && browserParentListener) {
+    browserParent.removeListener("move", browserParentListener);
+    browserParent.removeListener("resize", browserParentListener);
+  }
+  browserParent = null;
+  browserParentListener = null;
+}
+
 function ensureBrowserWindow(): BrowserWindow {
-  if (browserWindow && !browserWindow.isDestroyed()) return browserWindow;
+  if (browserWindow && !browserWindow.isDestroyed()) {
+    dockBrowserWindow(browserWindow);
+    return browserWindow;
+  }
+  const parent = mainAppWindow();
+  const parentBounds = parent?.getBounds();
+  const width = parentBounds ? Math.min(720, Math.max(440, Math.round(parentBounds.width * 0.52))) : 640;
+  const height = parentBounds ? Math.min(560, Math.max(340, Math.round(parentBounds.height * 0.66))) : 460;
   browserWindow = new BrowserWindow({
-    width: 1220,
-    height: 820,
-    minWidth: 720,
-    minHeight: 520,
+    width,
+    height,
+    minWidth: 420,
+    minHeight: 320,
     show: false,
-    title: "Lumen Browser",
+    parent: parent || undefined,
+    modal: false,
+    title: "Browser · Lumen",
     backgroundColor: "#111111",
     autoHideMenuBar: true,
+    maximizable: false,
+    fullscreenable: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -140,7 +191,17 @@ function ensureBrowserWindow(): BrowserWindow {
   browserWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(false);
   });
+  if (parent) {
+    browserParent = parent;
+    browserParentListener = () => {
+      if (browserWindow && !browserWindow.isDestroyed()) dockBrowserWindow(browserWindow, parent);
+    };
+    parent.on("move", browserParentListener);
+    parent.on("resize", browserParentListener);
+    dockBrowserWindow(browserWindow, parent);
+  }
   browserWindow.on("closed", () => {
+    detachBrowserParent();
     browserWindow = null;
   });
   return browserWindow;
@@ -175,6 +236,7 @@ async function browserOpen(rawUrl: unknown): Promise<unknown> {
   const url = validBrowserUrl(rawUrl);
   const win = ensureBrowserWindow();
   await win.loadURL(url);
+  dockBrowserWindow(win);
   win.show();
   win.focus();
   return {
@@ -533,7 +595,16 @@ export function getCoworkToolStatus(): CoworkToolStatus {
         available: scriptAvailable && settings.plugins.browser,
         detail: browserWindow && !browserWindow.isDestroyed()
           ? browserWindow.webContents.getURL() || "Ready"
-          : "Ready"
+          : "Ready",
+        window: browserWindow && !browserWindow.isDestroyed()
+          ? {
+              visible: browserWindow.isVisible(),
+              bounds: browserWindow.getBounds(),
+              parentBounds: browserParent && !browserParent.isDestroyed()
+                ? browserParent.getBounds()
+                : null
+            }
+          : undefined
       },
       {
         id: "sites",
@@ -572,6 +643,7 @@ export function shutdownToolHost(): void {
   siteServer = null;
   siteRoot = "";
   siteUrl = "";
+  detachBrowserParent();
   browserWindow?.destroy();
   browserWindow = null;
   shutdownChromeComputerUse();

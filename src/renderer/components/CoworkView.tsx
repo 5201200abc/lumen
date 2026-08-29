@@ -1,9 +1,14 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, CoworkMessage, CoworkTask, CoworkToolCall, CoworkApproval, CoworkApprovalDecision, CoworkPermissionMode, CoworkToolStatus, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
-import { toolActivity, toolPresentation, type CoworkToolKind } from "@shared/cowork-status";
+import {
+  toolActivity,
+  toolPresentation,
+  type CoworkToolKind,
+  type CoworkToolPresentation
+} from "@shared/cowork-status";
 import { isCoworkDirectConversation } from "@shared/cowork-routing";
 import { AttachmentAddButton, AttachmentImage, AttachmentList, readDroppedFiles } from "./AttachmentControls";
 import { EnvironmentPanel } from "./EnvironmentPanel";
@@ -122,26 +127,122 @@ function formatActivity(activity: string | undefined, isZh = false): string {
 }
 
 function getToolIcon(kind: CoworkToolKind) {
-  if (kind === "terminal") return <IconTerminal size={15} />;
-  if (kind === "write" || kind === "edit") return <IconPencil size={15} />;
-  if (kind === "read") return <IconFileText size={15} />;
-  if (kind === "search") return <IconSearch size={15} />;
-  if (kind === "web") return <IconGlobe size={15} />;
-  if (kind === "browser") return <IconLaptop size={15} />;
-  if (kind === "folder") return <IconFolder size={15} />;
-  if (kind === "plugin") return <IconBranch size={15} />;
-  return <IconPencil size={15} />;
+  if (kind === "terminal") return <IconTerminal size={13} />;
+  if (kind === "write" || kind === "edit") return <IconPencil size={13} />;
+  if (kind === "read") return <IconFileText size={13} />;
+  if (kind === "search") return <IconSearch size={13} />;
+  if (kind === "web") return <IconGlobe size={13} />;
+  if (kind === "browser") return <IconLaptop size={13} />;
+  if (kind === "folder") return <IconFolder size={13} />;
+  if (kind === "plugin") return <IconBranch size={13} />;
+  return <IconPencil size={13} />;
+}
+
+type TimelineTool = {
+  tool: CoworkToolCall;
+  presentation: CoworkToolPresentation;
+  count: number;
+};
+
+function mergedTool(first: CoworkToolCall, latest: CoworkToolCall): CoworkToolCall {
+  const statuses = [first.status, latest.status];
+  const status = statuses.includes("running")
+    ? "running"
+    : statuses.includes("completed")
+      ? "completed"
+      : "error";
+  return {
+    ...first,
+    status,
+    output: latest.output || first.output,
+    startedAt: first.startedAt || latest.startedAt,
+    completedAt: latest.completedAt || first.completedAt
+  };
+}
+
+function timelineTools(
+  tools: CoworkToolCall[],
+  language: "zh" | "en"
+): TimelineTool[] {
+  const isZh = language === "zh";
+  const entries: TimelineTool[] = [];
+  const searchable = new Map<string, number>();
+  let browserIndex = -1;
+  const browserActions = new Set<string>();
+  let browserUrl = "";
+
+  for (const tool of tools) {
+    const presentation = toolPresentation(tool, language);
+    const name = tool.name.toLowerCase();
+    if (presentation.kind === "browser") {
+      const action = name.split("_").at(-1) || "use";
+      browserActions.add(action);
+      if (typeof tool.input?.url === "string" && tool.input.url) browserUrl = tool.input.url;
+      if (browserIndex < 0) {
+        browserIndex = entries.length;
+        entries.push({ tool, presentation, count: 1 });
+      } else {
+        const current = entries[browserIndex];
+        current.tool = mergedTool(current.tool, tool);
+        current.count += 1;
+      }
+      continue;
+    }
+    if (presentation.kind === "search") {
+      const key = `${presentation.label}\n${presentation.detail}`;
+      const existing = searchable.get(key);
+      if (existing !== undefined) {
+        entries[existing].tool = mergedTool(entries[existing].tool, tool);
+        entries[existing].count += 1;
+        continue;
+      }
+      searchable.set(key, entries.length);
+    }
+    entries.push({ tool, presentation, count: 1 });
+  }
+
+  if (browserIndex >= 0) {
+    const actionLabels: Record<string, [string, string]> = {
+      open: ["已打开", "opened"],
+      snapshot: ["已检查", "inspected"],
+      click: ["已点击", "clicked"],
+      type: ["已输入", "typed"],
+      screenshot: ["已截图", "captured"]
+    };
+    const actions = [...browserActions]
+      .map((action) => actionLabels[action]?.[isZh ? 0 : 1])
+      .filter(Boolean)
+      .join(isZh ? "、" : " · ");
+    entries[browserIndex].presentation = {
+      kind: "browser",
+      label: isZh ? "调试网页" : "Tested page",
+      detail: [actions, browserUrl].filter(Boolean).join(" · "),
+      meta: isZh ? `${entries[browserIndex].count} 个操作` : `${entries[browserIndex].count} actions`
+    };
+  }
+
+  return entries.map((entry) => {
+    if (entry.count === 1 || entry.presentation.kind === "browser") return entry;
+    return {
+      ...entry,
+      presentation: {
+        ...entry.presentation,
+        meta: [entry.presentation.meta, `×${entry.count}`].filter(Boolean).join(" · ")
+      }
+    };
+  });
 }
 
 const ToolCallCard = memo(function ToolCallCard({
   tool,
+  presentation,
   language = "en"
 }: {
   tool: CoworkToolCall;
+  presentation: CoworkToolPresentation;
   language?: "zh" | "en";
 }) {
   const isZh = language === "zh";
-  const presentation = toolPresentation(tool, language);
   const errorDetail = tool.status === "error" && tool.output
     ? (() => {
         try {
@@ -319,6 +420,10 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
   const displaySec = finalSeconds ?? seconds;
   const workedSeconds = message.durationSeconds ?? displaySec;
   const isDirectAnswer = message.activity === "Answering";
+  const displayedTools = useMemo(
+    () => timelineTools(message.toolCalls || [], language),
+    [message.toolCalls, language]
+  );
   const hasExecution = !isDirectAnswer && (
     message.status === "streaming" ||
     Boolean(message.toolCalls?.length) ||
@@ -352,15 +457,20 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
             </div>
           )}
 
-          {message.toolCalls && message.toolCalls.length > 0 && (
+          {displayedTools.length > 0 && (
             <div className="cowork-tools-section">
               <div className="cowork-tools-heading">
-                <span>{isZh ? "执行过程" : "Actions"}</span>
-                <small>{message.toolCalls.length}</small>
+                <span>{isZh ? "完成步骤" : "Completed steps"}</span>
+                <small>{displayedTools.length}</small>
               </div>
               <div className="cowork-tools-list">
-                {message.toolCalls.map((tc) => (
-                  <ToolCallCard key={tc.id} tool={tc} language={language} />
+                {displayedTools.map((entry) => (
+                  <ToolCallCard
+                    key={entry.tool.id}
+                    tool={entry.tool}
+                    presentation={entry.presentation}
+                    language={language}
+                  />
                 ))}
               </div>
             </div>
@@ -406,6 +516,19 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
           </span>
         </div>
       )}
+
+      {message.status === "streaming" || message.content || message.thinking ? (
+        <section className="cowork-thinking" aria-label="Thinking">
+          <div className="cowork-thinking-label">Thinking</div>
+          <div className="cowork-thinking-content">
+            {message.thinking || (
+              message.status === "streaming"
+                ? (isZh ? "正在生成思考过程…" : "Generating reasoning…")
+                : (isZh ? "当前模型未返回独立的思考过程。" : "The current model did not return a separate reasoning trace.")
+            )}
+          </div>
+        </section>
+      ) : null}
 
       {message.content && <MarkdownView text={message.content} />}
 
@@ -610,6 +733,13 @@ export function CoworkView(props: Props) {
             if (event.type === "activity") {
               return { ...m, activity: event.activity };
             }
+            if (event.type === "thinking") {
+              return {
+                ...m,
+                thinking: event.thinking,
+                activity: event.activity || "Thinking"
+              };
+            }
             if (event.type === "tool_use") {
               const activeTool = event.toolCall || event.toolCalls?.find((tool: CoworkToolCall) => tool.status === "running");
               return {
@@ -646,6 +776,7 @@ export function CoworkView(props: Props) {
               return {
                 ...m,
                 content: event.content || m.content,
+                thinking: event.thinking || m.thinking,
                 toolCalls: event.toolCalls || m.toolCalls,
                 contextUsed: event.contextUsed || m.contextUsed,
                 contextTotal: event.contextTotal || m.contextTotal,
@@ -841,22 +972,7 @@ export function CoworkView(props: Props) {
             <IconSidebar size={16} />
           </button>
         )}
-        <div className="cowork-task-heading">
-          <span className="cowork-task-heading-icon"><IconFileText size={16} /></span>
-          <div>
-            <strong>{activeTask?.title || (isZh ? "新建任务" : "New task")}</strong>
-            <span>
-              {activeTask
-                ? (workspace?.name || activeTask.cwd)
-                : (isZh ? "选择工作区并开始任务" : "Choose a workspace and start a task")}
-            </span>
-          </div>
-        </div>
-        {activeTask && (
-          <div className={`cowork-task-status ${running ? "running" : "done"}`}>
-            <span>{running ? (isZh ? "执行中" : "Running") : (isZh ? "已就绪" : "Ready")}</span>
-          </div>
-        )}
+        <div className="cowork-titlebar-drag" aria-hidden />
         <button
           className="icon-btn ghost-icon environment-toggle"
           type="button"

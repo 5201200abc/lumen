@@ -27,6 +27,7 @@
     "verify:style": "node scripts/runtime-style.mjs",
     "verify:sources": "node scripts/runtime-sources.mjs",
     "verify:model-sync": "node scripts/runtime-model-sync.mjs",
+    "verify:context": "node scripts/runtime-context.mjs",
     "dist": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "dist:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
     "dist:mac:arm64": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --arm64",

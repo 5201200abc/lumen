@@ -161,6 +161,7 @@ export async function initDb(): Promise<void> {
       task_id TEXT NOT NULL,
       role TEXT NOT NULL,
       content TEXT NOT NULL DEFAULT '',
+      thinking TEXT NOT NULL DEFAULT '',
       runtime_output TEXT NOT NULL DEFAULT '',
       checkpoint_id TEXT NOT NULL DEFAULT '',
       rewind_available INTEGER NOT NULL DEFAULT 0,
@@ -201,6 +202,11 @@ export async function initDb(): Promise<void> {
   }
   try {
     db.run("ALTER TABLE cowork_messages ADD COLUMN rewind_available INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
+  try {
+    db.run("ALTER TABLE cowork_messages ADD COLUMN thinking TEXT NOT NULL DEFAULT ''");
   } catch {
     // Existing databases with the column need no migration.
   }
@@ -297,6 +303,7 @@ export function listCoworkMessages(taskId: string): CoworkMessage[] {
     task_id: string;
     role: CoworkMessage["role"];
     content: string;
+    thinking: string;
     runtime_output: string;
     checkpoint_id: string;
     rewind_available: number;
@@ -317,6 +324,7 @@ export function listCoworkMessages(taskId: string): CoworkMessage[] {
     taskId: row.task_id,
     role: row.role,
     content: row.content,
+    thinking: row.thinking || undefined,
     runtimeOutput: row.runtime_output || undefined,
     checkpointId: row.checkpoint_id || undefined,
     rewindAvailable: row.rewind_available === 1,
@@ -335,12 +343,13 @@ export function listCoworkMessages(taskId: string): CoworkMessage[] {
 export function saveCoworkMessage(message: CoworkMessage): void {
   run(
     `INSERT INTO cowork_messages (
-      id, task_id, role, content, runtime_output, checkpoint_id, rewind_available,
+      id, task_id, role, content, thinking, runtime_output, checkpoint_id, rewind_available,
       attachments, tool_calls, approvals, status, context_used, context_total,
       activity, duration_seconds, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       content = excluded.content,
+      thinking = excluded.thinking,
       runtime_output = excluded.runtime_output,
       checkpoint_id = excluded.checkpoint_id,
       rewind_available = excluded.rewind_available,
@@ -357,6 +366,7 @@ export function saveCoworkMessage(message: CoworkMessage): void {
       message.taskId,
       message.role,
       message.content,
+      message.thinking || "",
       message.runtimeOutput || "",
       message.checkpointId || "",
       message.rewindAvailable ? 1 : 0,
