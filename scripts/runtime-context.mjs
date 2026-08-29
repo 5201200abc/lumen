@@ -117,14 +117,21 @@ try {
     const drag = document.createElement("div");
     drag.className = "cowork-titlebar-drag";
     document.body.appendChild(drag);
+    const timeline = document.createElement("div");
+    timeline.className = "cowork-run-timeline";
+    timeline.innerHTML = '<div class="run-step run-thinking"><div class="run-thinking-content">Reasoning</div></div>';
+    document.body.appendChild(timeline);
     const result = {
       rowDirection: copy.flexDirection,
       iconBackground: icon.backgroundColor,
       iconColor: icon.color,
-      dragRegion: getComputedStyle(drag).getPropertyValue("-webkit-app-region")
+      dragRegion: getComputedStyle(drag).getPropertyValue("-webkit-app-region"),
+      timelineMarginLeft: getComputedStyle(timeline).marginLeft,
+      thinkingWhiteSpace: getComputedStyle(timeline.querySelector(".run-thinking-content")).whiteSpace
     };
     row.remove();
     drag.remove();
+    timeline.remove();
     return result;
   })()`);
   if (styles.rowDirection !== "row") throw new Error(`Timeline is not one line: ${JSON.stringify(styles)}`);
@@ -132,6 +139,9 @@ try {
     throw new Error(`Timeline icon still has a box: ${JSON.stringify(styles)}`);
   }
   if (styles.dragRegion.trim() !== "drag") throw new Error(`Titlebar is not draggable: ${JSON.stringify(styles)}`);
+  if (styles.timelineMarginLeft !== "46px" || styles.thinkingWhiteSpace !== "pre-wrap") {
+    throw new Error(`Timeline Thinking layout mismatch: ${JSON.stringify(styles)}`);
+  }
 
   process.stdout.write(`${JSON.stringify({ ok: true, commands: result, thinking, styles })}\n`);
 } finally {

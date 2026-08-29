@@ -449,6 +449,23 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
             </div>
           </div>
 
+          <div className="run-step run-thinking">
+            <time className="run-step-time">{formatClock(message.createdAt)}</time>
+            <span className={`run-step-state ${message.status === "streaming" ? "running" : "complete"}`}>
+              {message.status === "streaming" ? <span className="run-pulse" /> : <IconCheck size={12} />}
+            </span>
+            <div className="run-step-copy">
+              <strong>Thinking</strong>
+              <div className="run-thinking-content">
+                {message.thinking || (
+                  message.status === "streaming"
+                    ? (isZh ? "正在生成思考过程…" : "Generating reasoning…")
+                    : (isZh ? "当前模型未返回独立的思考过程。" : "The current model did not return a separate reasoning trace.")
+                )}
+              </div>
+            </div>
+          </div>
+
           {message.approvals && message.approvals.length > 0 && (
             <div className="approval-list">
               {message.approvals.map((approval) => (
@@ -517,7 +534,7 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
         </div>
       )}
 
-      {message.status === "streaming" || message.content || message.thinking ? (
+      {!hasExecution && (message.status === "streaming" || message.content || message.thinking) ? (
         <section className="cowork-thinking" aria-label="Thinking">
           <div className="cowork-thinking-label">Thinking</div>
           <div className="cowork-thinking-content">

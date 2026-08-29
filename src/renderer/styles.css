@@ -3647,8 +3647,8 @@ button.environment-source:hover {
 
 .cowork-run-timeline {
   position: relative;
-  width: calc(100% - 70px);
-  margin: 2px 0 18px 70px;
+  width: calc(100% - 46px);
+  margin: 2px 0 18px 46px;
   padding: 2px 0 4px;
   color: var(--fg);
 }
@@ -3732,6 +3732,20 @@ button.environment-source:hover {
 .run-step-copy span {
   color: var(--muted);
   font-size: calc(var(--base-font-size) - 2px);
+}
+
+.run-thinking {
+  min-height: 48px;
+}
+
+.run-thinking-content {
+  max-width: min(100%, 720px);
+  color: var(--muted);
+  font-size: calc(var(--base-font-size) - 2px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .run-finish {
