@@ -146,9 +146,9 @@ export async function initDb(): Promise<void> {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       cwd TEXT NOT NULL,
-      engine TEXT NOT NULL DEFAULT 'claude-agent',
+      engine TEXT NOT NULL DEFAULT 'native',
       goal TEXT NOT NULL DEFAULT '',
-      claude_session_id TEXT NOT NULL DEFAULT '',
+      native_session_id TEXT NOT NULL DEFAULT '',
       compact_context TEXT NOT NULL DEFAULT '',
       context_used INTEGER NOT NULL DEFAULT 0,
       context_total INTEGER NOT NULL DEFAULT 16384,
@@ -167,6 +167,7 @@ export async function initDb(): Promise<void> {
       rewind_available INTEGER NOT NULL DEFAULT 0,
       attachments TEXT NOT NULL DEFAULT '[]',
       tool_calls TEXT NOT NULL DEFAULT '[]',
+      trace TEXT NOT NULL DEFAULT '[]',
       approvals TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT '',
       context_used INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +211,17 @@ export async function initDb(): Promise<void> {
   } catch {
     // Existing databases with the column need no migration.
   }
+  try {
+    db.run("ALTER TABLE cowork_messages ADD COLUMN trace TEXT NOT NULL DEFAULT '[]'");
+  } catch {
+    // Existing databases with the column need no migration.
+  }
+  try {
+    db.run("ALTER TABLE cowork_tasks ADD COLUMN native_session_id TEXT NOT NULL DEFAULT ''");
+    db.run("UPDATE cowork_tasks SET native_session_id = claude_session_id WHERE native_session_id = ''");
+  } catch {
+    // New databases already have the native session column; old session ids were migrated once.
+  }
   const modelRows = all<{ n: number }>("SELECT COUNT(*) AS n FROM model_usage")[0];
   if (!modelRows?.n) {
     const legacy = all<{ input_tokens: number; output_tokens: number; cache_tokens?: number }>(
@@ -227,7 +239,7 @@ export async function initDb(): Promise<void> {
 
 export type CoworkTaskRecord = {
   task: CoworkTask;
-  claudeSessionId?: string;
+  agentSessionId?: string;
   compactContext?: string;
 };
 
@@ -238,7 +250,7 @@ export function listCoworkTasks(): CoworkTaskRecord[] {
     cwd: string;
     engine: CoworkTask["engine"];
     goal: string;
-    claude_session_id: string;
+    native_session_id: string;
     compact_context: string;
     context_used: number;
     context_total: number;
@@ -250,7 +262,7 @@ export function listCoworkTasks(): CoworkTaskRecord[] {
       id: row.id,
       title: row.title,
       cwd: row.cwd,
-      engine: "claude-agent",
+      engine: "native",
       goal: row.goal || undefined,
       contextUsed: row.context_used,
       contextTotal: row.context_total,
@@ -258,15 +270,15 @@ export function listCoworkTasks(): CoworkTaskRecord[] {
       createdAt: row.created_at,
       updatedAt: row.updated_at
     },
-    claudeSessionId: row.claude_session_id || undefined,
+    agentSessionId: row.native_session_id || undefined,
     compactContext: row.compact_context || undefined
   }));
 }
 
-export function saveCoworkTask(task: CoworkTask, claudeSessionId?: string, compactContext?: string): void {
+export function saveCoworkTask(task: CoworkTask, agentSessionId?: string, compactContext?: string): void {
   run(
     `INSERT INTO cowork_tasks (
-      id, title, cwd, engine, goal, claude_session_id, compact_context,
+      id, title, cwd, engine, goal, native_session_id, compact_context,
       context_used, context_total, compacted_at, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -274,7 +286,7 @@ export function saveCoworkTask(task: CoworkTask, claudeSessionId?: string, compa
       cwd = excluded.cwd,
       engine = excluded.engine,
       goal = excluded.goal,
-      claude_session_id = excluded.claude_session_id,
+      native_session_id = excluded.native_session_id,
       compact_context = excluded.compact_context,
       context_used = excluded.context_used,
       context_total = excluded.context_total,
@@ -284,9 +296,9 @@ export function saveCoworkTask(task: CoworkTask, claudeSessionId?: string, compa
       task.id,
       task.title,
       task.cwd,
-      "claude-agent",
+      "native",
       task.goal || "",
-      claudeSessionId || "",
+      agentSessionId || "",
       compactContext || "",
       task.contextUsed || 0,
       task.contextTotal || 16384,
@@ -309,6 +321,7 @@ export function listCoworkMessages(taskId: string): CoworkMessage[] {
     rewind_available: number;
     attachments: string;
     tool_calls: string;
+    trace: string;
     approvals: string;
     status: CoworkMessage["status"] | "";
     context_used: number;
@@ -330,6 +343,7 @@ export function listCoworkMessages(taskId: string): CoworkMessage[] {
     rewindAvailable: row.rewind_available === 1,
     attachments: parseAttachments(row.attachments),
     toolCalls: parseJson(row.tool_calls, []),
+    trace: parseJson(row.trace, []),
     approvals: parseJson(row.approvals, []),
     status: row.status || undefined,
     contextUsed: row.context_used || undefined,
@@ -344,9 +358,9 @@ export function saveCoworkMessage(message: CoworkMessage): void {
   run(
     `INSERT INTO cowork_messages (
       id, task_id, role, content, thinking, runtime_output, checkpoint_id, rewind_available,
-      attachments, tool_calls, approvals, status, context_used, context_total,
+      attachments, tool_calls, trace, approvals, status, context_used, context_total,
       activity, duration_seconds, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       content = excluded.content,
       thinking = excluded.thinking,
@@ -355,6 +369,7 @@ export function saveCoworkMessage(message: CoworkMessage): void {
       rewind_available = excluded.rewind_available,
       attachments = excluded.attachments,
       tool_calls = excluded.tool_calls,
+      trace = excluded.trace,
       approvals = excluded.approvals,
       status = excluded.status,
       context_used = excluded.context_used,
@@ -372,6 +387,7 @@ export function saveCoworkMessage(message: CoworkMessage): void {
       message.rewindAvailable ? 1 : 0,
       JSON.stringify(message.attachments || []),
       JSON.stringify(message.toolCalls || []),
+      JSON.stringify(message.trace || []),
       JSON.stringify(message.approvals || []),
       message.status || "",
       message.contextUsed || 0,
@@ -381,6 +397,10 @@ export function saveCoworkMessage(message: CoworkMessage): void {
       message.createdAt
     ]
   );
+}
+
+export function deleteCoworkMessage(messageId: string): void {
+  run("DELETE FROM cowork_messages WHERE id = ?", [messageId]);
 }
 
 export function deleteCoworkTask(taskId: string): void {

@@ -63,6 +63,7 @@ async function beginStream(opts: {
 
   const history = listMessages(opts.conversationId);
   const isFirstTurn = history.length === 0 || history.filter((m) => m.role === "user").length === 0;
+  let initialConversationTitle: string | null = null;
 
   const abort = new AbortController();
   aborts.set(opts.conversationId, abort);
@@ -86,17 +87,8 @@ async function beginStream(opts: {
     const title = immediateConversationTitle(opts.content);
     if (title.trim()) {
       const initialTitle = title.trim();
+      initialConversationTitle = initialTitle;
       broadcastConversationTitle(opts.conversationId, initialTitle);
-      void generateConversationTitle(opts.content, undefined, settings)
-        .then((generatedTitle) => {
-          if (
-            generatedTitle !== initialTitle &&
-            getConversation(opts.conversationId)?.title === initialTitle
-          ) {
-            broadcastConversationTitle(opts.conversationId, generatedTitle);
-          }
-        })
-        .catch(() => undefined);
     }
   }
 
@@ -202,6 +194,19 @@ async function beginStream(opts: {
           research: result.research,
           durationSeconds
         });
+        if (initialConversationTitle && result.content.trim()) {
+          const initialTitle = initialConversationTitle;
+          void generateConversationTitle(opts.content, result.content, settings)
+            .then((generatedTitle) => {
+              if (
+                generatedTitle !== initialTitle &&
+                getConversation(opts.conversationId)?.title === initialTitle
+              ) {
+                broadcastConversationTitle(opts.conversationId, generatedTitle);
+              }
+            })
+            .catch(() => undefined);
+        }
       },
       onError: (error) => {
         if (aborts.get(opts.conversationId) !== abort) {
@@ -223,6 +228,13 @@ async function beginStream(opts: {
 }
 
 export function registerIpc(): void {
+  ipcMain.handle("window:toggleMaximize", (event) => {
+    const win = senderWin(event);
+    if (!win) return false;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+    return win.isMaximized();
+  });
   ipcMain.handle("settings:get", () => getSettings());
   ipcMain.handle("settings:set", (_e, patch: Partial<Settings>) => {
     const next = setSettings(patch);

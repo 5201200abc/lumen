@@ -29,7 +29,7 @@ const COPY = {
     pluginsHelp: "Choose which built-in Cowork plugins are available. All plugins are enabled by default.",
     browserPlugin: "Browser", browserPluginHelp: "Control Lumen's isolated in-app browser.",
     sitesPlugin: "Sites", sitesPluginHelp: "Preview local sites and verify them in Browser.",
-    pluginManagement: "Plugin Management", pluginManagementHelp: "Discover locally installed Claude Agent and Lumen plugins.",
+    pluginManagement: "Plugin Management", pluginManagementHelp: "Discover locally installed Lumen-compatible plugins.",
     computerHelp: "Manage how Cowork controls applications on this computer.",
     coworkPermissions: "Permissions",
     defaultPermissions: "Default permissions",
@@ -37,7 +37,10 @@ const COPY = {
     fullAccess: "Full access",
     fullAccessHelp: "Allow editing any file and running networked commands without approval. This significantly increases risk.",
     googleChrome: "Google Chrome", chromeInstalled: "Installed", chromeMissing: "Not installed", checking: "Checking",
-    chromeHelp: "Control a dedicated Google Chrome profile through Computer use.",
+    chromeHelp: "Use your existing Chrome session when the Lumen extension is connected; otherwise use an isolated profile.",
+    browserMode: "Browser connection", browserAuto: "Existing session (recommended)", browserExtension: "Require Chrome extension", browserIsolated: "Isolated profile",
+    browserBridge: "Lumen Browser Bridge", bridgeConnected: "Connected", bridgeDisconnected: "Not connected",
+    installBridge: "Install extension",
     permissions: "Permissions", approval: "Opening websites", history: "Browser history",
     downloads: "Downloads", uploads: "Uploads", alwaysAsk: "Always ask", allow: "Allow", block: "Block",
     instructions: "Instructions", data: "Data", language: "Language",
@@ -111,7 +114,7 @@ const COPY = {
     pluginsHelp: "选择 Cowork 可使用的内置插件；默认全部开启。",
     browserPlugin: "Browser", browserPluginHelp: "控制 Lumen 隔离的内置浏览器。",
     sitesPlugin: "Sites", sitesPluginHelp: "预览本地网站并在 Browser 中验证。",
-    pluginManagement: "Plugin Management", pluginManagementHelp: "发现本机已安装的 Claude Agent 与 Lumen 插件。",
+    pluginManagement: "Plugin Management", pluginManagementHelp: "发现本机已安装的 Lumen 兼容插件。",
     computerHelp: "管理 Cowork 如何控制这台电脑上的应用。",
     coworkPermissions: "权限",
     defaultPermissions: "默认权限",
@@ -119,7 +122,10 @@ const COPY = {
     fullAccess: "完全访问",
     fullAccessHelp: "允许不经批准编辑任意文件并运行联网命令；这会显著提高数据泄露或误操作风险。",
     googleChrome: "Google Chrome", chromeInstalled: "已安装", chromeMissing: "未安装", checking: "检查中",
-    chromeHelp: "通过 Computer use 控制独立的 Google Chrome 配置。",
+    chromeHelp: "扩展连接时使用现有 Chrome 登录会话，否则回退到隔离配置。",
+    browserMode: "浏览器连接", browserAuto: "现有账户（推荐）", browserExtension: "仅 Chrome 扩展", browserIsolated: "隔离配置",
+    browserBridge: "Lumen Browser Bridge", bridgeConnected: "已连接", bridgeDisconnected: "未连接",
+    installBridge: "安装扩展",
     permissions: "权限", approval: "打开网站", history: "浏览器历史记录",
     downloads: "下载", uploads: "上传", alwaysAsk: "始终询问", allow: "允许", block: "阻止",
     instructions: "指令",
@@ -363,7 +369,7 @@ export function SettingsPanel(props: Props) {
   const [showTavilyModal, setShowTavilyModal] = useState(false);
   const [showLlamaKeyModal, setShowLlamaKeyModal] = useState(false);
   const [showFirecrawlModal, setShowFirecrawlModal] = useState(false);
-  const [chromeStatus, setChromeStatus] = useState<{ installed: boolean; running: boolean; executable: string | null } | null>(null);
+  const [chromeStatus, setChromeStatus] = useState<Awaited<ReturnType<typeof window.lumen.tools.chromeStatus>> | null>(null);
   const [usage, setUsage] = useState<TokenUsage>({
     inputTokens: 0,
     outputTokens: 0,
@@ -395,9 +401,12 @@ export function SettingsPanel(props: Props) {
   }, [page]);
   useEffect(() => {
     if (page !== "computer") return;
+    const refresh = () => void window.lumen.tools.chromeStatus().then(setChromeStatus).catch(() => setChromeStatus(null));
     setChromeStatus(null);
-    void window.lumen.tools.chromeStatus().then(setChromeStatus).catch(() => setChromeStatus(null));
-  }, [page, s.computerUseChromeEnabled]);
+    refresh();
+    const timer = window.setInterval(refresh, 1500);
+    return () => window.clearInterval(timer);
+  }, [page, s.computerUseChromeEnabled, s.browserControlMode]);
   const dirty = useMemo(() =>
     chatInstructions !== s.chatInstructions ||
     coworkInstructions !== s.coworkInstructions ||
@@ -815,6 +824,35 @@ export function SettingsPanel(props: Props) {
                 onClick={() => void patch({ computerUseChromeEnabled: !s.computerUseChromeEnabled })}
               >
                 <i />
+              </button>
+            </div>
+            <div className="setting-row">
+              <div><strong>{t.browserMode}</strong></div>
+              <DropdownSelect
+                value={s.browserControlMode}
+                direction="down"
+                options={[
+                  { value: "auto", label: t.browserAuto },
+                  { value: "extension", label: t.browserExtension },
+                  { value: "isolated", label: t.browserIsolated }
+                ]}
+                onChange={(value) => void patch({ browserControlMode: value as Settings["browserControlMode"] })}
+              />
+            </div>
+            <div className="setting-row">
+              <div>
+                <strong>{t.browserBridge}</strong>
+                <small>{chromeStatus?.extension.connected ? t.bridgeConnected : t.bridgeDisconnected}</small>
+              </div>
+              <button
+                className="text-btn mini"
+                type="button"
+                disabled={saving !== null || chromeStatus?.extension.available === false}
+                onClick={() => void window.lumen.tools.chromeExtensionInstall().then(() =>
+                  window.lumen.tools.chromeStatus().then(setChromeStatus)
+                )}
+              >
+                {t.installBridge}
               </button>
             </div>
             <div className="research-group-heading">{t.permissions}</div>

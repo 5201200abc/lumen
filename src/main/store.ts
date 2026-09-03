@@ -2,7 +2,7 @@ import Store from "electron-store";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ComputerUsePermissions, CoworkEngine, CoworkPermissionMode, Effort, FontSize, Language, LlamaModel, PluginSettings, ResearchExtractor, Settings, Theme } from "@shared/types";
+import type { BrowserControlMode, ComputerUsePermissions, CoworkEngine, CoworkPermissionMode, Effort, FontSize, Language, LlamaModel, PluginSettings, ResearchExtractor, Settings, Theme } from "@shared/types";
 import { detectReasoningControl, detectReasoningEfforts } from "@shared/types";
 import { decryptLocalSecret, encryptLocalSecret } from "./local-secret";
 
@@ -35,6 +35,7 @@ type Disk = {
   coworkFullAccess: boolean;
   plugins: PluginSettings;
   computerUseChromeEnabled: boolean;
+  browserControlMode: BrowserControlMode;
   computerUsePermissions: ComputerUsePermissions;
   googleClientId: string;
   language: Language;
@@ -65,12 +66,13 @@ const store = new Store<Disk>({
     modelsDir: DEFAULT_MODELS_DIR,
     chatInstructions: "",
     coworkInstructions: "",
-    coworkEngine: "claude-agent",
+    coworkEngine: "native",
     coworkPermissionMode: "ask",
     coworkDefaultPermissions: false,
     coworkFullAccess: false,
     plugins: { browser: true, sites: true, plugins: true },
     computerUseChromeEnabled: true,
+    browserControlMode: "auto",
     computerUsePermissions: { approval: "ask", history: "ask", downloads: "ask", uploads: "ask" },
     googleClientId: "",
     language: "en",
@@ -81,9 +83,8 @@ const store = new Store<Disk>({
   }
 });
 
-// Keep the persisted field only as a migration marker; Cowork has one runtime.
-if (store.get("coworkEngine") !== "claude-agent") {
-  store.set("coworkEngine", "claude-agent");
+if (store.get("coworkEngine") !== "native") {
+  store.set("coworkEngine", "native");
 }
 
 function localLlamaUrl(port: number): string {
@@ -240,12 +241,13 @@ export function getSettings(): Settings {
     systemPromptPath: SYSTEM_PROMPT_PATH,
     chatInstructions: store.get("chatInstructions"),
     coworkInstructions: store.get("coworkInstructions"),
-    coworkEngine: "claude-agent",
+    coworkEngine: "native",
     coworkPermissionMode: store.get("coworkPermissionMode") || "ask",
     coworkDefaultPermissions: store.get("coworkDefaultPermissions") ?? false,
     coworkFullAccess: store.get("coworkFullAccess") ?? false,
     plugins: store.get("plugins") || { browser: true, sites: true, plugins: true },
     computerUseChromeEnabled: store.get("computerUseChromeEnabled") ?? true,
+    browserControlMode: store.get("browserControlMode") || "auto",
     computerUsePermissions: store.get("computerUsePermissions") || { approval: "ask", history: "ask", downloads: "ask", uploads: "ask" },
     language: store.get("language") || "en",
     fontSize: normalizeFontSize(store.get("fontSize")),
@@ -315,8 +317,8 @@ export function setSettings(patch: Partial<Settings>): Settings {
   if (patch.coworkInstructions !== undefined && patch.coworkInstructions.length > 20_000) {
     throw new Error("Cowork custom instructions cannot exceed 20,000 characters.");
   }
-  if (patch.coworkEngine !== undefined && patch.coworkEngine !== "claude-agent") {
-    throw new Error("Cowork engine is fixed to Claude Agent.");
+  if (patch.coworkEngine !== undefined && patch.coworkEngine !== "native") {
+    throw new Error("Cowork engine is native.");
   }
   if (patch.coworkPermissionMode !== undefined && !["ask", "approve", "full"].includes(patch.coworkPermissionMode)) {
     throw new Error("Cowork permission mode must be ask, approve, or full.");
@@ -459,6 +461,7 @@ export function setSettings(patch: Partial<Settings>): Settings {
   }
   if (patch.plugins !== undefined) store.set("plugins", patch.plugins);
   if (patch.computerUseChromeEnabled !== undefined) store.set("computerUseChromeEnabled", patch.computerUseChromeEnabled);
+  if (patch.browserControlMode !== undefined) store.set("browserControlMode", patch.browserControlMode);
   if (patch.computerUsePermissions !== undefined) store.set("computerUsePermissions", patch.computerUsePermissions);
   if (patch.memoryEnabled !== undefined) store.set("memoryEnabled", patch.memoryEnabled);
   if (patch.theme !== undefined) store.set("theme", patch.theme);

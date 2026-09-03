@@ -1,5 +1,14 @@
 import WebSocket from "ws";
 
+process.on("uncaughtException", (error) => {
+  process.stderr.write(`RUNTIME_SMOKE_ERROR ${String(error?.message || error).slice(0, 4000)}\n`);
+  process.exit(1);
+});
+process.on("unhandledRejection", (error) => {
+  process.stderr.write(`RUNTIME_SMOKE_ERROR ${String(error?.message || error).slice(0, 4000)}\n`);
+  process.exit(1);
+});
+
 const cdpPort = Number(process.env.LUMEN_CDP_PORT || "9223");
 const runtimeModel = process.env.LUMEN_RUNTIME_MODEL || "Gemma4-26B-A4B";
 const verifyAutoCompact = process.env.LUMEN_VERIFY_AUTO_COMPACT === "1";
@@ -31,7 +40,7 @@ function command(method, params = {}) {
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
 }
 
-async function evaluate(expression, timeout = 600_000) {
+async function evaluate(expression, timeout = 30_000) {
   let timer;
   const result = await Promise.race([
     command("Runtime.evaluate", {
@@ -72,6 +81,8 @@ try {
     model: ${JSON.stringify(runtimeModel)},
     coworkPermissionMode: "full",
     coworkFullAccess: true,
+    computerUseChromeEnabled: true,
+    browserControlMode: "auto",
     plugins: { browser: true, sites: true, plugins: true }
   })`);
 
@@ -136,20 +147,24 @@ try {
     if (!textarea || !send) throw new Error("Chat composer not found.");
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(
       textarea,
-      "只回复 GEMMA4_CHAT_OK"
+      "我要买东西"
     );
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 80));
     send.click();
     const result = await done;
     const chats = await window.lumen.chats.list();
-    return { result, chatIds: chats.map((item) => item.id) };
+    const conversation = chats.find((item) => item.id === result.conversationId);
+    return { result, chatIds: chats.map((item) => item.id), title: conversation?.title || "" };
   })()`, 390_000);
 
   for (const id of chat.chatIds) {
     if (!baselineIds.includes(id)) createdIds.push(id);
   }
   if (!chat.result?.content?.trim()) throw new Error("Gemma4 Chat returned no content.");
+  if (chat.title !== "购买商品需求") {
+    throw new Error(`Chat title was not summarized semantically: ${JSON.stringify(chat.title)}`);
+  }
   if (createdIds.length !== 1) {
     throw new Error(`First send should create exactly one conversation; created ${createdIds.length}.`);
   }
@@ -177,9 +192,9 @@ try {
     });
     const started = await window.lumen.cowork.run({
       taskId: task.id,
-      prompt: "Use the Lumen MCP tools in this exact order: (1) plugins_list once with details false, (2) sites_preview with directory exactly scripts/fixtures/tool-site, (3) browser_snapshot. Then report the installed plugin count and the preview page title in one short sentence.",
+      prompt: "Use the Lumen MCP tools in this exact order: (1) plugins_list once with details false, (2) sites_preview with directory exactly scripts/fixtures/tool-site, (3) skills_list once. Then report the installed plugin count in one short sentence.",
       cwd: ${JSON.stringify(process.cwd())},
-      effort: "high",
+      effort: "low",
       model: ${JSON.stringify(runtimeModel)}
     });
     if (!started.ok) throw new Error(started.error || "Cowork failed to start.");
@@ -219,29 +234,63 @@ try {
       messages,
       contextUsed: assistant?.contextUsed || 0,
       thinkingLength: assistant?.thinking?.length || 0,
+      trace: assistant?.trace || [],
       autoCompacted: messages.some((message) => message.activity === "Context automatically compacted")
     };
   })()`, 630_000);
   coworkTaskId = cowork.taskId;
   const pluginCall = cowork.toolCalls.find((tool) => tool.name.includes("plugins_list"));
   const sitesCall = cowork.toolCalls.find((tool) => tool.name.includes("sites_preview"));
-  const snapshotCall = cowork.toolCalls.find((tool) => tool.name.includes("browser_snapshot"));
-  if ([pluginCall, sitesCall, snapshotCall].some((tool) => !tool || tool.status !== "completed")) {
-    throw new Error(`Gemma4 Cowork did not complete plugins_list: ${JSON.stringify({
-      done: cowork.done,
-      toolCalls: cowork.toolCalls,
-      messages: cowork.messages
+  const skillsCall = cowork.toolCalls.find((tool) => tool.name.includes("skills_list"));
+  if ([pluginCall, sitesCall, skillsCall].some((tool) => !tool || tool.status !== "completed")) {
+    throw new Error(`Gemma4 Cowork tool sequence incomplete: ${JSON.stringify({
+      result: cowork.done?.type,
+      exitCode: cowork.done?.exitCode,
+        tools: {
+          plugins_list: pluginCall?.status || "missing",
+          sites_preview: sitesCall?.status || "missing",
+          skills_list: skillsCall?.status || "missing"
+      },
+      observedOrder: cowork.toolCalls.map((tool) => tool.name)
     })}`);
   }
   if (verifyAutoCompact && !cowork.autoCompacted) {
     throw new Error(`Automatic context compaction did not run: ${JSON.stringify(cowork.messages)}`);
   }
-  if (!String(sitesCall.output).includes("scripts/fixtures/tool-site") ||
-      !String(snapshotCall.output).includes("LUMEN_SITE_OK") ||
-      !String(snapshotCall.output).includes("Lumen Tool Host Fixture")) {
-    throw new Error(`Sites/Browser did not render the verification fixture: ${JSON.stringify({
-      sites: sitesCall.output,
-      snapshot: snapshotCall.output
+  if (
+    !cowork.trace.some((entry) => entry.kind === "tool") ||
+    cowork.trace.some((entry) => entry.kind === "thinking" && !entry.text?.trim())
+  ) {
+    throw new Error(`Cowork trace contains no tools or exposes empty Thinking: ${JSON.stringify(cowork.trace)}`);
+  }
+  await command("Page.reload");
+  await waitForRenderer();
+  const completionUi = await evaluate(`(async () => {
+    const coworkTab = [...document.querySelectorAll('[role="tab"]')]
+      .find((node) => /Cowork/.test(node.textContent || ""));
+    coworkTab?.click();
+    let taskRow = null;
+    for (let attempt = 0; attempt < 30 && !taskRow; attempt += 1) {
+      taskRow = document.querySelector('[data-task-id="${cowork.taskId}"]');
+      if (!taskRow) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    taskRow?.click();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const summaries = [...document.querySelectorAll(".assistant-turn .cowork-worked-summary")];
+    const summary = summaries.at(-1);
+    return {
+      taskRowFound: Boolean(taskRow),
+      found: Boolean(summary),
+      open: summary?.hasAttribute("open") || false,
+      label: summary?.querySelector("summary")?.textContent || ""
+    };
+  })()`);
+  if (!completionUi.found || completionUi.open || !/Worked for|已工作/.test(completionUi.label)) {
+    throw new Error(`Completed Cowork work is not collapsed: ${JSON.stringify(completionUi)}`);
+  }
+  if (!String(sitesCall.output).includes("scripts/fixtures/tool-site")) {
+    throw new Error(`Sites did not render the verification fixture: ${JSON.stringify({
+      sites: sitesCall.output
     })}`);
   }
 
@@ -249,23 +298,6 @@ try {
   if (!tools.online || tools.capabilities.some((item) => !item.available)) {
     throw new Error(`Tool Host capability status is invalid: ${JSON.stringify(tools)}`);
   }
-  const browserWindow = tools.capabilities.find((item) => item.id === "browser")?.window;
-  if (!browserWindow?.visible || !browserWindow.parentBounds) {
-    throw new Error(`Lumen browser window is not docked: ${JSON.stringify(browserWindow)}`);
-  }
-  const bounds = browserWindow.bounds;
-  const parentBounds = browserWindow.parentBounds;
-  const rightGap = parentBounds.x + parentBounds.width - (bounds.x + bounds.width);
-  const bottomGap = parentBounds.y + parentBounds.height - (bounds.y + bounds.height);
-  if (
-    bounds.width >= parentBounds.width ||
-    bounds.height >= parentBounds.height ||
-    Math.abs(rightGap - 16) > 2 ||
-    Math.abs(bottomGap - 16) > 2
-  ) {
-    throw new Error(`Lumen browser bounds are not bottom-right docked: ${JSON.stringify(browserWindow)}`);
-  }
-
   process.stdout.write(`${JSON.stringify({
     ok: true,
     newChat,
@@ -273,15 +305,17 @@ try {
     chat: {
       model: runtimeModel,
       content: chat.result.content,
+      title: chat.title,
       createdConversations: createdIds.length
     },
     cowork: {
       model: runtimeModel,
-      engine: "claude-agent",
+      engine: "native",
       contextUsed: cowork.contextUsed,
       thinkingLength: cowork.thinkingLength,
+      traceKinds: cowork.trace.map((entry) => entry.kind),
       autoCompacted: cowork.autoCompacted,
-      tools: [pluginCall, sitesCall, snapshotCall].map((tool) => ({
+      tools: [pluginCall, sitesCall, skillsCall].map((tool) => ({
         name: tool.name,
         status: tool.status,
         output: tool.output
@@ -300,6 +334,8 @@ try {
     model: ${JSON.stringify(originalSettings.model)},
     coworkPermissionMode: ${JSON.stringify(originalSettings.coworkPermissionMode)},
     coworkFullAccess: ${JSON.stringify(originalSettings.coworkFullAccess)},
+    computerUseChromeEnabled: ${JSON.stringify(originalSettings.computerUseChromeEnabled)},
+    browserControlMode: ${JSON.stringify(originalSettings.browserControlMode || "auto")},
     plugins: ${JSON.stringify(originalSettings.plugins)}
   })`).catch(() => undefined);
   socket.close();

@@ -255,18 +255,24 @@ export function IconLumen({ size = 20 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <defs>
-        <linearGradient id="lumen-brand-spectral" x1="20%" y1="10%" x2="85%" y2="85%">
+        <linearGradient id="lumen-corona-grad" x1="15%" y1="10%" x2="85%" y2="90%">
           <stop offset="0%" stopColor="#ffffff" />
-          <stop offset="25%" stopColor="#f59e0b" />
-          <stop offset="55%" stopColor="#ea580c" />
-          <stop offset="80%" stopColor="#818cf8" />
+          <stop offset="25%" stopColor="#fde68a" />
+          <stop offset="55%" stopColor="#f97316" />
+          <stop offset="80%" stopColor="#8b5cf6" />
           <stop offset="100%" stopColor="#38bdf8" />
         </linearGradient>
       </defs>
       <path
-        d="M6.5 4.2C6.5 3.54 7.04 3 7.7 3C8.36 3 8.9 3.54 8.9 4.2V15.2C8.9 15.64 9.26 16 9.7 16H17.8C18.46 16 19 16.54 19 17.2C19 17.86 18.46 18.4 17.8 18.4H8.2C7.26 18.4 6.5 17.64 6.5 16.7V4.2Z"
-        fill="url(#lumen-brand-spectral)"
+        d="M10.8 3.5C16.1 3.5 20.3 7.7 20.3 13C20.3 16 18.9 18.6 16.7 20.3C15.9 20.9 15 20 15.6 19.2C17.4 17.1 18.4 14.8 18.4 12.5C18.4 8.3 14.9 5 10.6 5C8.5 5 6.6 5.8 5.2 7C4.4 7.7 3.6 6.6 4.3 5.9C6 4.4 8.3 3.5 10.8 3.5Z"
+        fill="url(#lumen-corona-grad)"
       />
+      <path
+        d="M5.9 10.8C5.6 11.9 5.6 13.2 5.9 14.3C6.3 15.8 7.2 17.2 8.5 18.3C9.3 19 9 20.1 8.1 19.8C6.2 19.2 4.7 17.6 4.1 15.6C3.7 14.3 3.7 12.8 4.1 11.5C4.4 10.5 5.7 10 5.9 10.8Z"
+        fill="url(#lumen-corona-grad)"
+        opacity="0.8"
+      />
+      <circle cx="10.2" cy="4.3" r="1.3" fill="#ffffff" />
     </svg>
   );
 }

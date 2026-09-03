@@ -84,8 +84,12 @@ try {
             : null
         });
         if (event.type === "permission_request" && event.approval?.status === "pending") {
-          approval = event.approval;
-          void window.lumen.cowork.resolveApproval(event.approval.id, "deny");
+          if (["Read", "Glob", "Grep"].includes(event.approval.toolName)) {
+            void window.lumen.cowork.resolveApproval(event.approval.id, "allow_once");
+          } else {
+            approval = event.approval;
+            void window.lumen.cowork.resolveApproval(event.approval.id, "deny");
+          }
         }
         if (event.type === "done" || event.type === "error") {
           clearTimeout(timer);

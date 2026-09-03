@@ -156,38 +156,43 @@
     /* Brand Emblem with breathing radiant glow */
     .emblem-wrapper {
       position: relative;
-      width: 90px;
-      height: 90px;
+      width: 96px;
+      height: 96px;
       margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     .emblem-glow {
       position: absolute;
-      inset: -14px;
+      inset: -16px;
       background: radial-gradient(circle, var(--accent-glow) 0%, rgba(0,0,0,0) 70%);
       border-radius: 50%;
-      filter: blur(10px);
+      filter: blur(14px);
       animation: pulseGlow 4.5s ease-in-out infinite alternate;
+      pointer-events: none;
     }
 
     .emblem-core {
       position: relative;
       width: 100%;
       height: 100%;
-      border-radius: 22px;
-      overflow: hidden;
-      border: 1px solid var(--glass-border-hover);
-      background: var(--glass);
-      backdrop-filter: blur(16px);
-      box-shadow: 0 16px 44px rgba(0,0,0,0.36);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      background: transparent;
+      box-shadow: none;
       transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .emblem-core img {
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;
       display: block;
+      filter: drop-shadow(0 6px 22px rgba(0, 0, 0, 0.4));
     }
 
     @keyframes pulseGlow {

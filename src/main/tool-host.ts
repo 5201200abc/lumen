@@ -5,7 +5,8 @@ import http, { type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { CoworkToolStatus } from "@shared/types";
-import { chromeClick, chromeOpen, chromeScreenshot, chromeSnapshot, chromeStatus, chromeType, shutdownChromeComputerUse } from "./chrome-computer-use";
+import { chromeClick, chromeConsole, chromeNetwork, chromeOpen, chromePreview, chromeScreenshot, chromeSnapshot, chromeStatus, chromeType, shutdownChromeComputerUse } from "./chrome-computer-use";
+import { ensureChromeExtensionBridge, openChromeExtensionInstaller, shutdownChromeExtensionBridge } from "./chrome-extension-bridge";
 import { getSettings } from "./store";
 import { tavilySearch } from "./search";
 
@@ -391,8 +392,8 @@ async function sitesPreview(rawDirectory: unknown, workspace?: string): Promise<
     siteRoot = root;
     siteUrl = `http://127.0.0.1:${address.port}/`;
   }
-  await browserOpen(siteUrl);
-  return { root: siteRoot, url: siteUrl, browserVisible: true };
+  await chromeOpen(siteUrl);
+  return { root: siteRoot, url: siteUrl, browserVisible: true, browser: "Google Chrome" };
 }
 
 function pluginManifests(): Array<Record<string, unknown>> {
@@ -446,6 +447,56 @@ function pluginManifests(): Array<Record<string, unknown>> {
   return pluginCache;
 }
 
+function localSkills(workspace?: string): Array<{
+  name: string;
+  description: string;
+  path: string;
+}> {
+  const roots = [
+    workspace ? path.join(workspace, ".agents", "skills") : "",
+    workspace ? path.join(workspace, ".codex", "skills") : "",
+    workspace ? path.join(workspace, ".claude", "skills") : "",
+    path.join(os.homedir(), ".agents", "skills"),
+    path.join(os.homedir(), ".codex", "skills"),
+    path.join(os.homedir(), ".claude", "skills")
+  ].filter(Boolean);
+  const results: Array<{ name: string; description: string; path: string }> = [];
+  const seen = new Set<string>();
+  const visit = (directory: string, depth: number) => {
+    if (depth > 5 || results.length >= 200) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(candidate, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || entry.name !== "SKILL.md") continue;
+      try {
+        const content = fs.readFileSync(candidate, "utf8");
+        const declaredName = content.match(/^name:\s*(.+)$/m)?.[1]?.trim();
+        const name = declaredName || path.basename(path.dirname(candidate));
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const description =
+          content.match(/^description:\s*(.+)$/m)?.[1]?.trim() ||
+          content.match(/^#\s+(.+)$/m)?.[1]?.trim() ||
+          "Local agent skill";
+        results.push({ name, description: description.slice(0, 300), path: candidate });
+      } catch {
+        // Ignore unreadable or malformed local skill files.
+      }
+    }
+  };
+  for (const root of roots) visit(root, 0);
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 async function dispatchTool(request: ToolRequest): Promise<ToolResult> {
   const args = request.arguments || {};
   const settings = getSettings();
@@ -453,6 +504,7 @@ async function dispatchTool(request: ToolRequest): Promise<ToolResult> {
     request.name.startsWith("browser_") ? "browser"
       : request.name.startsWith("sites_") ? "sites"
         : request.name.startsWith("plugins_") ? "plugins"
+          : request.name.startsWith("skills_") ? "plugins"
           : null;
   if (pluginForTool && !settings.plugins[pluginForTool]) {
     throw new Error(`${pluginForTool} is disabled in Settings → Plugins.`);
@@ -485,15 +537,19 @@ async function dispatchTool(request: ToolRequest): Promise<ToolResult> {
       };
     }
     case "browser_open":
-      return { ok: true, content: await browserOpen(args.url) };
+      return { ok: true, content: await chromeOpen(args.url) };
     case "browser_snapshot":
-      return { ok: true, content: await browserSnapshot() };
+      return { ok: true, content: await chromeSnapshot() };
     case "browser_click":
-      return { ok: true, content: await browserClick(args.ref) };
+      return { ok: true, content: await chromeClick(args.ref) };
     case "browser_type":
-      return { ok: true, content: await browserType(args.ref, args.text, args.submit) };
+      return { ok: true, content: await chromeType(args.ref, args.text, args.submit) };
     case "browser_screenshot":
-      return { ok: true, content: await browserScreenshot() };
+      return { ok: true, content: await chromeScreenshot() };
+    case "browser_console":
+      return { ok: true, content: await chromeConsole(args.clear) };
+    case "browser_network":
+      return { ok: true, content: await chromeNetwork(args.clear) };
     case "sites_preview":
       return { ok: true, content: await sitesPreview(args.directory, request.workspace) };
     case "sites_status":
@@ -510,6 +566,30 @@ async function dispatchTool(request: ToolRequest): Promise<ToolResult> {
         }
       };
     }
+    case "skills_list": {
+      const skills = localSkills(request.workspace);
+      return {
+        ok: true,
+        content: {
+          count: skills.length,
+          skills: skills.map(({ name, description }) => ({ name, description }))
+        }
+      };
+    }
+    case "skills_read": {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (!name) throw new Error("A skill name is required.");
+      const skill = localSkills(request.workspace).find((candidate) => candidate.name === name);
+      if (!skill) throw new Error(`Unknown local skill: ${name}`);
+      return {
+        ok: true,
+        content: {
+          name: skill.name,
+          path: skill.path,
+          instructions: fs.readFileSync(skill.path, "utf8").slice(0, 100_000)
+        }
+      };
+    }
     case "chrome_open":
       return { ok: true, content: await chromeOpen(args.url) };
     case "chrome_snapshot":
@@ -520,6 +600,10 @@ async function dispatchTool(request: ToolRequest): Promise<ToolResult> {
       return { ok: true, content: await chromeType(args.ref, args.text, args.submit) };
     case "chrome_screenshot":
       return { ok: true, content: await chromeScreenshot() };
+    case "chrome_console":
+      return { ok: true, content: await chromeConsole(args.clear) };
+    case "chrome_network":
+      return { ok: true, content: await chromeNetwork(args.clear) };
     default:
       throw new Error(`Unknown Lumen tool: ${request.name}`);
   }
@@ -592,24 +676,29 @@ export function getCoworkToolStatus(): CoworkToolStatus {
     capabilities: [
       {
         id: "browser",
-        available: scriptAvailable && settings.plugins.browser,
-        detail: browserWindow && !browserWindow.isDestroyed()
-          ? browserWindow.webContents.getURL() || "Ready"
-          : "Ready",
-        window: browserWindow && !browserWindow.isDestroyed()
-          ? {
-              visible: browserWindow.isVisible(),
-              bounds: browserWindow.getBounds(),
-              parentBounds: browserParent && !browserParent.isDestroyed()
-                ? browserParent.getBounds()
-                : null
-            }
-          : undefined
+        available: scriptAvailable && settings.plugins.browser && settings.computerUseChromeEnabled && chrome.installed,
+        detail: chrome.extension.connected
+          ? "Existing Chrome profile connected"
+          : chrome.running
+            ? "Isolated Chrome connected"
+            : chrome.installed
+              ? "Google Chrome ready"
+              : "Google Chrome not installed",
+        window: chrome.window
       },
       {
         id: "sites",
-        available: scriptAvailable && settings.plugins.sites,
-        detail: siteUrl || "Local preview"
+        available: scriptAvailable
+          && settings.plugins.sites
+          && settings.computerUseChromeEnabled
+          && chrome.installed,
+        detail: siteUrl || (
+          !chrome.installed
+            ? "Google Chrome not installed"
+            : !settings.computerUseChromeEnabled
+              ? "Enable Google Chrome Computer use"
+              : "Local preview in Google Chrome"
+        )
       },
       {
         id: "plugins",
@@ -619,20 +708,31 @@ export function getCoworkToolStatus(): CoworkToolStatus {
       {
         id: "chrome",
         available: scriptAvailable && settings.computerUseChromeEnabled && chrome.installed,
-        detail: chrome.running ? "Connected" : chrome.installed ? "Installed" : "Not installed"
+        detail: chrome.extension.connected
+          ? "Browser Bridge connected"
+          : chrome.running
+            ? "Isolated profile connected"
+            : chrome.installed
+              ? "Installed"
+              : "Not installed"
       }
     ]
   };
 }
 
 export function registerToolHostIpc(): void {
+  void ensureChromeExtensionBridge().catch(() => undefined);
   ipcMain.handle("tools:status", () => getCoworkToolStatus());
   ipcMain.handle("tools:chromeStatus", () => chromeStatus());
+  ipcMain.handle("tools:chromePreview", () => chromePreview());
+  ipcMain.handle("tools:chromeExtensionInstall", () => openChromeExtensionInstaller());
   ipcMain.handle("tools:chromeOpen", (_event, url: string) => chromeOpen(url));
   ipcMain.handle("tools:chromeSnapshot", () => chromeSnapshot());
   ipcMain.handle("tools:chromeClick", (_event, ref: string | number) => chromeClick(ref));
   ipcMain.handle("tools:chromeType", (_event, ref: string | number, text: string, submit = false) => chromeType(ref, text, submit));
   ipcMain.handle("tools:chromeScreenshot", () => chromeScreenshot());
+  ipcMain.handle("tools:chromeConsole", (_event, clear = false) => chromeConsole(clear));
+  ipcMain.handle("tools:chromeNetwork", (_event, clear = false) => chromeNetwork(clear));
 }
 
 export function shutdownToolHost(): void {
@@ -647,4 +747,5 @@ export function shutdownToolHost(): void {
   browserWindow?.destroy();
   browserWindow = null;
   shutdownChromeComputerUse();
+  shutdownChromeExtensionBridge();
 }

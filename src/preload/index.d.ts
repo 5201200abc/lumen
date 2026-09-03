@@ -99,18 +99,57 @@ interface LumenAPI {
     rewind: (taskId: string, messageId: string, dryRun?: boolean) => Promise<CoworkRewindResult>;
     resolveApproval: (requestId: string, decision: CoworkApprovalDecision) => Promise<boolean>;
     run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
+    regenerate: (opts: { taskId: string; messageId: string; cwd?: string; effort?: Effort; model?: string }) => Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }>;
     onEvent: (fn: (event: any) => void) => Unlisten;
   };
   tools: {
     status: () => Promise<CoworkToolStatus>;
-    chromeStatus: () => Promise<{ installed: boolean; running: boolean; executable: string | null }>;
+    chromeStatus: () => Promise<{
+      installed: boolean;
+      running: boolean;
+      executable: string | null;
+      mode: "auto" | "extension" | "isolated";
+      controller: "extension" | "isolated" | null;
+      extension: {
+        id: string;
+        available: boolean;
+        connected: boolean;
+        port: number;
+        version: string;
+        directory: string;
+      };
+      window?: {
+        visible: boolean;
+        bounds: { x: number; y: number; width: number; height: number };
+        parentBounds: { x: number; y: number; width: number; height: number } | null;
+      };
+    }>;
+    chromePreview: () => Promise<{
+      available: boolean;
+      dataUrl?: string;
+      title?: string;
+      url?: string;
+      source?: "window" | "tab";
+    }>;
+    chromeExtensionInstall: () => Promise<{
+      id: string;
+      available: boolean;
+      connected: boolean;
+      port: number;
+      version: string;
+      features: string[];
+      directory: string;
+    }>;
     chromeOpen: (url: string) => Promise<unknown>;
     chromeSnapshot: () => Promise<unknown>;
     chromeClick: (ref: string | number) => Promise<unknown>;
     chromeType: (ref: string | number, text: string, submit?: boolean) => Promise<unknown>;
     chromeScreenshot: () => Promise<{ path: string }>;
+    chromeConsole: (clear?: boolean) => Promise<unknown>;
+    chromeNetwork: (clear?: boolean) => Promise<unknown>;
   };
   ui: {
+    toggleMaximize: () => Promise<boolean>;
     onSettings: (fn: () => void) => Unlisten;
     onNewChat: (fn: () => void) => Unlisten;
     onSearch: (fn: () => void) => Unlisten;

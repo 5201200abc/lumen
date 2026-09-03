@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Lumen Browser Bridge</title>
+    <style>
+      :root { color-scheme: light dark; font: 13px/1.45 system-ui, sans-serif; }
+      body { width: 260px; margin: 0; padding: 16px; background: Canvas; color: CanvasText; }
+      h1 { margin: 0 0 8px; font-size: 15px; font-weight: 650; }
+      p { margin: 0; color: color-mix(in srgb, CanvasText 62%, transparent); }
+      #state { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+      #dot { width: 7px; height: 7px; border-radius: 50%; background: #8b8b8b; }
+      #dot.connected { background: #22b968; box-shadow: 0 0 0 4px color-mix(in srgb, #22b968 15%, transparent); }
+    </style>
+  </head>
+  <body>
+    <h1>Lumen Browser Bridge</h1>
+    <div id="state"><span id="dot"></span><strong id="label">Checking…</strong></div>
+    <p>Lumen can inspect and test pages in this Chrome profile while the desktop app is running.</p>
+    <script src="popup.js"></script>
+  </body>
+</html>

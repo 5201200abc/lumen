@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, screen } from "electron";
 import type { MessageBoxOptions } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import type { ComputerUsePermission } from "@shared/types";
 import { getSettings } from "./store";
+import { chromeExtensionStatus, requestChromeExtension } from "./chrome-extension-bridge";
+import { selectChromeController } from "./chrome-control-policy";
 
 type ChromeTarget = {
   id: string;
@@ -20,7 +22,16 @@ let chromePort = 0;
 let activeTargetId = "";
 let chromeSocket: WebSocket | null = null;
 let chromeSocketTargetId = "";
+let activeController: "extension" | "isolated" | null = null;
+let consoleEntries: Array<Record<string, unknown>> = [];
+let networkEntries: Array<Record<string, unknown>> = [];
+let networkRequests = new Map<string, { method?: string; url?: string }>();
 let nextCommandId = 1;
+let chromeWindow: {
+  visible: boolean;
+  bounds: { x: number; y: number; width: number; height: number };
+  parentBounds: { x: number; y: number; width: number; height: number } | null;
+} | undefined;
 const pendingCommands = new Map<number, {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -77,9 +88,14 @@ async function ensureChrome(): Promise<number> {
   } catch {
     // A stale port file is non-fatal.
   }
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = 420;
+  const height = 280;
   chromeProcess = spawn(executable, [
     "--remote-debugging-port=0",
     `--user-data-dir=${profileDirectory()}`,
+    `--window-size=${width},${height}`,
+    `--window-position=${workArea.x + workArea.width - width - 18},${workArea.y + workArea.height - height - 18}`,
     "--no-first-run",
     "--no-default-browser-check",
     "about:blank"
@@ -91,9 +107,42 @@ async function ensureChrome(): Promise<number> {
     chromeProcess = null;
     chromePort = 0;
     activeTargetId = "";
+    chromeWindow = undefined;
   });
   chromePort = await waitForPort();
   return chromePort;
+}
+
+async function dockChromeWindow(): Promise<void> {
+  const target = await activeTarget();
+  const current = await cdp<{ windowId: number }>("Browser.getWindowForTarget", {
+    targetId: target.id
+  });
+  const parent = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.getTitle() === "Lumen");
+  const anchor = parent?.getBounds() || screen.getPrimaryDisplay().workArea;
+  const width = Math.min(420, anchor.width - 32);
+  const height = Math.min(280, anchor.height - 32);
+  const bounds = {
+    x: anchor.x + anchor.width - width - 16,
+    y: anchor.y + anchor.height - height - 16,
+    width,
+    height
+  };
+  await cdp("Browser.setWindowBounds", {
+    windowId: current.windowId,
+    bounds: {
+      left: bounds.x,
+      top: bounds.y,
+      width,
+      height,
+      windowState: "normal"
+    }
+  });
+  chromeWindow = {
+    visible: true,
+    bounds,
+    parentBounds: parent ? parent.getBounds() : null
+  };
 }
 
 async function targets(): Promise<ChromeTarget[]> {
@@ -117,16 +166,60 @@ async function activeTarget(): Promise<ChromeTarget> {
   return target;
 }
 
-async function cdp<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+async function cdp<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+  connectionAttempt = 0
+): Promise<T> {
   const target = await activeTarget();
   if (!chromeSocket || chromeSocket.readyState !== 1 || chromeSocketTargetId !== target.id) {
     chromeSocket?.close();
     const socket = new WebSocket(target.webSocketDebuggerUrl);
     chromeSocket = socket;
     chromeSocketTargetId = target.id;
+    consoleEntries = [];
+    networkEntries = [];
+    networkRequests = new Map();
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data));
-      if (typeof message.id !== "number") return;
+      if (typeof message.id !== "number") {
+        if (message.method === "Runtime.consoleAPICalled") {
+          const params = message.params || {};
+          consoleEntries.push({
+            level: params.type,
+            text: (params.args || []).map((arg: Record<string, unknown>) => arg.value ?? arg.description ?? "").join(" ").slice(0, 2000),
+            timestamp: params.timestamp
+          });
+        } else if (message.method === "Log.entryAdded") {
+          const entry = message.params?.entry || {};
+          consoleEntries.push({
+            level: entry.level || "log",
+            text: String(entry.text || "").slice(0, 2000),
+            url: entry.url,
+            timestamp: entry.timestamp
+          });
+        } else if (message.method === "Network.requestWillBeSent") {
+          const request = message.params?.request || {};
+          networkRequests.set(String(message.params?.requestId || ""), {
+            method: request.method,
+            url: request.url
+          });
+        } else if (message.method === "Network.responseReceived") {
+          const response = message.params?.response || {};
+          const request = networkRequests.get(String(message.params?.requestId || ""));
+          networkEntries.push({
+            method: request?.method,
+            url: response.url,
+            status: response.status,
+            mimeType: response.mimeType,
+            type: message.params?.type,
+            timestamp: message.params?.timestamp
+          });
+        }
+        if (consoleEntries.length > 500) consoleEntries.splice(0, consoleEntries.length - 500);
+        if (networkEntries.length > 500) networkEntries.splice(0, networkEntries.length - 500);
+        return;
+      }
       const pending = pendingCommands.get(message.id);
       if (!pending) return;
       pendingCommands.delete(message.id);
@@ -145,10 +238,23 @@ async function cdp<T>(method: string, params: Record<string, unknown> = {}): Pro
         }
       }
     });
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener("open", () => resolve(), { once: true });
-      socket.addEventListener("error", () => reject(new Error("Google Chrome CDP connection failed.")), { once: true });
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener("error", () => reject(new Error("Google Chrome CDP connection failed.")), { once: true });
+      });
+    } catch (error) {
+      socket.close();
+      if (chromeSocket === socket) {
+        chromeSocket = null;
+        chromeSocketTargetId = "";
+      }
+      if (connectionAttempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return cdp<T>(method, params, connectionAttempt + 1);
+      }
+      throw error;
+    }
   }
   const id = nextCommandId++;
   return new Promise<T>((resolve, reject) => {
@@ -166,7 +272,9 @@ async function cdp<T>(method: string, params: Record<string, unknown> = {}): Pro
 }
 
 async function permitted(kind: "approval", label: string): Promise<void> {
-  const mode: ComputerUsePermission = getSettings().computerUsePermissions[kind];
+  const settings = getSettings();
+  if (settings.coworkPermissionMode === "full" && settings.coworkFullAccess) return;
+  const mode: ComputerUsePermission = settings.computerUsePermissions[kind];
   if (mode === "block") throw new Error(`${label} is blocked in Computer use settings.`);
   if (mode === "allow") return;
   const options: MessageBoxOptions = {
@@ -176,7 +284,9 @@ async function permitted(kind: "approval", label: string): Promise<void> {
     cancelId: 1,
     title: "Google Chrome Computer use",
     message: label,
-    detail: "Lumen will control its dedicated Google Chrome profile for this action."
+    detail: chromeExtensionStatus().connected
+      ? "Lumen will control the active Chrome profile through the Lumen Browser Bridge extension."
+      : "Lumen will control its dedicated Google Chrome profile for this action."
   };
   const parent = BrowserWindow.getFocusedWindow();
   const result = parent
@@ -185,15 +295,54 @@ async function permitted(kind: "approval", label: string): Promise<void> {
   if (result.response !== 0) throw new Error("Google Chrome Computer use was not approved.");
 }
 
+function controller(requireExisting = false): "extension" | "isolated" {
+  return selectChromeController({
+    mode: getSettings().browserControlMode,
+    extensionConnected: chromeExtensionStatus().connected,
+    activeController,
+    requireExisting
+  });
+}
+
+async function enableDiagnostics(): Promise<void> {
+  await Promise.all([
+    cdp("Runtime.enable"),
+    cdp("Log.enable"),
+    cdp("Network.enable")
+  ]);
+}
+
 export async function chromeOpen(rawUrl: unknown): Promise<unknown> {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) throw new Error("A URL is required.");
   const candidate = rawUrl.includes("://") ? rawUrl.trim() : `https://${rawUrl.trim()}`;
   const parsed = new URL(candidate);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http and https URLs are supported.");
   await permitted("approval", `Open ${parsed.hostname} in Google Chrome?`);
+  if (controller() === "extension") {
+    const result = await requestChromeExtension<{
+      url?: string;
+      title?: string;
+      group?: unknown;
+      window?: { left: number; top: number; width: number; height: number };
+    }>("open", { url: parsed.toString() });
+    activeController = "extension";
+    const parent = BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.getTitle() === "Lumen");
+    const actual = result.window;
+    chromeWindow = {
+      visible: true,
+      bounds: actual
+        ? { x: actual.left, y: actual.top, width: actual.width, height: actual.height }
+        : { x: 0, y: 0, width: 0, height: 0 },
+      parentBounds: parent?.getBounds() || null
+    };
+    return result;
+  }
+  activeController = "isolated";
   await ensureChrome();
+  await enableDiagnostics();
   await cdp("Page.enable");
   await cdp("Page.navigate", { url: parsed.toString() });
+  await dockChromeWindow();
   await new Promise((resolve) => setTimeout(resolve, 500));
   const result = await cdp<{ result: { value: unknown } }>("Runtime.evaluate", {
     expression: "({url: location.href, title: document.title})",
@@ -203,6 +352,12 @@ export async function chromeOpen(rawUrl: unknown): Promise<unknown> {
 }
 
 export async function chromeSnapshot(): Promise<unknown> {
+  if (controller(Boolean(activeController)) === "extension") {
+    activeController = "extension";
+    return requestChromeExtension("snapshot");
+  }
+  activeController = "isolated";
+  await enableDiagnostics();
   const result = await cdp<{ result: { value: unknown } }>("Runtime.evaluate", {
     expression: `(() => {
       const visible = (el) => {
@@ -212,23 +367,23 @@ export async function chromeSnapshot(): Promise<unknown> {
       };
       const controls = Array.from(document.querySelectorAll(
         'a[href],button,input,textarea,select,[role="button"],[contenteditable="true"]'
-      )).filter(visible).slice(0, 120).map((el, index) => {
+      )).filter(visible).slice(0, 36).map((el, index) => {
         const ref = String(index + 1);
         el.setAttribute("data-lumen-chrome-ref", ref);
+        const value = "value" in el ? String(el.value || "").slice(0, 120) : "";
         return {
           ref,
           tag: el.tagName.toLowerCase(),
           type: el.getAttribute("type") || undefined,
-          text: (el.innerText || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().replace(/\\s+/g, " ").slice(0, 180),
-          value: "value" in el ? el.value : undefined,
-          href: el.href || undefined,
+          text: (el.innerText || el.getAttribute("aria-label") || el.getAttribute("placeholder") || "").trim().replace(/\\s+/g, " ").slice(0, 100),
+          value: value || undefined,
           disabled: Boolean(el.disabled)
         };
       });
       return {
         url: location.href,
         title: document.title,
-        text: (document.body?.innerText || "").trim().replace(/\\n{3,}/g, "\\n\\n").slice(0, 12000),
+        text: (document.body?.innerText || "").trim().replace(/\\n{3,}/g, "\\n\\n").slice(0, 2200),
         controls
       };
     })()`,
@@ -238,6 +393,11 @@ export async function chromeSnapshot(): Promise<unknown> {
 }
 
 export async function chromeClick(rawRef: unknown): Promise<unknown> {
+  if (controller(Boolean(activeController)) === "extension") {
+    activeController = "extension";
+    return requestChromeExtension("click", { ref: rawRef });
+  }
+  activeController = "isolated";
   const ref = JSON.stringify(String(rawRef ?? ""));
   const result = await cdp<{ result: { value: boolean } }>("Runtime.evaluate", {
     expression: `(() => {
@@ -255,6 +415,11 @@ export async function chromeClick(rawRef: unknown): Promise<unknown> {
 
 export async function chromeType(rawRef: unknown, rawText: unknown, submit: unknown): Promise<unknown> {
   if (typeof rawText !== "string") throw new Error("Text is required.");
+  if (controller(Boolean(activeController)) === "extension") {
+    activeController = "extension";
+    return requestChromeExtension("type", { ref: rawRef, text: rawText, submit: submit === true });
+  }
+  activeController = "isolated";
   const ref = JSON.stringify(String(rawRef ?? ""));
   const text = JSON.stringify(rawText);
   const shouldSubmit = submit === true;
@@ -281,16 +446,125 @@ export async function chromeType(rawRef: unknown, rawText: unknown, submit: unkn
 }
 
 export async function chromeScreenshot(): Promise<unknown> {
+  if (controller(Boolean(activeController)) === "extension") {
+    activeController = "extension";
+    const result = await requestChromeExtension<{ data: string }>("screenshot");
+    return saveScreenshot(result.data);
+  }
+  activeController = "isolated";
   const result = await cdp<{ data: string }>("Page.captureScreenshot", { format: "png" });
+  return saveScreenshot(result.data);
+}
+
+export async function chromeConsole(clear: unknown): Promise<unknown> {
+  if (controller(Boolean(activeController)) === "extension") {
+    activeController = "extension";
+    return requestChromeExtension("console", { clear: clear === true });
+  }
+  activeController = "isolated";
+  await enableDiagnostics();
+  const entries = consoleEntries.slice(-200);
+  if (clear === true) consoleEntries = [];
+  return { count: entries.length, entries };
+}
+
+export async function chromeNetwork(clear: unknown): Promise<unknown> {
+  if (controller(Boolean(activeController)) === "extension") {
+    activeController = "extension";
+    return requestChromeExtension("network", { clear: clear === true });
+  }
+  activeController = "isolated";
+  await enableDiagnostics();
+  const entries = networkEntries.slice(-200);
+  if (clear === true) networkEntries = [];
+  return { count: entries.length, entries };
+}
+
+export async function chromePreview(): Promise<{
+  available: boolean;
+  dataUrl?: string;
+  title?: string;
+  url?: string;
+  source?: "window" | "tab";
+}> {
+  if (activeController !== "extension" || !chromeWindow?.visible || !chromeExtensionStatus().connected) {
+    return { available: false };
+  }
+  const status = await requestChromeExtension<{
+    title?: string;
+    url?: string;
+  }>("status");
+  const title = String(status.title || "").trim();
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: 720, height: 480 },
+      fetchWindowIcons: false
+    });
+    const source = sources.find((item) => item.name === title)
+      || sources.find((item) => title && item.name.includes(title))
+      || sources.find((item) => /Google Chrome/i.test(item.name));
+    if (source && !source.thumbnail.isEmpty()) {
+      return {
+        available: true,
+        dataUrl: `data:image/jpeg;base64,${source.thumbnail.toJPEG(72).toString("base64")}`,
+        title,
+        url: status.url,
+        source: "window"
+      };
+    }
+  } catch {
+    // Fall through to the tab capture when macOS window capture permission is unavailable.
+  }
+  if (/^(?:chrome|edge|about):/i.test(String(status.url || ""))) {
+    return { available: false, title, url: status.url };
+  }
+  const screenshot = await requestChromeExtension<{ data?: string }>("screenshot");
+  if (!screenshot.data) return { available: false, title, url: status.url };
+  return {
+    available: true,
+    dataUrl: `data:image/png;base64,${screenshot.data}`,
+    title,
+    url: status.url,
+    source: "tab"
+  };
+}
+
+export async function releaseChromeComputerUse(): Promise<void> {
+  if (activeController === "extension" && chromeExtensionStatus().connected) {
+    await requestChromeExtension("release").catch(() => undefined);
+  }
+  activeController = null;
+  chromeWindow = undefined;
+}
+
+function saveScreenshot(data: string): { path: string } {
   const directory = path.join(app.getPath("temp"), "lumen-chrome");
   fs.mkdirSync(directory, { recursive: true });
   const output = path.join(directory, `chrome-${Date.now()}.png`);
-  fs.writeFileSync(output, Buffer.from(result.data, "base64"));
+  fs.writeFileSync(output, Buffer.from(data, "base64"));
   return { path: output };
 }
 
-export function chromeStatus(): { installed: boolean; running: boolean; executable: string | null } {
-  return { installed: Boolean(chromeExecutable()), running: Boolean(chromePort), executable: chromeExecutable() };
+export function chromeStatus(): {
+  installed: boolean;
+  running: boolean;
+  executable: string | null;
+  mode: "auto" | "extension" | "isolated";
+  controller: "extension" | "isolated" | null;
+  extension: ReturnType<typeof chromeExtensionStatus>;
+  window?: typeof chromeWindow;
+} {
+  const extension = chromeExtensionStatus();
+  return {
+    installed: Boolean(chromeExecutable()),
+    running: extension.connected || Boolean(chromePort),
+    executable: chromeExecutable(),
+    mode: getSettings().browserControlMode,
+    controller: activeController,
+    extension,
+    window: chromeWindow
+  };
 }
 
 export function shutdownChromeComputerUse(): void {
@@ -301,4 +575,9 @@ export function shutdownChromeComputerUse(): void {
   chromeProcess = null;
   chromePort = 0;
   activeTargetId = "";
+  activeController = null;
+  consoleEntries = [];
+  networkEntries = [];
+  networkRequests = new Map();
+  chromeWindow = undefined;
 }

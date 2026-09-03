@@ -49,7 +49,7 @@ async function evaluate(expression, timeout = 90_000) {
 await command("Runtime.enable");
 const original = await evaluate("window.lumen.settings.get()");
 try {
-  await evaluate(`window.lumen.settings.set({ model: "Qwen3-VL-8B" })`);
+  await evaluate(`window.lumen.settings.set({ model: ${JSON.stringify(original.model)} })`);
   const refreshed = await evaluate("window.lumen.models.refreshCatalog(true)");
   if (!refreshed.status?.online || !refreshed.status?.router) {
     throw new Error(`Router restart failed: ${JSON.stringify(refreshed.status)}`);
@@ -65,12 +65,15 @@ try {
       return response.json();
     });
   const ids = (catalog.data || []).map((item) => item.id).sort();
-  const expected = ["Gemma4-26B-A4B", "Qwen3-VL-8B", "Qwen3.8-27B"].sort();
+  const expected = stable.localModels.map((item) => item.name).sort();
   if (JSON.stringify(ids) !== JSON.stringify(expected)) {
     throw new Error(`Unexpected router catalog: ${JSON.stringify(ids)}`);
   }
-  const vision = stable.localModels.find((item) => item.name === "Qwen3-VL-8B");
-  if (!vision?.vision || !vision.mmproj) {
+  if (!ids.length || !ids.includes(original.model)) {
+    throw new Error(`Configured model is not routable: ${JSON.stringify({ model: original.model, ids })}`);
+  }
+  const vision = stable.localModels.find((item) => item.vision);
+  if (vision && !vision.mmproj) {
     throw new Error(`Vision projector was not detected: ${JSON.stringify(vision)}`);
   }
   process.stdout.write(`${JSON.stringify({
@@ -78,8 +81,8 @@ try {
     platform: process.platform,
     url: stable.url,
     models: ids,
-    vision: vision.name,
-    mmproj: vision.mmproj
+    vision: vision?.name || null,
+    mmproj: vision?.mmproj || null
   })}\n`);
 } finally {
   await evaluate(`window.lumen.settings.set({ model: ${JSON.stringify(original.model)} })`)

@@ -80,17 +80,22 @@ try {
     const coworkTab = [...document.querySelectorAll('[role="tab"]')]
       .find((node) => /Cowork/.test(node.textContent || ""));
     coworkTab?.click();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    document.querySelector('[data-task-id="${taskId}"]')?.click();
-    await new Promise((resolve) => setTimeout(resolve, 180));
+    let taskRow = null;
+    for (let attempt = 0; attempt < 30 && !taskRow; attempt += 1) {
+      taskRow = document.querySelector('[data-task-id="${taskId}"]');
+      if (!taskRow) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    taskRow?.click();
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const turns = [...document.querySelectorAll(".assistant-turn")];
     const sections = [...document.querySelectorAll(".assistant-turn .cowork-thinking")];
     return {
       turns: turns.length,
       sections: sections.length,
       labels: sections.map((section) => section.querySelector(".cowork-thinking-label")?.textContent),
-      beforeAnswer: turns.every((turn) => {
-        const section = turn.querySelector(".cowork-thinking");
+      beforeAnswer: sections.every((section) => {
+        const turn = section.closest(".assistant-turn");
+        if (!turn) return false;
         const answer = turn.querySelector(".md");
         return !answer || Boolean(section && (section.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING));
       }),
@@ -99,8 +104,7 @@ try {
   })()`);
   if (
     thinking.turns < 2 ||
-    thinking.sections !== thinking.turns ||
-    thinking.labels.some((label) => label !== "Thinking") ||
+    thinking.sections !== 0 ||
     !thinking.beforeAnswer ||
     thinking.taskHeading
   ) {
@@ -121,17 +125,25 @@ try {
     timeline.className = "cowork-run-timeline";
     timeline.innerHTML = '<div class="run-step run-thinking"><div class="run-thinking-content">Reasoning</div></div>';
     document.body.appendChild(timeline);
+    const worked = document.createElement("details");
+    worked.className = "cowork-worked-summary";
+    worked.innerHTML = "<summary>Worked for 1m</summary>";
+    document.body.appendChild(worked);
     const result = {
       rowDirection: copy.flexDirection,
       iconBackground: icon.backgroundColor,
       iconColor: icon.color,
       dragRegion: getComputedStyle(drag).getPropertyValue("-webkit-app-region"),
       timelineMarginLeft: getComputedStyle(timeline).marginLeft,
-      thinkingWhiteSpace: getComputedStyle(timeline.querySelector(".run-thinking-content")).whiteSpace
+      timelineRail: getComputedStyle(timeline, "::before").content,
+      thinkingWhiteSpace: getComputedStyle(timeline.querySelector(".run-thinking-content")).whiteSpace,
+      workedMarginLeft: getComputedStyle(worked).marginLeft,
+      toggleMaximize: typeof window.lumen.ui.toggleMaximize
     };
     row.remove();
     drag.remove();
     timeline.remove();
+    worked.remove();
     return result;
   })()`);
   if (styles.rowDirection !== "row") throw new Error(`Timeline is not one line: ${JSON.stringify(styles)}`);
@@ -139,7 +151,13 @@ try {
     throw new Error(`Timeline icon still has a box: ${JSON.stringify(styles)}`);
   }
   if (styles.dragRegion.trim() !== "drag") throw new Error(`Titlebar is not draggable: ${JSON.stringify(styles)}`);
-  if (styles.timelineMarginLeft !== "46px" || styles.thinkingWhiteSpace !== "pre-wrap") {
+  if (
+    styles.timelineMarginLeft !== "0px" ||
+    !["none", "normal"].includes(styles.timelineRail) ||
+    styles.thinkingWhiteSpace !== "pre-wrap" ||
+    styles.workedMarginLeft !== "0px" ||
+    styles.toggleMaximize !== "function"
+  ) {
     throw new Error(`Timeline Thinking layout mismatch: ${JSON.stringify(styles)}`);
   }
 

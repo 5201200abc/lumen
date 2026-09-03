@@ -18,6 +18,8 @@ extraResources:
     to: sql-wasm.wasm
   - from: resources/runtime
     to: runtime
+  - from: resources/chrome-extension
+    to: chrome-extension
 mac:
   category: public.app-category.productivity
   icon: resources/icon.icns

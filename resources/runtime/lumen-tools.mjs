@@ -25,7 +25,7 @@ const tools = [
   },
   {
     name: "browser_open",
-    description: "Open an http/https URL in Lumen's visible built-in browser.",
+    description: "Open an http/https URL in Lumen's docked Google Chrome debugging profile.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "URL or hostname to open." } },
@@ -35,7 +35,7 @@ const tools = [
   },
   {
     name: "browser_snapshot",
-    description: "Read the current built-in browser page and return visible text plus numbered interactive controls.",
+    description: "Read the current Google Chrome debugging page and return visible text plus numbered interactive controls.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -64,12 +64,30 @@ const tools = [
   },
   {
     name: "browser_screenshot",
-    description: "Capture the visible built-in browser page and return the local PNG path.",
+    description: "Capture the visible Google Chrome debugging page and return the local PNG path.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
+    name: "browser_console",
+    description: "Read recent console and page log entries from the active Google Chrome debugging tab.",
+    inputSchema: {
+      type: "object",
+      properties: { clear: { type: "boolean", default: false } },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_network",
+    description: "Read recent network responses from the active Google Chrome debugging tab.",
+    inputSchema: {
+      type: "object",
+      properties: { clear: { type: "boolean", default: false } },
+      additionalProperties: false
+    }
+  },
+  {
     name: "sites_preview",
-    description: "Serve a built static site from the active workspace and open it in Lumen's built-in browser. Looks for index.html in dist, build, public, or the selected directory.",
+    description: "Serve a built static site from the active workspace and open it in Lumen's Google Chrome debugging profile. Looks for index.html in dist, build, public, or the selected directory.",
     inputSchema: {
       type: "object",
       properties: {
@@ -85,7 +103,7 @@ const tools = [
   },
   {
     name: "plugins_list",
-    description: "List valid locally installed Claude Agent or Lumen plugin manifests.",
+    description: "List valid locally installed Lumen-compatible plugin manifests.",
     inputSchema: {
       type: "object",
       properties: {
@@ -95,8 +113,25 @@ const tools = [
     }
   },
   {
+    name: "skills_list",
+    description: "List local Lumen, Codex, Claude, and agent skills available to this workspace.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    name: "skills_read",
+    description: "Read one local skill's complete SKILL.md instructions before using that skill.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Exact skill name returned by skills_list." }
+      },
+      required: ["name"],
+      additionalProperties: false
+    }
+  },
+  {
     name: "chrome_open",
-    description: "Open an http/https URL in the user's dedicated Lumen Google Chrome Computer use profile.",
+    description: "Open an http/https URL through the configured Google Chrome connection.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string", description: "URL or hostname to open." } },
@@ -137,11 +172,30 @@ const tools = [
     name: "chrome_screenshot",
     description: "Capture the visible Google Chrome page and return the local PNG path.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
+  },
+  {
+    name: "chrome_console",
+    description: "Read recent console and page log entries from the active Google Chrome tab.",
+    inputSchema: {
+      type: "object",
+      properties: { clear: { type: "boolean", default: false } },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "chrome_network",
+    description: "Read recent network responses from the active Google Chrome tab.",
+    inputSchema: {
+      type: "object",
+      properties: { clear: { type: "boolean", default: false } },
+      additionalProperties: false
+    }
   }
 ].filter((tool) => {
   if (tool.name.startsWith("browser_")) return process.env.LUMEN_PLUGIN_BROWSER !== "0";
   if (tool.name.startsWith("sites_")) return process.env.LUMEN_PLUGIN_SITES !== "0";
   if (tool.name.startsWith("plugins_")) return process.env.LUMEN_PLUGIN_MANAGEMENT !== "0";
+  if (tool.name.startsWith("skills_")) return process.env.LUMEN_PLUGIN_MANAGEMENT !== "0";
   if (tool.name.startsWith("chrome_")) return process.env.LUMEN_COMPUTER_USE_CHROME !== "0";
   return true;
 });

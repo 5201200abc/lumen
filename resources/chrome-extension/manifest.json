@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Lumen Browser Bridge",
+  "version": "0.7.0",
+  "minimum_chrome_version": "116",
+  "description": "Lets Lumen inspect and test pages in your existing Chrome session.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2YPnMKhnmVeFenjaQhXag7B5WYxImbBGNHY6tyxX5a3xvfQ6VB8rBcFYgFkM3P5qqID0mSyyqIF/Gib8C5G9maWuJn/kOCxKEz7NnSgptnVL3Pue2Ewu8ocgcHksdHI/mshCujuUsfnCJ3zkSXAwtCxJ9VoXXuNW9rn2/TjeddBAAG2wto/8hBgbgbv0P+8Tm5BvxvY+sOuXcr3j0V7MDt9zbYnKTOEX3Z5LOEGZHSThxlhVCJXC9NqwY5X2t1ISr8qlnnO+VY5gUyhUDOpHa7kD3bD7oJjzB9Q85zXISifj3PScQvi7JXYQTePu60MxeYKJDOiP/Mpd7OaP0NZ60wIDAQAB",
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "debugger",
+    "storage",
+    "tabGroups",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "action": {
+    "default_title": "Lumen Browser Bridge",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png"
+    },
+    "default_popup": "popup.html"
+  }
+}

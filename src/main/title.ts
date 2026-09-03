@@ -2,7 +2,7 @@ import { getSettings } from "./store";
 import { recordParsedUsage } from "./usage";
 import type { Settings } from "@shared/types";
 
-function sanitizeTitle(raw: string): string {
+function sanitizeTitle(raw: string, maxLength = 16): string {
   let s = raw.trim();
   s = s.replace(/<think>[\s\S]*?<\/think>/gi, "");
   s = s.replace(/```[\s\S]*?```/g, "").replace(/\*\*/g, "");
@@ -10,7 +10,7 @@ function sanitizeTitle(raw: string): string {
   s = s.replace(/^[“"「『【(\[]+/, "").replace(/[”"」』】)\]]+$/, "");
   s = s.replace(/[。!！?？;；,\.]$/, "").trim();
   const firstLine = s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0] || "";
-  return firstLine.slice(0, 16).trim();
+  return firstLine.slice(0, maxLength).trim();
 }
 
 function containsUrl(value: string): boolean {
@@ -34,6 +34,7 @@ function normalizeGeneratedTitle(title: string, userText: string, isZh: boolean)
 
 function smartFallbackTitle(userText: string): string {
   const original = userText.trim().replace(/\s+/g, " ");
+  const isZh = /[\u4e00-\u9fa5]/.test(original);
   let s = original.replace(/(?:https?:\/\/|www\.)\S+/gi, " ").replace(/\s+/g, " ").trim();
   if (!s) return "网页内容分析";
 
@@ -69,8 +70,9 @@ function smartFallbackTitle(userText: string): string {
   const recentUpdate = s.match(/^(.{2,20}?)\s*(?:官方)?(?:最近|近期|最新|过去).{0,10}?(?:产品|功能|版本)?更新/i);
   if (recentUpdate) s = `${recentUpdate[1].trim()}近期更新`;
 
-  if (s.length > 14) {
-    s = s.slice(0, 14).trim();
+  const maxLength = isZh ? 14 : 48;
+  if (s.length > maxLength) {
+    s = s.slice(0, maxLength).trim();
   }
   return s || "新对话";
 }
@@ -134,14 +136,14 @@ export async function generateConversationTitle(
       let rawTitle = choice?.content?.trim() || "";
 
       if (rawTitle) {
-        const cleaned = sanitizeTitle(rawTitle);
+        const cleaned = sanitizeTitle(rawTitle, isZh ? 16 : 48);
         const normalized = normalizeGeneratedTitle(cleaned, cleanUser, isZh);
         if (
           normalized &&
           normalized.length >= 2 &&
-          normalized.length <= 20 &&
+          normalized.length <= (isZh ? 20 : 48) &&
           !containsUrl(normalized) &&
-          normalized !== cleanUser.slice(0, 16)
+          normalized !== cleanUser.slice(0, isZh ? 16 : 48)
         ) {
           return normalized;
         }
@@ -149,16 +151,16 @@ export async function generateConversationTitle(
 
       if (choice?.reasoning_content) {
         const reasoning = choice.reasoning_content;
-        const matches = [...reasoning.matchAll(/[“"「]([\u4e00-\u9fa5a-zA-Z0-9\s]{2,14})[”"」]/g)];
+        const matches = [...reasoning.matchAll(/[“"「]([\u4e00-\u9fa5a-zA-Z0-9\s]{2,48})[”"」]/g)];
         if (matches.length > 0) {
-          const candidate = sanitizeTitle(matches[matches.length - 1][1]);
-          if (candidate && candidate.length >= 2 && candidate.length <= 16 && !containsUrl(candidate)) {
+          const candidate = sanitizeTitle(matches[matches.length - 1][1], isZh ? 16 : 48);
+          if (candidate && candidate.length >= 2 && candidate.length <= (isZh ? 16 : 48) && !containsUrl(candidate)) {
             return candidate;
           }
         }
         const lastLine = reasoning.trim().split(/\n+/).pop() || "";
-        const candidate = sanitizeTitle(lastLine);
-        if (candidate && candidate.length >= 2 && candidate.length <= 16 && !containsUrl(candidate)) {
+        const candidate = sanitizeTitle(lastLine, isZh ? 16 : 48);
+        if (candidate && candidate.length >= 2 && candidate.length <= (isZh ? 16 : 48) && !containsUrl(candidate)) {
           return candidate;
         }
       }

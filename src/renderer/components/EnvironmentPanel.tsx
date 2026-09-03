@@ -22,6 +22,9 @@ type Props = {
   model: string;
   messages: CoworkMessage[];
   attachments: Attachment[];
+  computerUseActive: boolean;
+  computerUseHidden: boolean;
+  onToggleComputerUse: () => void;
   onSelectWorkspace: () => void;
   onAddSource: () => void;
   onPrompt: (prompt: string) => void;
@@ -202,7 +205,7 @@ export function EnvironmentPanel(props: Props) {
             <div className="environment-process">
               <IconTerminal size={14} />
               <span title={activeTool ? toolDescription(activeTool) : undefined}>
-                {activeTool ? toolDescription(activeTool) : `Claude Agent · ${props.model}`}
+                {activeTool ? toolDescription(activeTool) : `Lumen Agent · ${props.model}`}
               </span>
               <span className="environment-live-dot" aria-label={isZh ? "执行中" : "Running"} />
             </div>
@@ -213,6 +216,21 @@ export function EnvironmentPanel(props: Props) {
             </div>
           )}
         </section>
+
+        {props.computerUseActive && (
+          <section className="environment-section environment-computer-use">
+            <h3>{isZh ? "计算机使用" : "Computer Use"}</h3>
+            <div className="environment-computer-use-row">
+              <IconLaptop size={14} />
+              <span>{isZh ? "画中画" : "Picture in Picture"}</span>
+              <button type="button" onClick={props.onToggleComputerUse}>
+                {props.computerUseHidden
+                  ? (isZh ? "显示" : "Show")
+                  : (isZh ? "隐藏" : "Hide")}
+              </button>
+            </div>
+          </section>
+        )}
 
         <section className="environment-section environment-sources">
           <div className="environment-section-heading">

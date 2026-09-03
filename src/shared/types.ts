@@ -133,10 +133,11 @@ export type ApiKeyItem = {
   key: string;
 };
 
-export type CoworkEngine = "claude-agent";
+export type CoworkEngine = "native";
 export type CoworkPermissionMode = "ask" | "approve" | "full";
 export type ResearchExtractor = "tavily" | "firecrawl";
 export type ComputerUsePermission = "ask" | "allow" | "block";
+export type BrowserControlMode = "auto" | "extension" | "isolated";
 export type PluginSettings = {
   browser: boolean;
   sites: boolean;
@@ -174,6 +175,7 @@ export type Settings = {
   coworkFullAccess: boolean;
   plugins: PluginSettings;
   computerUseChromeEnabled: boolean;
+  browserControlMode: BrowserControlMode;
   computerUsePermissions: ComputerUsePermissions;
   language: Language;
   fontSize: FontSize;
@@ -387,6 +389,14 @@ export type CoworkApproval = {
   createdAt: number;
 };
 
+export type CoworkTraceEntry = {
+  id: string;
+  kind: "thinking" | "tool";
+  text?: string;
+  toolCallId?: string;
+  createdAt: number;
+};
+
 export type CoworkMessage = {
   id: string;
   taskId: string;
@@ -399,6 +409,7 @@ export type CoworkMessage = {
   approvals?: CoworkApproval[];
   attachments?: Attachment[];
   toolCalls?: CoworkToolCall[];
+  trace?: CoworkTraceEntry[];
   status?: "streaming" | "done" | "error";
   contextUsed?: number;
   contextTotal?: number;

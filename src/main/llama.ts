@@ -321,11 +321,8 @@ export async function streamChat(opts: {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (settings.llamaApiKey) headers.Authorization = `Bearer ${settings.llamaApiKey}`;
 
-  const request = (requestMessages: OpenAIMessage[]) =>
-    fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
+  const request = async (requestMessages: OpenAIMessage[]): Promise<Response> => {
+    const body = JSON.stringify({
         model: settings.model,
         messages: requestMessages,
         stream: true,
@@ -359,9 +356,29 @@ export async function streamChat(opts: {
         ...(control !== "none" ? { enable_thinking: enableThinking } : {}),
         ...(control !== "none" ? { preserve_thinking: enableThinking } : {}),
         reasoning_format: "auto"
-      }),
-      signal: abort.signal
-    });
+      });
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await fetch(url, { method: "POST", headers, body, signal: abort.signal });
+      } catch (error) {
+        if (abort.signal.aborted) throw error;
+        lastError = error;
+        if (attempt < 2) {
+          handlers.onStatus({
+            phase: "preparing",
+            text: settings.language === "zh" ? "模型连接中断，正在重试" : "Model connection interrupted; retrying"
+          });
+          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        }
+      }
+    }
+    throw new Error(
+      settings.language === "zh"
+        ? `本地模型连接中断，Lumen 已重试三次：${lastError instanceof Error ? lastError.message : String(lastError)}`
+        : `The local model connection was interrupted after three retries: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+    );
+  };
 
   handlers.onStatus({ phase: "preparing", text: settings.language === "zh" ? "正在生成回答" : "Generating response" });
   let res: Response;

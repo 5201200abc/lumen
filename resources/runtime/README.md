@@ -25,10 +25,6 @@ official Firecrawl self-host checkout (`install`, `start`, `stop`, `restart`,
 overridden with `FIRECRAWL_VERSION`. Tavily Search + Extract remains the default
 cloud research path.
 
-`claude-bridge.mjs` is a dependency-free loopback adapter used by Cowork to
-translate the locally installed Claude CLI's Anthropic requests to the selected
-OpenAI-compatible Llama endpoint. Lumen starts it only when its dedicated port `18086` does
-not already have a healthy bridge.
-
-Cowork runs one agent loop through Claude Agent SDK. Lumen does not launch or
-delegate to a second coding agent.
+Cowork runs Lumen's native agent loop directly against the selected
+OpenAI-compatible endpoint. Core workspace tools execute locally; web, Chrome,
+Sites, Plugins, and Skills use the bundled MCP tool host.

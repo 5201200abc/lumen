@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Attachment, CoworkMessage, CoworkTask, CoworkToolCall, CoworkApproval, CoworkApprovalDecision, CoworkPermissionMode, CoworkToolStatus, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
+import type { Attachment, CoworkMessage, CoworkTask, CoworkToolCall, CoworkTraceEntry, CoworkApproval, CoworkApprovalDecision, CoworkPermissionMode, CoworkToolStatus, Effort, ReasoningControl, WorkspaceInfo } from "@shared/types";
 import { MarkdownView, stripMarkdown } from "../lib/markdown";
 import { ModelPicker } from "./ModelPicker";
 import { ContextRing } from "./ContextRing";
@@ -9,7 +9,6 @@ import {
   type CoworkToolKind,
   type CoworkToolPresentation
 } from "@shared/cowork-status";
-import { isCoworkDirectConversation } from "@shared/cowork-routing";
 import { AttachmentAddButton, AttachmentImage, AttachmentList, readDroppedFiles } from "./AttachmentControls";
 import { EnvironmentPanel } from "./EnvironmentPanel";
 import { PermissionPicker } from "./PermissionPicker";
@@ -23,6 +22,7 @@ import {
   IconGlobe,
   IconLaptop,
   IconPencil,
+  IconRefresh,
   IconSearch,
   IconSidebar,
   IconStop,
@@ -53,8 +53,8 @@ type Props = {
 };
 
 const COWORK_WELCOME_PROMPTS = {
-  en: ["What are we going to do?", "What would you like to talk about?"],
-  zh: ["我们接下来要做什么？", "你想聊些什么？"]
+  en: ["What should Lumen build or fix?", "Describe the task to execute."],
+  zh: ["需要 Lumen 构建或修复什么？", "描述需要执行的任务。"]
 } as const;
 
 const COWORK_COMMANDS = [
@@ -74,15 +74,6 @@ function formatDuration(sec: number, isZh = false): string {
   const m = Math.floor(wholeSeconds / 60);
   const s = wholeSeconds % 60;
   return `${m}m ${s}s`;
-}
-
-function formatClock(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  });
 }
 
 function formatActivity(activity: string | undefined, isZh = false): string {
@@ -142,6 +133,7 @@ type TimelineTool = {
   tool: CoworkToolCall;
   presentation: CoworkToolPresentation;
   count: number;
+  toolIds: string[];
 };
 
 function mergedTool(first: CoworkToolCall, latest: CoworkToolCall): CoworkToolCall {
@@ -180,11 +172,12 @@ function timelineTools(
       if (typeof tool.input?.url === "string" && tool.input.url) browserUrl = tool.input.url;
       if (browserIndex < 0) {
         browserIndex = entries.length;
-        entries.push({ tool, presentation, count: 1 });
+        entries.push({ tool, presentation, count: 1, toolIds: [tool.id] });
       } else {
         const current = entries[browserIndex];
         current.tool = mergedTool(current.tool, tool);
         current.count += 1;
+        current.toolIds.push(tool.id);
       }
       continue;
     }
@@ -194,11 +187,12 @@ function timelineTools(
       if (existing !== undefined) {
         entries[existing].tool = mergedTool(entries[existing].tool, tool);
         entries[existing].count += 1;
+        entries[existing].toolIds.push(tool.id);
         continue;
       }
       searchable.set(key, entries.length);
     }
-    entries.push({ tool, presentation, count: 1 });
+    entries.push({ tool, presentation, count: 1, toolIds: [tool.id] });
   }
 
   if (browserIndex >= 0) {
@@ -265,8 +259,6 @@ const ToolCallCard = memo(function ToolCallCard({
 
   return (
     <div className={`tool-card ${tool.status} kind-${presentation.kind}`}>
-      {tool.startedAt && <time className="tool-clock">{formatClock(tool.startedAt)}</time>}
-      <span className="tool-timeline-node" aria-hidden />
       <div className="tool-card-header">
         <div className="tool-card-left">
           <span className="tool-badge-icon" title={tool.name}>
@@ -338,7 +330,15 @@ function ApprovalCard({ approval, language = "en" }: { approval: CoworkApproval;
   );
 }
 
-const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, language = "en" }: { message: CoworkMessage; language?: "zh" | "en" }) {
+const AssistantCoworkTurn = memo(function AssistantCoworkTurn({
+  message,
+  language = "en",
+  onRegenerate
+}: {
+  message: CoworkMessage;
+  language?: "zh" | "en";
+  onRegenerate?: () => void;
+}) {
   const [seconds, setSeconds] = useState(() =>
     message.status === "streaming"
       ? Math.max(0, Math.floor((Date.now() - message.createdAt) / 1000))
@@ -424,104 +424,111 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
     () => timelineTools(message.toolCalls || [], language),
     [message.toolCalls, language]
   );
+  const traceEntries = useMemo<CoworkTraceEntry[]>(() => {
+    if (message.trace?.length) {
+      return message.trace.filter((entry) => entry.kind !== "thinking" || Boolean(entry.text?.trim()));
+    }
+    const fallback: CoworkTraceEntry[] = [];
+    if (message.thinking?.trim()) {
+      fallback.push({
+        id: `thinking-${message.id}`,
+        kind: "thinking",
+        text: message.thinking,
+        createdAt: message.createdAt
+      });
+    }
+    for (const entry of displayedTools) {
+      fallback.push({
+        id: `tool-${entry.tool.id}`,
+        kind: "tool",
+        toolCallId: entry.tool.id,
+        createdAt: entry.tool.startedAt || message.createdAt
+      });
+    }
+    return fallback;
+  }, [message.trace, message.thinking, message.status, message.id, message.createdAt, displayedTools]);
+  const traceRows = useMemo(() => {
+    const toolGroups = new Map<string, TimelineTool>();
+    for (const group of displayedTools) {
+      for (const toolId of group.toolIds) toolGroups.set(toolId, group);
+    }
+    const renderedGroups = new Set<TimelineTool>();
+    const rows: Array<
+      | { kind: "thinking"; entry: CoworkTraceEntry }
+      | { kind: "tool"; entry: CoworkTraceEntry; group: TimelineTool }
+    > = [];
+    for (const entry of traceEntries) {
+      if (entry.kind === "thinking") {
+        rows.push({ kind: "thinking", entry });
+        continue;
+      }
+      const group = entry.toolCallId ? toolGroups.get(entry.toolCallId) : undefined;
+      if (!group || renderedGroups.has(group)) continue;
+      renderedGroups.add(group);
+      rows.push({ kind: "tool", entry, group });
+    }
+    return rows;
+  }, [displayedTools, traceEntries]);
   const hasExecution = !isDirectAnswer && (
     message.status === "streaming" ||
     Boolean(message.toolCalls?.length) ||
     Boolean(message.approvals?.length)
   );
+  const timelineBody = (
+    <>
+      {traceRows.map((row, index) => {
+        if (row.kind === "tool") {
+          return (
+            <div className="cowork-trace-tool" key={row.entry.id}>
+              <ToolCallCard
+                tool={row.group.tool}
+                presentation={row.group.presentation}
+                language={language}
+              />
+            </div>
+          );
+        }
+        const isCurrent = message.status === "streaming" && index === traceRows.length - 1;
+        return (
+          <details className="run-step run-thinking thinking-disclosure" open={isCurrent} key={row.entry.id}>
+            <summary>
+              <strong className={isCurrent ? "thinking-shimmer" : undefined}>Thinking</strong>
+            </summary>
+            <div className="run-thinking-content">
+              {row.entry.text}
+            </div>
+          </details>
+        );
+      })}
+      {message.approvals && message.approvals.length > 0 && (
+        <div className="approval-list">
+          {message.approvals.map((approval) => (
+            <ApprovalCard key={approval.id} approval={approval} language={language} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div className="turn assistant-turn">
       {hasExecution ? (
-        <section className={`cowork-run-timeline ${message.status || "done"}`}>
-          <div className="run-step run-start">
-            <time className="run-step-time">{formatClock(message.createdAt)}</time>
-            <span className={`run-step-state ${message.status === "error" ? "error" : "complete"}`}>
-              {message.status === "error" ? "!" : <IconCheck size={12} />}
-            </span>
-            <div className="run-step-copy">
-              <strong>{isZh ? "任务已开始" : "Task started"}</strong>
-              <span>
-                {message.status === "streaming"
-                  ? `${formatActivity(message.activity, isZh)} · ${formatDuration(seconds, isZh)}`
-                  : (isZh ? "操作过程已记录" : "Actions recorded")}
-              </span>
-            </div>
-          </div>
-
-          <div className="run-step run-thinking">
-            <time className="run-step-time">{formatClock(message.createdAt)}</time>
-            <span className={`run-step-state ${message.status === "streaming" ? "running" : "complete"}`}>
-              {message.status === "streaming" ? <span className="run-pulse" /> : <IconCheck size={12} />}
-            </span>
-            <div className="run-step-copy">
-              <strong>Thinking</strong>
-              <div className="run-thinking-content">
-                {message.thinking || (
-                  message.status === "streaming"
-                    ? (isZh ? "正在生成思考过程…" : "Generating reasoning…")
-                    : (isZh ? "当前模型未返回独立的思考过程。" : "The current model did not return a separate reasoning trace.")
-                )}
-              </div>
-            </div>
-          </div>
-
-          {message.approvals && message.approvals.length > 0 && (
-            <div className="approval-list">
-              {message.approvals.map((approval) => (
-                <ApprovalCard key={approval.id} approval={approval} language={language} />
-              ))}
-            </div>
-          )}
-
-          {displayedTools.length > 0 && (
-            <div className="cowork-tools-section">
-              <div className="cowork-tools-heading">
-                <span>{isZh ? "完成步骤" : "Completed steps"}</span>
-                <small>{displayedTools.length}</small>
-              </div>
-              <div className="cowork-tools-list">
-                {displayedTools.map((entry) => (
-                  <ToolCallCard
-                    key={entry.tool.id}
-                    tool={entry.tool}
-                    presentation={entry.presentation}
-                    language={language}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className={`run-step run-finish ${message.status === "streaming" ? "running" : ""}`}>
-            <time className="run-step-time">
-              {formatClock(message.createdAt + Math.max(0, workedSeconds) * 1000)}
-            </time>
-            <span className={`run-step-state ${message.status === "streaming" ? "running" : message.status === "error" ? "error" : "complete"}`}>
-              {message.status === "streaming"
-                ? <span className="run-pulse" />
-                : message.status === "error"
-                  ? "!"
-                  : <IconCheck size={12} />}
-            </span>
-            <div className="run-step-copy">
-              <strong>
-                {message.status === "streaming"
-                  ? (isZh ? "正在执行" : "Implementing")
-                  : message.status === "error"
-                    ? (isZh ? "任务未完成" : "Task incomplete")
-                    : (isZh ? "任务完成" : "Task complete")}
-              </strong>
-              <span>
-                {message.status === "streaming"
-                  ? formatActivity(message.activity, isZh)
-                  : workedSeconds > 0
-                    ? (isZh ? `耗时 ${formatDuration(workedSeconds, true)}` : `Worked for ${formatDuration(workedSeconds, false)}`)
-                    : (isZh ? "已整理所有操作" : "All actions recorded")}
-              </span>
-            </div>
-          </div>
-        </section>
+        message.status === "streaming" ? (
+          <section className="cowork-run-timeline streaming">
+            {timelineBody}
+          </section>
+        ) : (
+          <details className={`cowork-worked-summary ${message.status || "done"}`}>
+            <summary>
+              {workedSeconds > 0
+                ? (isZh ? `已工作 ${formatDuration(workedSeconds, true)}` : `Worked for ${formatDuration(workedSeconds, false)}`)
+                : (isZh ? "已完成工作" : "Work complete")}
+            </summary>
+            <section className={`cowork-run-timeline ${message.status || "done"}`}>
+              {timelineBody}
+            </section>
+          </details>
+        )
       ) : (
         <div className={`thought-header ${message.status === "streaming" ? "streaming" : "done"}`}>
           <span className={message.status === "streaming" ? "thinking-shimmer" : undefined}>
@@ -534,17 +541,17 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
         </div>
       )}
 
-      {!hasExecution && (message.status === "streaming" || message.content || message.thinking) ? (
-        <section className="cowork-thinking" aria-label="Thinking">
-          <div className="cowork-thinking-label">Thinking</div>
+      {!hasExecution && message.thinking?.trim() ? (
+        <details
+          className="cowork-thinking thinking-disclosure"
+          aria-label="Thinking"
+          open={message.status === "streaming"}
+        >
+          <summary className="cowork-thinking-label">Thinking</summary>
           <div className="cowork-thinking-content">
-            {message.thinking || (
-              message.status === "streaming"
-                ? (isZh ? "正在生成思考过程…" : "Generating reasoning…")
-                : (isZh ? "当前模型未返回独立的思考过程。" : "The current model did not return a separate reasoning trace.")
-            )}
+            {message.thinking}
           </div>
-        </section>
+        </details>
       ) : null}
 
       {message.content && <MarkdownView text={message.content} />}
@@ -567,6 +574,17 @@ const AssistantCoworkTurn = memo(function AssistantCoworkTurn({ message, languag
           >
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
           </button>
+          {onRegenerate ? (
+            <button
+              className="icon-btn ghost-icon message-action"
+              type="button"
+              title={isZh ? "重新生成" : "Regenerate"}
+              aria-label={isZh ? "重新生成" : "Regenerate"}
+              onClick={onRegenerate}
+            >
+              <IconRefresh size={14} />
+            </button>
+          ) : null}
           {message.rewindAvailable && rewindState !== "restored" ? (
             <button
               className="icon-btn ghost-icon message-action"
@@ -599,6 +617,14 @@ export function CoworkView(props: Props) {
   const [cwd, setCwd] = useState<string>("");
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [toolStatus, setToolStatus] = useState<CoworkToolStatus | null>(null);
+  const [computerUseActive, setComputerUseActive] = useState(false);
+  const [computerUseHidden, setComputerUseHidden] = useState(false);
+  const [computerUsePreview, setComputerUsePreview] = useState<{
+    dataUrl: string;
+    title?: string;
+    url?: string;
+    source?: "window" | "tab";
+  } | null>(null);
   const [contextTokens, setContextTokens] = useState({ used: 0, total: 16384 });
   const [environmentOpen, setEnvironmentOpen] = useState(true);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -684,6 +710,54 @@ export function CoworkView(props: Props) {
     };
   }, [props.capabilityVersion]);
 
+  useEffect(() => {
+    let current = true;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void window.lumen.tools.chromeStatus().then((status) => {
+        if (!current) return;
+        const active = status.controller === "extension" && Boolean(status.window?.visible);
+        setComputerUseActive(active);
+        if (!active) setComputerUsePreview(null);
+      }).catch(() => {
+        if (current) setComputerUseActive(false);
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 2_500);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!computerUseActive || computerUseHidden) return;
+    let current = true;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void window.lumen.tools.chromePreview().then((preview) => {
+        if (!current || !preview.available || !preview.dataUrl) return;
+        setComputerUsePreview({
+          dataUrl: preview.dataUrl,
+          title: preview.title,
+          url: preview.url,
+          source: preview.source
+        });
+      }).catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 2_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [computerUseActive, computerUseHidden]);
+
   const selectWorkspace = async (): Promise<void> => {
     const selected = await window.lumen.cowork.selectDirectory();
     if (selected) setCwd(selected);
@@ -754,6 +828,7 @@ export function CoworkView(props: Props) {
               return {
                 ...m,
                 thinking: event.thinking,
+                trace: event.trace || m.trace,
                 activity: event.activity || "Thinking"
               };
             }
@@ -762,11 +837,12 @@ export function CoworkView(props: Props) {
               return {
                 ...m,
                 toolCalls: event.toolCalls,
+                trace: event.trace || m.trace,
                 activity: activeTool ? toolActivity(activeTool) : "Using a tool"
               };
             }
             if (event.type === "tool_result") {
-              return { ...m, toolCalls: event.toolCalls, activity: "Reviewing" };
+              return { ...m, toolCalls: event.toolCalls, trace: event.trace || m.trace, activity: "Reviewing" };
             }
             if (event.type === "usage") {
               return {
@@ -795,6 +871,7 @@ export function CoworkView(props: Props) {
                 content: event.content || m.content,
                 thinking: event.thinking || m.thinking,
                 toolCalls: event.toolCalls || m.toolCalls,
+                trace: event.trace || m.trace,
                 contextUsed: event.contextUsed || m.contextUsed,
                 contextTotal: event.contextTotal || m.contextTotal,
                 status: event.exitCode === 0 ? "done" : "error",
@@ -901,7 +978,6 @@ export function CoworkView(props: Props) {
       createdAt: Date.now()
     };
 
-    const directAnswer = isCoworkDirectConversation(text, files.length > 0);
     const asstMsg: CoworkMessage = {
       id: "tmp-asst-" + Date.now(),
       taskId,
@@ -911,7 +987,7 @@ export function CoworkView(props: Props) {
       status: "streaming",
       contextUsed: contextTokens.used,
       contextTotal: contextTokens.total,
-      activity: directAnswer ? "Answering" : "Planning",
+      activity: "Planning",
       createdAt: Date.now() + 1
     };
 
@@ -953,6 +1029,44 @@ export function CoworkView(props: Props) {
     }
   };
 
+  const handleRegenerate = async (message: CoworkMessage): Promise<void> => {
+    if (running || message.role !== "assistant") return;
+    const tempId = `tmp-regenerate-${Date.now()}`;
+    const replacement: CoworkMessage = {
+      id: tempId,
+      taskId: message.taskId,
+      role: "assistant",
+      content: "",
+      runtimeOutput: "",
+      toolCalls: [],
+      approvals: [],
+      status: "streaming",
+      activity: "Planning",
+      contextUsed: contextTokens.used,
+      contextTotal: contextTokens.total,
+      createdAt: Date.now()
+    };
+    userScrolledUp.current = false;
+    setRunning(true);
+    setMessages((current) => current.map((item) => item.id === message.id ? replacement : item));
+    try {
+      const result = await window.lumen.cowork.regenerate({
+        taskId: message.taskId,
+        messageId: message.id,
+        cwd,
+        effort: props.effort,
+        model: props.model
+      });
+      if (!result.ok || !result.asstMsgId) {
+        throw new Error(result.error || "Cowork regeneration failed.");
+      }
+      setMessages(await window.lumen.cowork.getMessages(message.taskId));
+    } catch {
+      setRunning(false);
+      setMessages((current) => current.map((item) => item.id === tempId ? message : item));
+    }
+  };
+
   const handleStop = async () => {
     if (props.activeTaskId) {
       await window.lumen.cowork.stop(props.activeTaskId);
@@ -972,12 +1086,24 @@ export function CoworkView(props: Props) {
     setSlashIndex(0);
     window.requestAnimationFrame(() => areaRef.current?.focus());
   };
+  const latestAssistantId = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "assistant") return messages[index].id;
+    }
+    return null;
+  }, [messages]);
 
   return (
     <div className={`cowork-view ${environmentOpen ? "environment-open" : ""}`}>
       <div className="cowork-primary">
       {/* Top Header Bar */}
-      <header className="main-top cowork-topbar">
+      <header
+        className="main-top cowork-topbar"
+        onDoubleClick={(event) => {
+          if ((event.target as HTMLElement).closest("button, input, textarea, select, a")) return;
+          void window.lumen.ui.toggleMaximize();
+        }}
+      >
         {!props.sidebarOpen && props.onToggleSidebar && (
           <button
             className="icon-btn ghost-icon sidebar-toggle-btn"
@@ -1041,7 +1167,18 @@ export function CoworkView(props: Props) {
                   </div>
                 );
               }
-              return <AssistantCoworkTurn key={m.id} message={m} language={props.language} />;
+              return (
+                <AssistantCoworkTurn
+                  key={m.id}
+                  message={m}
+                  language={props.language}
+                  onRegenerate={
+                    m.id === latestAssistantId && m.status !== "streaming" && !running
+                      ? () => void handleRegenerate(m)
+                      : undefined
+                  }
+                />
+              );
             })
           )}
         </div>
@@ -1216,6 +1353,18 @@ export function CoworkView(props: Props) {
         </div>
       </div>
       </div>
+      {computerUseActive && !computerUseHidden && computerUsePreview?.dataUrl && (
+        <figure
+          className="computer-use-pip"
+          aria-label={isZh ? "Chrome 画中画" : "Chrome picture in picture"}
+          title={computerUsePreview.title || computerUsePreview.url || "Google Chrome"}
+        >
+          <img src={computerUsePreview.dataUrl} alt="" />
+          {computerUsePreview.source === "tab" && (
+            <figcaption>{isZh ? "Chrome 页面" : "Chrome page"}</figcaption>
+          )}
+        </figure>
+      )}
       {environmentOpen && (
         <EnvironmentPanel
           language={props.language}
@@ -1224,6 +1373,9 @@ export function CoworkView(props: Props) {
           model={props.model}
           messages={messages}
           attachments={attachments}
+          computerUseActive={computerUseActive}
+          computerUseHidden={computerUseHidden}
+          onToggleComputerUse={() => setComputerUseHidden((current) => !current)}
           onSelectWorkspace={() => void selectWorkspace()}
           onAddSource={() => void addEnvironmentSources()}
           onPrompt={prepareEnvironmentPrompt}

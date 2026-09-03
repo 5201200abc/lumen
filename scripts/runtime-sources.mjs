@@ -51,6 +51,125 @@ async function evaluate(expression, timeout = 660_000) {
 await command("Runtime.enable");
 await command("Page.enable");
 const original = await evaluate("window.lumen.settings.get()");
+if (process.argv.includes("--status")) {
+  const status = await evaluate(`(async () => {
+    const tasks = await window.lumen.cowork.listTasks();
+    let task = null;
+    let messages = [];
+    for (const candidate of tasks) {
+      const candidateMessages = await window.lumen.cowork.getMessages(candidate.id);
+      if (!candidateMessages.some((message) =>
+        message.attachments?.some((attachment) => attachment.id === "sources-proof-image")
+      )) continue;
+      task = candidate;
+      messages = candidateMessages;
+      break;
+    }
+    const ui = {
+      tabs: [...document.querySelectorAll('[role="tab"]')].map((node) => ({
+        text: node.textContent?.trim(),
+        selected: node.getAttribute("aria-selected")
+      })),
+      visiblePanes: document.querySelectorAll('.mode-pane:not([hidden])').length,
+      coworkView: Boolean(document.querySelector('.mode-pane:not([hidden]) .cowork-view')),
+      environmentOpen: Boolean(document.querySelector('.mode-pane:not([hidden]) .cowork-view.environment-open')),
+      environmentToggle: Boolean(document.querySelector('.mode-pane:not([hidden]) .environment-toggle')),
+      sourcesButton: Boolean(document.querySelector('.mode-pane:not([hidden]) .environment-sources-title'))
+    };
+    if (!task) return { task: null, messages: [], ui };
+    return {
+      task,
+      messages: messages.map((message) => ({
+        role: message.role,
+        status: message.status,
+        contentLength: message.content?.length || 0,
+        toolCalls: message.toolCalls?.map((tool) => ({
+          name: tool.name,
+          status: tool.status,
+          outputLength: String(tool.output || "").length
+        })) || []
+      })),
+      ui
+    };
+  })()`);
+  process.stdout.write(`${JSON.stringify(status)}\n`);
+  socket.close();
+  process.exit(0);
+}
+if (process.argv.includes("--direct")) {
+  const direct = await evaluate(`(async () => {
+    await window.lumen.settings.set({
+      model: "Gemma4-26B-A4B",
+      coworkPermissionMode: "full",
+      coworkFullAccess: true
+    });
+    const task = await window.lumen.cowork.createTask({
+      title: "LUMEN_DIRECT_TEST",
+      cwd: ${JSON.stringify(process.cwd())}
+    });
+    await window.lumen.cowork.setGoal(task.id, "Previous agent context");
+    const started = await window.lumen.cowork.run({
+      taskId: task.id,
+      prompt: "能干什么呢兄弟",
+      cwd: ${JSON.stringify(process.cwd())},
+      effort: "none",
+      model: "Gemma4-26B-A4B"
+    });
+    if (!started.ok) throw new Error(started.error || "Direct task failed to start.");
+    const initialTitle = (await window.lumen.cowork.listTasks()).find((item) => item.id === task.id)?.title || "";
+    for (let attempt = 0; attempt < 360; attempt += 1) {
+      const messages = await window.lumen.cowork.getMessages(task.id);
+      const assistant = messages.findLast((message) => message.role === "assistant");
+      if (assistant?.status === "done" || assistant?.status === "error") {
+        const toolCalls = messages.filter((message) => message.toolName || message.kind === "trace").length;
+        let title = initialTitle;
+        for (let titleAttempt = 0; titleAttempt < 80; titleAttempt += 1) {
+          title = (await window.lumen.cowork.listTasks()).find((item) => item.id === task.id)?.title || title;
+          if (title && title !== initialTitle) break;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        await window.lumen.cowork.deleteTask(task.id);
+        return {
+          status: assistant.status,
+          content: assistant.content,
+          toolCalls,
+          initialTitle,
+          title,
+          titleUpdated: Boolean(title && title !== initialTitle),
+          rawApiError: /API Error:|TypeError:\\s*fetch failed/i.test(assistant.content || "")
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    await window.lumen.cowork.deleteTask(task.id);
+    throw new Error("Direct Cowork regression timed out.");
+  })()`, 200_000);
+  await evaluate(`window.lumen.settings.set({
+    model: ${JSON.stringify(original.model)},
+    coworkPermissionMode: ${JSON.stringify(original.coworkPermissionMode)},
+    coworkFullAccess: ${JSON.stringify(original.coworkFullAccess)}
+  })`).catch(() => undefined);
+  const ok = direct.status === "done" && !direct.rawApiError && direct.toolCalls === 0 && direct.titleUpdated;
+  process.stdout.write(`${JSON.stringify({ ok, ...direct })}\n`);
+  socket.close();
+  process.exit(ok ? 0 : 1);
+}
+if (process.argv.includes("--cleanup-direct")) {
+  const deleted = await evaluate(`(async () => {
+    let count = 0;
+    const tasks = await window.lumen.cowork.listTasks();
+    for (const task of tasks) {
+      const messages = await window.lumen.cowork.getMessages(task.id);
+      if (!messages.some((message) => message.role === "user" && message.content === "能干什么呢兄弟")) continue;
+      await window.lumen.cowork.deleteTask(task.id);
+      count += 1;
+    }
+    return count;
+  })()`);
+  process.stdout.write(`${JSON.stringify({ ok: true, deleted })}\n`);
+  socket.close();
+  process.exit(0);
+}
 if (process.argv.includes("--cleanup")) {
   const deleted = await evaluate(`(async () => {
     let count = 0;
@@ -91,27 +210,14 @@ try {
     coworkPermissionMode: "full",
     coworkFullAccess: true
   })`);
-  const result = await evaluate(`(async () => {
+  const startedTask = await evaluate(`(async () => {
     const task = await window.lumen.cowork.createTask({
       title: "LUMEN_SOURCES_TEST",
       cwd: ${JSON.stringify(process.cwd())}
     });
-    const completed = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        off();
-        void window.lumen.cowork.stop(task.id);
-        reject(new Error("Sources agent run timed out."));
-      }, 600000);
-      const off = window.lumen.cowork.onEvent((event) => {
-        if (event.taskId !== task.id || event.type !== "done") return;
-        clearTimeout(timer);
-        off();
-        resolve(event);
-      });
-    });
     const started = await window.lumen.cowork.run({
       taskId: task.id,
-      prompt: "Use mcp__lumen__web_search exactly once with query \\"llama.cpp official GitHub\\" and max_results 3. Do not use Browser. Then reply with one short sentence.",
+      prompt: "Search the public web for the official llama.cpp GitHub repository. Use one concise query, do not open a browser, and reply with one short sentence containing the repository URL.",
       attachments: [{
         id: "sources-proof-image",
         mime: "image/png",
@@ -125,14 +231,32 @@ try {
       model: ${JSON.stringify(model)}
     });
     if (!started.ok) throw new Error(started.error || "Sources task failed to start.");
-    await completed;
-    return {
-      taskId: task.id,
-      task: (await window.lumen.cowork.listTasks()).find((item) => item.id === task.id),
-      messages: await window.lumen.cowork.getMessages(task.id)
-    };
+    return { taskId: task.id };
   })()`);
-  taskId = result.taskId;
+  taskId = startedTask.taskId;
+  let completed = false;
+  for (let attempt = 0; attempt < 1200; attempt += 1) {
+    const status = await evaluate(`(async () => {
+      const messages = await window.lumen.cowork.getMessages(${JSON.stringify(taskId)});
+      return messages.findLast((message) => message.role === "assistant")?.status || "";
+    })()`, 10_000);
+    if (status === "done" || status === "error") {
+      completed = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  if (!completed) {
+    await evaluate(`window.lumen.cowork.stop(${JSON.stringify(taskId)})`).catch(() => undefined);
+    throw new Error("Sources agent run timed out.");
+  }
+  const result = await evaluate(`(async () => ({
+      taskId: ${JSON.stringify(taskId)},
+      task: (await window.lumen.cowork.listTasks()).find(
+        (item) => item.id === ${JSON.stringify(taskId)}
+      ),
+      messages: await window.lumen.cowork.getMessages(${JSON.stringify(taskId)})
+    }))()`);
   const user = result.messages.find((message) => message.role === "user");
   const assistant = result.messages.findLast((message) => message.role === "assistant");
   const search = assistant?.toolCalls?.find((tool) => tool.name.endsWith("web_search"));
@@ -140,6 +264,10 @@ try {
   if (!imagePath || !fs.existsSync(imagePath)) throw new Error("Cowork image was not materialized.");
   if (search?.status !== "completed") {
     throw new Error(`Web search did not complete: ${JSON.stringify(search)}`);
+  }
+  const query = typeof search.input?.query === "string" ? search.input.query.trim() : "";
+  if (!query || query.split(/\s+/).length > 6) {
+    throw new Error(`Model Rule Style search query was not concise: ${JSON.stringify(query)}`);
   }
   if (!String(search.output).includes("https://")) throw new Error("Web search returned no URL.");
   if (!result.task?.title || /^Use mcp__lumen/i.test(result.task.title)) {
@@ -202,7 +330,7 @@ try {
   if (
     !ui.visible ||
     !ui.text.includes("sources-proof.png") ||
-    !ui.text.includes("llama.cpp official GitHub") ||
+    !ui.text.includes(query) ||
     ui.files !== 1 ||
     ui.searches !== 1 ||
     ui.results < 1

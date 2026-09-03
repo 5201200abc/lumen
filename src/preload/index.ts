@@ -116,18 +116,65 @@ const api = {
       ipcRenderer.invoke("cowork:resolveApproval", requestId, decision),
     run: (opts: { taskId: string; prompt: string; attachments?: Attachment[]; cwd?: string; effort?: Effort; model?: string }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
       ipcRenderer.invoke("cowork:run", opts),
+    regenerate: (opts: { taskId: string; messageId: string; cwd?: string; effort?: Effort; model?: string }): Promise<{ ok: boolean; taskId: string; userMsgId?: string; asstMsgId?: string; error?: string }> =>
+      ipcRenderer.invoke("cowork:run", {
+        taskId: opts.taskId,
+        prompt: "",
+        cwd: opts.cwd,
+        effort: opts.effort,
+        model: opts.model,
+        regenerateMessageId: opts.messageId
+      }),
     onEvent: (fn: (event: any) => void): Unlisten => on("cowork:event", fn)
   },
   tools: {
     status: (): Promise<CoworkToolStatus> => ipcRenderer.invoke("tools:status"),
-    chromeStatus: (): Promise<{ installed: boolean; running: boolean; executable: string | null }> => ipcRenderer.invoke("tools:chromeStatus"),
+    chromeStatus: (): Promise<{
+      installed: boolean;
+      running: boolean;
+      executable: string | null;
+      mode: "auto" | "extension" | "isolated";
+      controller: "extension" | "isolated" | null;
+      extension: {
+        id: string;
+        available: boolean;
+        connected: boolean;
+        port: number;
+        version: string;
+        directory: string;
+      };
+      window?: {
+        visible: boolean;
+        bounds: { x: number; y: number; width: number; height: number };
+        parentBounds: { x: number; y: number; width: number; height: number } | null;
+      };
+    }> => ipcRenderer.invoke("tools:chromeStatus"),
+    chromePreview: (): Promise<{
+      available: boolean;
+      dataUrl?: string;
+      title?: string;
+      url?: string;
+      source?: "window" | "tab";
+    }> => ipcRenderer.invoke("tools:chromePreview"),
+    chromeExtensionInstall: (): Promise<{
+      id: string;
+      available: boolean;
+      connected: boolean;
+      port: number;
+      version: string;
+      features: string[];
+      directory: string;
+    }> => ipcRenderer.invoke("tools:chromeExtensionInstall"),
     chromeOpen: (url: string): Promise<unknown> => ipcRenderer.invoke("tools:chromeOpen", url),
     chromeSnapshot: (): Promise<unknown> => ipcRenderer.invoke("tools:chromeSnapshot"),
     chromeClick: (ref: string | number): Promise<unknown> => ipcRenderer.invoke("tools:chromeClick", ref),
     chromeType: (ref: string | number, text: string, submit = false): Promise<unknown> => ipcRenderer.invoke("tools:chromeType", ref, text, submit),
-    chromeScreenshot: (): Promise<{ path: string }> => ipcRenderer.invoke("tools:chromeScreenshot")
+    chromeScreenshot: (): Promise<{ path: string }> => ipcRenderer.invoke("tools:chromeScreenshot"),
+    chromeConsole: (clear = false): Promise<unknown> => ipcRenderer.invoke("tools:chromeConsole", clear),
+    chromeNetwork: (clear = false): Promise<unknown> => ipcRenderer.invoke("tools:chromeNetwork", clear)
   },
   ui: {
+    toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke("window:toggleMaximize"),
     onSettings: (fn: () => void): Unlisten => on("ui:settings", fn),
     onNewChat: (fn: () => void): Unlisten => on("ui:new-chat", fn),
     onSearch: (fn: () => void): Unlisten => on("ui:search", fn),

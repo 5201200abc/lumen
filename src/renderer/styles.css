@@ -2873,6 +2873,68 @@ button.environment-source:hover {
   box-shadow: 0 0 0 3px color-mix(in srgb, #2ca558 16%, transparent);
 }
 
+.environment-computer-use-row {
+  min-height: 26px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 2.5px 5px;
+  color: var(--fg);
+  font-size: calc(var(--base-font-size) - 2px);
+}
+
+.environment-computer-use-row button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 0 2px 8px;
+}
+
+.environment-computer-use-row button:hover {
+  color: var(--fg);
+}
+
+.computer-use-pip {
+  position: absolute;
+  z-index: 42;
+  right: calc(clamp(210px, 20vw, 255px) + 18px);
+  bottom: 168px;
+  width: clamp(250px, 25vw, 360px);
+  max-height: min(240px, 34vh);
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  border-radius: 9px;
+  background: #111;
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.22),
+    0 2px 8px rgba(0, 0, 0, 0.14);
+  pointer-events: none;
+}
+
+.computer-use-pip img {
+  width: 100%;
+  height: auto;
+  max-height: min(240px, 34vh);
+  display: block;
+  object-fit: contain;
+}
+
+.computer-use-pip figcaption {
+  position: absolute;
+  left: 7px;
+  bottom: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(12, 12, 12, 0.72);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
 .environment-source {
   font-size: calc(var(--base-font-size) - 2px);
   color: var(--muted);
@@ -3353,6 +3415,10 @@ button.environment-source:hover {
       0 18px 50px rgba(0, 0, 0, 0.18),
       0 0 0 1px color-mix(in srgb, var(--line) 55%, transparent);
   }
+
+  .computer-use-pip {
+    right: 18px;
+  }
 }
 
 .cowork-topbar {
@@ -3647,73 +3713,45 @@ button.environment-source:hover {
 
 .cowork-run-timeline {
   position: relative;
-  width: calc(100% - 46px);
-  margin: 2px 0 18px 46px;
+  width: 100%;
+  margin: 2px 0 18px;
   padding: 2px 0 4px;
   color: var(--fg);
 }
 
-.run-step-time,
-.tool-clock {
-  position: absolute;
+.cowork-worked-summary {
+  width: 100%;
+  margin: 2px 0 18px;
   color: var(--muted);
-  font-size: calc(var(--base-font-size) - 4px);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
+}
+
+.cowork-worked-summary > summary {
+  width: 100%;
+  padding: 5px 0 12px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: var(--base-font-size);
+  list-style-position: inside;
   user-select: none;
 }
 
-.run-step-time {
-  left: -70px;
-  top: 9px;
-  width: 58px;
-  text-align: right;
+.cowork-worked-summary > .cowork-run-timeline {
+  width: 100%;
+  margin-top: 14px;
+  margin-bottom: 2px;
 }
 
-.cowork-run-timeline::before {
-  content: "";
-  position: absolute;
-  top: 18px;
-  bottom: 20px;
-  left: 16px;
-  width: 1px;
-  background: color-mix(in srgb, var(--line) 80%, transparent);
+.cowork-trace-tool {
+  position: relative;
+  margin: 0 0 3px;
 }
 
 .run-step {
   position: relative;
   min-height: 38px;
-  padding: 4px 0 8px 42px;
+  padding: 4px 0 8px;
   display: flex;
   align-items: flex-start;
-}
-
-.run-step-state {
-  position: absolute;
-  z-index: 1;
-  left: 6px;
-  top: 4px;
-  width: 21px;
-  height: 21px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  background: var(--bg-chat);
-  color: var(--muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.run-step-state.complete {
-  border-color: color-mix(in srgb, #32b66a 65%, var(--line));
-  color: #32b66a;
-}
-
-.run-step-state.error {
-  border-color: color-mix(in srgb, #ef5555 65%, var(--line));
-  color: #ef5555;
 }
 
 .run-step-copy {
@@ -3736,6 +3774,48 @@ button.environment-source:hover {
 
 .run-thinking {
   min-height: 48px;
+  display: block;
+}
+
+.thinking-disclosure > summary {
+  width: fit-content;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--muted);
+  font-family: var(--ui-font);
+  font-size: calc(var(--base-font-size) - 1px);
+  font-weight: 400;
+}
+
+.thinking-disclosure > summary strong {
+  color: inherit;
+  font: inherit;
+}
+
+.thinking-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-disclosure > summary::after {
+  content: "›";
+  color: var(--muted);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.thinking-disclosure[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.thinking-disclosure > .run-thinking-content,
+.thinking-disclosure > .cowork-thinking-content {
+  margin-top: 8px;
 }
 
 .run-thinking-content {
@@ -3835,33 +3915,6 @@ button.environment-source:hover {
   border-radius: 7px;
 }
 
-.tool-timeline-node {
-  position: absolute;
-  left: -30px;
-  top: 14px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid var(--bg-chat);
-  border-radius: 50%;
-  background: var(--line-strong);
-  box-shadow: 0 0 0 1px var(--line);
-}
-
-.tool-clock {
-  left: -112px;
-  top: 11px;
-  width: 58px;
-  text-align: right;
-}
-
-.tool-card.completed .tool-timeline-node {
-  background: #32b66a;
-}
-
-.tool-card.error .tool-timeline-node {
-  background: #ef5555;
-}
-
 .tool-card-left {
   display: flex;
   align-items: center;
@@ -3891,23 +3944,20 @@ button.environment-source:hover {
 .assistant-turn > .runtime-output,
 .assistant-turn > .cowork-thinking,
 .assistant-turn > .turn-actions {
-  width: calc(100% + 24px);
-  margin-left: -24px;
+  width: 100%;
+  margin-left: 0;
 }
 
 .cowork-thinking {
   margin-top: 18px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
   color: var(--muted);
 }
 
 .cowork-thinking-label {
-  margin-bottom: 7px;
-  color: var(--text);
+  color: var(--muted);
   font-family: var(--ui-font);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: calc(var(--base-font-size) - 1px);
+  font-weight: 400;
 }
 
 .cowork-thinking-content {
@@ -3942,14 +3992,14 @@ button.environment-source:hover {
   font-weight: 600;
   color: var(--fg);
   font-family: var(--font);
-  font-size: calc(var(--base-font-size) - 1px);
+  font-size: calc(var(--base-font-size) - 2px);
   flex-shrink: 0;
 }
 
 .tool-desc {
   color: var(--muted);
   font-family: var(--font);
-  font-size: calc(var(--base-font-size) - 1.5px);
+  font-size: calc(var(--base-font-size) - 2.5px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

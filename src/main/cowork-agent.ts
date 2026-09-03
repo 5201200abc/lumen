@@ -1,22 +1,37 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
-import { execFile, spawn, type ChildProcess } from "child_process";
+import { execFile } from "child_process";
 import crypto from "node:crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import type { PermissionResult, PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
-import type { Attachment, ChatMessage, CoworkMessage, CoworkTask, CoworkToolCall, CoworkApproval, CoworkApprovalDecision, CoworkEngine, Effort, Settings, WorkspaceInfo } from "@shared/types";
-import { detectReasoningControl } from "@shared/types";
+import type { Attachment, CoworkMessage, CoworkTask, CoworkToolCall, CoworkTraceEntry, CoworkApproval, CoworkApprovalDecision, CoworkEngine, Effort, Settings, WorkspaceInfo } from "@shared/types";
 import { toolActivity } from "@shared/cowork-status";
-import { isCoworkDirectConversation } from "@shared/cowork-routing";
 import { generateConversationTitle, immediateConversationTitle } from "./title";
-import { getSettings, SYSTEM_PROMPT_PATH } from "./store";
+import { getSettings } from "./store";
 import { ensureLocalLlama, probeLlama } from "./models";
 import { ensureToolHost } from "./tool-host";
 import { parseModelUsage, recordTokenUsage } from "./usage";
-import { streamChat } from "./llama";
-import { startClaudeAgentRuntime, type ClaudeAgentRuntime } from "./claude-agent-runtime";
+import { startNativeAgentRuntime } from "./native-agent-runtime";
+import type {
+  AgentPermissionResult,
+  AgentPermissionUpdate,
+  AgentRuntime,
+  AgentRuntimeEvent
+} from "./agent-runtime";
 import {
+  buildOutputRecoveryPrompt,
+  isContextOverflowError,
+  isOutputLimitError,
+  isTransientBackendError,
+  MAX_OUTPUT_CONTINUATIONS,
+  OUTPUT_BOUNDARY_MARKER,
+  stripOutputBoundaryMarker,
+  stripOutputLimitError,
+  stripRuntimeApiError
+} from "./cowork-recovery";
+import { releaseChromeComputerUse } from "./chrome-computer-use";
+import {
+  deleteCoworkMessage as deletePersistedCoworkMessage,
   deleteCoworkTask as deletePersistedCoworkTask,
   listCoworkMessages,
   listCoworkTasks,
@@ -26,41 +41,36 @@ import {
 
 const tasks = new Map<string, CoworkTask>();
 const messages = new Map<string, CoworkMessage[]>();
-const activeDirectAnswers = new Map<string, AbortController>();
 type PersistentRunHandlers = {
-  onMessage: (message: unknown) => void;
+  onEvent: (event: AgentRuntimeEvent) => void;
   onStderr: (data: string) => void;
   canUseTool: (
     toolName: string,
     input: Record<string, unknown>,
     options: {
       signal: AbortSignal;
-      suggestions?: PermissionUpdate[];
+      suggestions?: AgentPermissionUpdate[];
       blockedPath?: string;
       title?: string;
     }
-  ) => Promise<PermissionResult>;
+  ) => Promise<AgentPermissionResult>;
   finish: (exitCode: number, error?: string) => void;
 };
 type PersistentAgentSession = {
-  runtime: ClaudeAgentRuntime;
+  runtime: AgentRuntime;
   configKey: string;
   current?: PersistentRunHandlers;
 };
 const persistentAgentSessions = new Map<string, PersistentAgentSession>();
-type ClaudeSessionState = { id?: string; started: boolean };
-const claudeSessions = new Map<string, ClaudeSessionState>();
+type AgentSessionState = { id?: string; started: boolean };
+const agentSessions = new Map<string, AgentSessionState>();
 const compactContexts = new Map<string, string>();
-let bridgeProcess: ChildProcess | null = null;
-let bridgeStartup: Promise<void> | null = null;
-let bridgeConfig = "";
-const CLAUDE_BRIDGE_URL = "http://127.0.0.1:18086";
 type PendingApproval = {
   taskId: string;
   messageId: string;
   approval: CoworkApproval;
-  suggestions?: PermissionUpdate[];
-  resolve: (result: PermissionResult) => void;
+  suggestions?: AgentPermissionUpdate[];
+  resolve: (result: AgentPermissionResult) => void;
 };
 const pendingApprovals = new Map<string, PendingApproval>();
 const taskAllowedTools = new Map<string, Set<string>>();
@@ -70,8 +80,99 @@ const AUTO_COMPACT_RATIO = Number.isFinite(configuredAutoCompactRatio)
   ? Math.min(0.9, Math.max(0.35, configuredAutoCompactRatio))
   : 0.62;
 
+function runtimeEventAsCoworkMessage(event: AgentRuntimeEvent): Record<string, unknown> {
+  if (event.type === "session") {
+    return { session_id: event.sessionId };
+  }
+  if (event.type === "status") {
+    const subtype = {
+      initializing: "init",
+      hooks: "hook_started",
+      retrying: "api_retry",
+      compacting: "compact_boundary",
+      subtask_start: "task_started",
+      subtask_progress: "task_progress",
+      working: "status"
+    }[event.status];
+    return {
+      type: "system",
+      subtype,
+      ...(event.error ? { error: { message: event.error } } : {})
+    };
+  }
+  if (event.type === "message_start") {
+    return { type: "stream_event", event: { type: "message_start" } };
+  }
+  if (event.type === "content_start") {
+    const contentBlock = event.block.type === "reasoning"
+      ? { type: "thinking", thinking: event.block.text }
+      : event.block;
+    return {
+      type: "stream_event",
+      event: {
+        type: "content_block_start",
+        index: event.index,
+        content_block: contentBlock
+      }
+    };
+  }
+  if (event.type === "content_delta") {
+    const delta = event.delta.type === "text"
+      ? { type: "text_delta", text: event.delta.text }
+      : event.delta.type === "reasoning"
+        ? { type: "thinking_delta", thinking: event.delta.text }
+        : { type: "input_json_delta", partial_json: event.delta.partialJson };
+    return {
+      type: "stream_event",
+      event: { type: "content_block_delta", index: event.index, delta }
+    };
+  }
+  if (event.type === "content_stop") {
+    return {
+      type: "stream_event",
+      event: { type: "content_block_stop", index: event.index }
+    };
+  }
+  if (event.type === "assistant") {
+    return {
+      type: "assistant",
+      parent_tool_use_id: event.parentToolUseId,
+      message: {
+        usage: event.usage,
+        content: event.content.map((block) => (
+          block.type === "reasoning"
+            ? { type: "thinking", thinking: block.text }
+            : block
+        ))
+      }
+    };
+  }
+  if (event.type === "tool_result") {
+    return {
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: event.toolUseId,
+          content: event.content,
+          is_error: event.isError
+        }]
+      }
+    };
+  }
+  return {
+    type: "result",
+    subtype: event.subtype || (event.success ? "success" : "error_during_execution"),
+    result: event.output,
+    error: event.error,
+    errors: event.errors,
+    usage: event.usage,
+    is_error: !event.success
+  };
+}
+
 function persistTask(task: CoworkTask): void {
-  saveCoworkTask(task, claudeSessions.get(task.id)?.id, compactContexts.get(task.id));
+  saveCoworkTask(task, agentSessions.get(task.id)?.id, compactContexts.get(task.id));
 }
 
 function restoreCoworkState(): void {
@@ -93,8 +194,8 @@ function restoreCoworkState(): void {
     });
     tasks.set(task.id, task);
     messages.set(task.id, restoredMessages);
-    if (record.claudeSessionId) {
-      claudeSessions.set(task.id, { id: record.claudeSessionId, started: true });
+    if (record.agentSessionId) {
+      agentSessions.set(task.id, { id: record.agentSessionId, started: true });
     }
     if (record.compactContext) compactContexts.set(task.id, record.compactContext);
   }
@@ -136,11 +237,6 @@ function compactTaskContext(taskMessages: CoworkMessage[]): string {
     .slice(-12000);
 }
 
-function isContextOverflowError(value: unknown): boolean {
-  const text = typeof value === "string" ? value : JSON.stringify(value || "");
-  return /exceeds the available context size|exceedcontextsizeerror|exceed_context_size|n_prompt_tokens.{0,80}n_ctx/i.test(text);
-}
-
 function estimateCoworkContext(task: CoworkTask, taskMessages: CoworkMessage[]): number {
   let characters = task.compactedAt ? 11_200 : 0;
   let assistantTurns = 0;
@@ -171,7 +267,7 @@ function compactCoworkTask(
     persistentAgentSessions.delete(taskId);
   }
   compactContexts.set(taskId, compactTaskContext(messages.get(taskId) || []));
-  claudeSessions.set(taskId, { started: false });
+  agentSessions.set(taskId, { started: false });
   taskAllowedTools.delete(taskId);
   task.contextUsed = 0;
   task.compactedAt = Date.now();
@@ -196,26 +292,6 @@ function compactCoworkTask(
   return message;
 }
 
-function modelStyleHash(style: string): string {
-  return crypto.createHash("sha256").update(style.trim() || "你是本地助手，接在本机 Llama / OpenAI-compatible 接口上。").digest("hex").slice(0, 16);
-}
-
-function reasoningCapability(settings: Settings): {
-  control: ReturnType<typeof detectReasoningControl>;
-  efforts: string;
-} {
-  const model = settings.llamaModels.find((item) => item.name === settings.model);
-  return {
-    control: model?.reasoningControl ?? detectReasoningControl(settings.model),
-    efforts: (model?.reasoningEfforts || []).join(",")
-  };
-}
-
-function bridgeFingerprint(settings: Settings): string {
-  const capability = reasoningCapability(settings);
-  return `${settings.llamaUrl}\n${settings.model}\n${capability.control}\n${capability.efforts}\n${modelStyleHash(settings.systemPrompt)}`;
-}
-
 const homeDir = process.env.HOME || os.homedir();
 const launchCwd = process.env.PWD;
 let defaultCwd =
@@ -233,144 +309,38 @@ function resolveWorkingDir(rawPath?: string): string {
   return homeDir;
 }
 
-function coworkHistory(taskId: string, taskMessages: CoworkMessage[]): ChatMessage[] {
-  return taskMessages
-    .filter((message) => message.role !== "system" && message.content.trim())
-    .map((message) => ({
-      id: message.id,
-      conversationId: taskId,
-      role: message.role as "user" | "assistant",
-      content: message.content,
-      thinking: "",
-      attachments: message.attachments || [],
-      createdAt: message.createdAt
-    }));
-}
-
-function startDirectAnswer(opts: {
-  win: BrowserWindow | null;
-  task: CoworkTask;
-  taskMessages: CoworkMessage[];
-  assistant: CoworkMessage;
-  prompt: string;
-  settings: Settings;
-  effort: Effort;
-  vision: boolean;
-}): void {
-  const { win, task, assistant, settings } = opts;
-  const abort = new AbortController();
-  let finished = false;
-  let timedOut = false;
-  const startedAt = Date.now();
-  activeDirectAnswers.get(task.id)?.abort();
-  activeDirectAnswers.set(task.id, abort);
-  assistant.activity = "Answering";
-
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    abort.abort();
-  }, 90_000);
-
-  const finish = (
-    status: "done" | "error",
-    content: string,
-    usage?: { inputTokens: number; outputTokens: number; cacheTokens?: number }
-  ): void => {
-    if (finished) return;
-    finished = true;
-    clearTimeout(timeout);
-    if (activeDirectAnswers.get(task.id) === abort) activeDirectAnswers.delete(task.id);
-    assistant.content = content;
-    assistant.status = status;
-    assistant.activity = status === "done" ? "Completed" : "Task failed";
-    assistant.durationSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-    if (usage) {
-      const cacheTokens = usage.cacheTokens || 0;
-      const used = usage.inputTokens + usage.outputTokens + cacheTokens;
-      recordTokenUsage(usage.inputTokens, usage.outputTokens, cacheTokens, settings.model);
-      task.contextUsed = used;
-      assistant.contextUsed = used;
-    }
-    task.updatedAt = Date.now();
-    saveCoworkMessage(assistant);
-    persistTask(task);
-    win?.webContents.send("cowork:event", {
-      taskId: task.id,
-      messageId: assistant.id,
-      type: "done",
-      content: assistant.content,
-      thinking: assistant.thinking,
-      toolCalls: [],
-      contextUsed: task.contextUsed,
-      contextTotal: task.contextTotal || 16384,
-      durationSeconds: assistant.durationSeconds,
-      exitCode: status === "done" ? 0 : 1
-    });
-  };
-
-  void streamChat({
-    settings,
-    conversationId: task.id,
-    history: coworkHistory(task.id, opts.taskMessages),
-    userText: opts.prompt,
-    attachments: [],
-    effort: opts.effort,
-    webSearch: false,
-    vision: opts.vision,
-    abort,
-    instructionMode: "cowork",
-    handlers: {
-      onStatus: () => {
-        saveCoworkMessage(assistant);
-        win?.webContents.send("cowork:event", {
-          taskId: task.id,
-          messageId: assistant.id,
-          type: "activity",
-          activity: "Answering"
-        });
-      },
-      onDelta: ({ content, thinking }) => {
-        if (thinking !== undefined) assistant.thinking = thinking;
-        if (content !== undefined) assistant.content = content;
-        if (thinking !== undefined) {
-          saveCoworkMessage(assistant);
-          win?.webContents.send("cowork:event", {
-            taskId: task.id,
-            messageId: assistant.id,
-            type: "thinking",
-            thinking,
-            activity: content ? "Answering" : "Thinking"
-          });
-        }
-        if (content === undefined) return;
-        saveCoworkMessage(assistant);
-        win?.webContents.send("cowork:event", {
-          taskId: task.id,
-          messageId: assistant.id,
-          type: "text",
-          content,
-          activity: "Answering"
-        });
-      },
-      onResearch: () => {},
-      onDone: (result) => {
-        const fallback = timedOut
-          ? (settings.language === "zh" ? "回答超时，请重试。" : "The answer timed out. Please try again.")
-          : result.stopped && !result.content.trim()
-            ? (settings.language === "zh" ? "已停止。" : "Stopped.")
-            : result.content;
-        finish(timedOut ? "error" : "done", fallback, result.usage);
-      },
-      onError: (error) => finish("error", error)
-    }
-  }).catch((error) => {
-    finish("error", error instanceof Error ? error.message : String(error));
-  });
+function refreshCoworkTitleAfterAnswer(
+  win: BrowserWindow | null,
+  task: CoworkTask,
+  assistant: CoworkMessage,
+  settings: Settings
+): void {
+  if (!assistant.content.trim()) return;
+  const taskMessages = messages.get(task.id) || [];
+  const userMessages = taskMessages.filter((message) => message.role === "user");
+  if (userMessages.length !== 1) return;
+  const firstPrompt = userMessages[0].content.trim();
+  if (!firstPrompt) return;
+  const initialTitle = immediateConversationTitle(firstPrompt);
+  if (task.title !== initialTitle) return;
+  const taskId = task.id;
+  void generateConversationTitle(firstPrompt, assistant.content, settings)
+    .then((generatedTitle) => {
+      const currentTask = tasks.get(taskId);
+      if (!currentTask || currentTask.title !== initialTitle || generatedTitle === initialTitle) return;
+      currentTask.title = generatedTitle;
+      currentTask.updatedAt = Date.now();
+      persistTask(currentTask);
+      win?.webContents.send("cowork:event", {
+        taskId,
+        type: "renamed",
+        title: generatedTitle
+      });
+    })
+    .catch(() => undefined);
 }
 
 export function shutdownCoworkRuntime(): void {
-  for (const abort of activeDirectAnswers.values()) abort.abort();
-  activeDirectAnswers.clear();
   for (const session of persistentAgentSessions.values()) {
     session.runtime.abortController.abort();
     session.runtime.close();
@@ -379,18 +349,6 @@ export function shutdownCoworkRuntime(): void {
   for (const taskId of new Set(Array.from(pendingApprovals.values()).map((item) => item.taskId))) {
     cancelTaskApprovals(taskId, "Lumen is shutting down.");
   }
-  bridgeProcess?.kill("SIGTERM");
-  bridgeProcess = null;
-  bridgeStartup = null;
-  bridgeConfig = "";
-}
-
-function runtimeResource(name: string): string | null {
-  const candidates = [
-    path.join(process.resourcesPath, "runtime", name),
-    path.join(app.getAppPath(), "resources", "runtime", name)
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
 function taskAttachmentDirectory(taskId: string): string {
@@ -421,85 +379,6 @@ function materializeCoworkAttachments(taskId: string, attachments: Attachment[])
   });
 }
 
-async function bridgeReady(settings?: Settings): Promise<boolean> {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), 800);
-  try {
-    const response = await fetch(`${CLAUDE_BRIDGE_URL}/health`, { signal: abort.signal });
-    if (!response.ok) return false;
-    if (!settings) return true;
-    const status = await response.json() as Record<string, string>;
-    const capability = reasoningCapability(settings);
-    return status.bridge === "lumen-claude" &&
-      status.backend?.replace(/\/+$/, "") === settings.llamaUrl.replace(/\/+$/, "") &&
-      status.model === settings.model &&
-      status.reasoningControl === capability.control &&
-      status.reasoningEfforts === capability.efforts &&
-      status.styleHash === modelStyleHash(settings.systemPrompt);
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function startClaudeBridge(settings = getSettings()): Promise<void> {
-  // A user's existing bridge may serve active Cowork sessions. Never replace it.
-  if (await bridgeReady(settings)) return;
-  const script = runtimeResource("claude-bridge.mjs");
-  if (!script) throw new Error("The bundled Cowork bridge is missing from this installation.");
-  const capability = reasoningCapability(settings);
-  bridgeProcess = spawn(process.execPath, [script], {
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-      LLAMA_URL: settings.llamaUrl,
-      LLAMA_API_KEY: settings.llamaApiKey,
-      LLAMA_MODEL_ALIAS: settings.model,
-      LLAMA_REASONING_CONTROL: capability.control,
-      LLAMA_REASONING_EFFORTS: capability.efforts,
-      LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
-      LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
-      CLAUDE_BRIDGE_HOST: "127.0.0.1",
-      CLAUDE_BRIDGE_PORT: "18086"
-    },
-    detached: false,
-    stdio: "ignore"
-  });
-  bridgeProcess.once("exit", () => {
-    bridgeProcess = null;
-    bridgeConfig = "";
-  });
-  bridgeConfig = bridgeFingerprint(settings);
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (await bridgeReady(settings)) return;
-  }
-  bridgeProcess?.kill();
-  bridgeProcess = null;
-  throw new Error("The bundled Cowork bridge could not start on port 18086.");
-}
-
-export async function ensureClaudeBridge(): Promise<void> {
-  const settings = getSettings();
-  const wantedConfig = bridgeFingerprint(settings);
-  if (bridgeProcess && bridgeConfig !== wantedConfig) {
-    bridgeProcess.kill();
-    for (let attempt = 0; attempt < 20 && await bridgeReady(); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    bridgeProcess = null;
-    bridgeConfig = "";
-  }
-  if (await bridgeReady(settings)) return;
-  if (!bridgeStartup) {
-    bridgeStartup = startClaudeBridge(settings).finally(() => {
-      bridgeStartup = null;
-    });
-  }
-  await bridgeStartup;
-}
-
 function persistentSessionKey(opts: {
   cwd: string;
   model: string;
@@ -510,6 +389,7 @@ function persistentSessionKey(opts: {
   return JSON.stringify({
     cwd: opts.cwd,
     model: opts.model,
+    engine: opts.settings.coworkEngine,
     effort: opts.effort || "medium",
     permission: opts.settings.coworkPermissionMode,
     plugins: opts.settings.plugins,
@@ -518,7 +398,7 @@ function persistentSessionKey(opts: {
   });
 }
 
-function startPersistentClaudeRun(opts: {
+function startPersistentAgentRun(opts: {
   win: BrowserWindow | null;
   task: CoworkTask;
   assistant: CoworkMessage;
@@ -531,8 +411,9 @@ function startPersistentClaudeRun(opts: {
   toolHost: Awaited<ReturnType<typeof ensureToolHost>>;
   permissionMode: Settings["coworkPermissionMode"];
   tools: string[];
-  session: ClaudeSessionState;
+  session: AgentSessionState;
   autoCompactAttempt?: number;
+  outputContinuationAttempt?: number;
 }): void {
   const { win, task, assistant, settings } = opts;
   const taskId = task.id;
@@ -542,11 +423,16 @@ function startPersistentClaudeRun(opts: {
     (assistant.toolCalls || []).map((toolCall) => [toolCall.id, toolCall])
   );
   const streamingTools = new Map<number, { id: string; partialJson: string }>();
+  const streamingThinking = new Map<number, string>();
+  const repeatedToolErrors = new Map<string, number>();
+  const trace: CoworkTraceEntry[] = assistant.trace || [];
   const committedText: string[] = assistant.content ? [assistant.content] : [];
   let thinkingText = assistant.thinking || "";
   let partialText = "";
   let finalUsage: ReturnType<typeof parseModelUsage>;
   let finished = false;
+  let backendOutputBoundaryReached = false;
+  let outputContinuationAttempts = opts.outputContinuationAttempt || 0;
   let persistTimer: NodeJS.Timeout | null = null;
   let textTimer: NodeJS.Timeout | null = null;
   let runtimeTimer: NodeJS.Timeout | null = null;
@@ -554,6 +440,7 @@ function startPersistentClaudeRun(opts: {
 
   assistant.checkpointId = opts.checkpointId;
   assistant.rewindAvailable = false;
+  assistant.trace = trace;
 
   const persistAssistant = (immediate = false) => {
     if (immediate) {
@@ -592,7 +479,9 @@ function startPersistentClaudeRun(opts: {
     }
   };
   const commitText = (text: string) => {
-    const value = text.trim();
+    const value = stripRuntimeApiError(
+      stripOutputBoundaryMarker(stripOutputLimitError(text))
+    );
     if (value && committedText.at(-1) !== value) committedText.push(value);
     partialText = "";
     publishText(true);
@@ -607,14 +496,52 @@ function startPersistentClaudeRun(opts: {
     thinkingText = thinking.slice(-48_000);
     assistant.thinking = thinkingText;
     assistant.activity = "Thinking";
-    send({ type: "thinking", thinking: thinkingText, activity: assistant.activity });
+    send({ type: "thinking", thinking: thinkingText, trace, activity: assistant.activity });
+  };
+  const startThinkingTrace = (index: number, initial = "") => {
+    const last = trace.at(-1);
+    const entry = last?.kind === "thinking" && !last.text
+      ? last
+      : {
+          id: crypto.randomUUID(),
+          kind: "thinking" as const,
+          text: "",
+          createdAt: Date.now()
+        };
+    entry.text = initial;
+    if (entry !== last) trace.push(entry);
+    streamingThinking.set(index, entry.id);
+    assistant.trace = trace;
+    if (initial) publishThinking(`${thinkingText}${initial}`);
+    else send({ type: "thinking", thinking: thinkingText, trace, activity: "Thinking" });
+  };
+  const appendThinkingTrace = (index: number, chunk: string) => {
+    let entryId = streamingThinking.get(index);
+    if (!entryId) {
+      startThinkingTrace(index);
+      entryId = streamingThinking.get(index);
+    }
+    const entry = trace.find((item) => item.id === entryId);
+    if (entry) entry.text = `${entry.text || ""}${chunk}`.slice(-24_000);
+    publishThinking(`${thinkingText}${chunk}`);
+  };
+  const recordToolTrace = (toolCall: CoworkToolCall) => {
+    if (trace.some((entry) => entry.kind === "tool" && entry.toolCallId === toolCall.id)) return;
+    trace.push({
+      id: crypto.randomUUID(),
+      kind: "tool",
+      toolCallId: toolCall.id,
+      createdAt: toolCall.startedAt || Date.now()
+    });
+    assistant.trace = trace;
   };
   const publishTools = (type: "tool_use" | "tool_result", toolCall?: CoworkToolCall) => {
     if (textTimer) flushText();
     assistant.toolCalls = Array.from(toolCalls.values());
+    if (type === "tool_use" && toolCall) recordToolTrace(toolCall);
     if (toolCall) assistant.activity = type === "tool_use" ? toolActivity(toolCall) : "Reviewing";
     send(
-      { type, toolCall, toolCalls: assistant.toolCalls, activity: assistant.activity },
+      { type, toolCall, toolCalls: assistant.toolCalls, trace, activity: assistant.activity },
       type === "tool_result"
     );
   };
@@ -634,7 +561,6 @@ function startPersistentClaudeRun(opts: {
   const appendRuntimeOutput = (data: string) => {
     assistant.runtimeOutput = `${assistant.runtimeOutput || ""}${data}`
       .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
-      .replace(/\[claude-code:unrecognized_model\][^\n]*(?:\n|$)/g, "")
       .slice(-262_144);
     if (!runtimeTimer) {
       runtimeTimer = setTimeout(() => {
@@ -695,18 +621,19 @@ function startPersistentClaudeRun(opts: {
   }
   if (!agentSession) {
     const holder: PersistentAgentSession = {
-      runtime: undefined as unknown as ClaudeAgentRuntime,
+      runtime: undefined as unknown as AgentRuntime,
       configKey
     };
     const permissionMode =
       opts.permissionMode === "full" ? "bypassPermissions"
         : opts.permissionMode === "approve" ? "auto"
           : "default";
-    holder.runtime = startClaudeAgentRuntime({
+    holder.runtime = startNativeAgentRuntime({
       prompt: "",
       persistent: true,
       cwd: opts.cwd,
       model: opts.model,
+      modelEndpoint: { baseUrl: settings.llamaUrl, apiKey: settings.llamaApiKey },
       effort: opts.effort,
       resume: opts.session.started ? opts.session.id : undefined,
       tools: opts.tools,
@@ -726,14 +653,10 @@ function startPersistentClaudeRun(opts: {
       },
       env: {
         ...process.env,
-        ANTHROPIC_BASE_URL: CLAUDE_BRIDGE_URL,
-        ANTHROPIC_API_KEY: "sk-local-llama",
         PATH: `${homeDir}/.local/bin:${process.env.PATH || ""}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`,
         HOME: homeDir,
         LANG: "en_US.UTF-8",
-        CLAUDE_EFFORT: opts.effort || "medium",
         LLAMA_MODEL_ALIAS: opts.model,
-        LLAMA_SYSTEM_PROMPT_PATH: SYSTEM_PROMPT_PATH,
         LLAMA_SYSTEM_PROMPT: settings.systemPrompt,
         ELECTRON_RUN_AS_NODE: "1",
         LUMEN_TOOL_HOST_URL: opts.toolHost.url,
@@ -743,8 +666,7 @@ function startPersistentClaudeRun(opts: {
         LUMEN_PLUGIN_SITES: settings.plugins.sites ? "1" : "0",
         LUMEN_PLUGIN_MANAGEMENT: settings.plugins.plugins ? "1" : "0",
         LUMEN_COMPUTER_USE_CHROME: settings.computerUseChromeEnabled ? "1" : "0",
-        LUMEN_COWORK_PERMISSION_MODE: opts.permissionMode,
-        CLAUDE_AGENT_SDK_CLIENT_APP: "lumen/0.7.0"
+        LUMEN_COWORK_PERMISSION_MODE: opts.permissionMode
       },
       permissionMode,
       canUseTool: permissionMode === "bypassPermissions"
@@ -761,14 +683,19 @@ function startPersistentClaudeRun(opts: {
             return current.canUseTool(toolName, input, options);
           },
       onStderr: (data) => holder.current?.onStderr(data),
-      onMessage: (message) => holder.current?.onMessage(message)
+      onEvent: (runtimeEvent) => holder.current?.onEvent(runtimeEvent)
     });
     holder.runtime.done
+      .then(() => {
+        holder.current?.finish(1, "Agent runtime ended without a terminal result.");
+      })
       .catch((error) => {
         holder.current?.finish(1, error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
-        persistentAgentSessions.delete(taskId);
+        if (persistentAgentSessions.get(taskId) === holder) {
+          persistentAgentSessions.delete(taskId);
+        }
       });
     agentSession = holder;
     persistentAgentSessions.set(taskId, holder);
@@ -776,8 +703,15 @@ function startPersistentClaudeRun(opts: {
 
   const finish = (exitCode: number, error?: string) => {
     if (finished) return;
+    if (error && recoverFromOutputLimit(error)) return;
     finished = true;
-    if (error) appendRuntimeOutput(`${error}\n`);
+    if (error) {
+      appendRuntimeOutput(
+        isOutputLimitError(error)
+          ? "Automatic continuation stopped after 3 attempts.\n"
+          : `${error}\n`
+      );
+    }
     cancelTaskApprovals(taskId, "Agent run ended before approval.");
     assistant.status = exitCode === 0 ? "done" : "error";
     assistant.activity = exitCode === 0 ? "Completed" : "Task failed";
@@ -813,6 +747,7 @@ function startPersistentClaudeRun(opts: {
       content: assistant.content,
       thinking: assistant.thinking,
       toolCalls: assistant.toolCalls,
+      trace: assistant.trace,
       approvals: assistant.approvals,
       runtimeOutput: assistant.runtimeOutput,
       contextUsed: task.contextUsed,
@@ -820,10 +755,14 @@ function startPersistentClaudeRun(opts: {
       durationSeconds: assistant.durationSeconds,
       exitCode
     }, true);
+    if ((assistant.toolCalls || []).some((tool) => /__(?:browser|chrome)_/.test(tool.name))) {
+      void releaseChromeComputerUse();
+    }
+    if (exitCode === 0) refreshCoworkTitleAfterAnswer(win, task, assistant, settings);
     const currentSession = persistentAgentSessions.get(taskId);
     if (currentSession) currentSession.current = undefined;
     if (exitCode === 0) {
-      void agentSession!.runtime.query
+      void agentSession!.runtime
         .rewindFiles(opts.checkpointId, { dryRun: true })
         .then((result) => {
           assistant.rewindAvailable = result.canRewind;
@@ -840,6 +779,7 @@ function startPersistentClaudeRun(opts: {
   const recoverFromContextOverflow = () => {
     if (finished || (opts.autoCompactAttempt || 0) >= 1) return false;
     finished = true;
+    const previousRuntimeDone = agentSession?.runtime.done.catch(() => undefined);
     if (textTimer) clearTimeout(textTimer);
     if (runtimeTimer) clearTimeout(runtimeTimer);
     if (persistTimer) clearTimeout(persistTimer);
@@ -847,6 +787,7 @@ function startPersistentClaudeRun(opts: {
     runtimeTimer = null;
     persistTimer = null;
     cancelTaskApprovals(taskId, "Context was compacted before retrying.");
+    assistant.content = stripRuntimeApiError(assistant.content);
     assistant.activity = "Compacting context";
     assistant.runtimeOutput = `${assistant.runtimeOutput || ""}\nContext automatically compacted; continuing the same task.\n`;
     saveCoworkMessage(assistant);
@@ -857,14 +798,21 @@ function startPersistentClaudeRun(opts: {
     }, true);
     compactCoworkTask(task, "automatic");
     const compactedContext = compactContexts.get(taskId) || "";
+    const completedTools = (assistant.toolCalls || []).slice(-8).map((tool) => ({
+      name: tool.name,
+      status: tool.status,
+      input: tool.input,
+      output: tool.output?.slice(-400)
+    }));
     const recoveryPrompt = [
-      `<compacted_context>\n${compactedContext}\n</compacted_context>`,
-      "<context_recovery>Continue the interrupted task from this bounded context. Reuse completed results and do not repeat completed tool calls.</context_recovery>",
-      opts.effectivePrompt.slice(-6000)
+      `<compacted_context>\n${compactedContext.slice(0, 1600)}\n</compacted_context>`,
+      `<completed_tools>\n${JSON.stringify(completedTools).slice(-1800)}\n</completed_tools>`,
+      `<original_task_tail>\n${opts.effectivePrompt.slice(-1800)}\n</original_task_tail>`,
+      "<context_recovery>Continue from the next unfinished action. Do not repeat completed tool calls. If all requested actions completed, give only the concise final result.</context_recovery>"
     ].join("\n\n");
-    setTimeout(() => {
+    const restart = () => {
       try {
-        startPersistentClaudeRun({
+        startPersistentAgentRun({
           ...opts,
           effectivePrompt: recoveryPrompt,
           session: { started: false },
@@ -885,6 +833,91 @@ function startPersistentClaudeRun(opts: {
             content: assistant.content,
             thinking: assistant.thinking,
             toolCalls: assistant.toolCalls,
+            trace: assistant.trace,
+            runtimeOutput: assistant.runtimeOutput,
+            contextUsed: task.contextUsed,
+            contextTotal: task.contextTotal || DEFAULT_CONTEXT_TOTAL,
+            exitCode: 1
+          });
+        }
+      }
+    };
+    void Promise.race([
+      previousRuntimeDone || Promise.resolve(),
+      new Promise<void>((resolve) => setTimeout(resolve, 750))
+    ]).then(restart);
+    return true;
+  };
+  function continueFromOutputBoundary(reason: "backend" | "sdk"): boolean {
+    if (
+      finished ||
+      outputContinuationAttempts >= MAX_OUTPUT_CONTINUATIONS
+    ) return false;
+    outputContinuationAttempts += 1;
+    assistant.content = stripOutputBoundaryMarker(stripOutputLimitError(assistant.content));
+    for (let index = 0; index < committedText.length; index += 1) {
+      committedText[index] = stripOutputBoundaryMarker(stripOutputLimitError(committedText[index]));
+    }
+    partialText = stripOutputBoundaryMarker(stripOutputLimitError(partialText));
+    const cleanRuntimeOutput = stripOutputLimitError(assistant.runtimeOutput || "");
+    assistant.runtimeOutput = cleanRuntimeOutput ? `${cleanRuntimeOutput}\n` : "";
+    assistant.activity = "Continuing";
+    appendRuntimeOutput(
+      `${reason === "backend" ? "Local output segment completed" : "Output limit reached"}; automatically continuing unfinished work (${outputContinuationAttempts}/${MAX_OUTPUT_CONTINUATIONS}).\n`
+    );
+    send({
+      type: "activity",
+      activity: assistant.activity,
+      content: assistant.content,
+      runtimeOutput: assistant.runtimeOutput
+    }, true);
+    finished = true;
+    if (textTimer) clearTimeout(textTimer);
+    if (runtimeTimer) clearTimeout(runtimeTimer);
+    if (persistTimer) clearTimeout(persistTimer);
+    textTimer = null;
+    runtimeTimer = null;
+    persistTimer = null;
+    const previousSession = agentSession!;
+    previousSession.current = undefined;
+    if (persistentAgentSessions.get(taskId) === previousSession) {
+      persistentAgentSessions.delete(taskId);
+    }
+    previousSession.runtime.close();
+    const completedTools = (assistant.toolCalls || []).map((tool) => ({
+      name: tool.name,
+      status: tool.status,
+      input: tool.input,
+      output: tool.output?.slice(-2000)
+    }));
+    const recoveryPrompt = buildOutputRecoveryPrompt({
+      effectivePrompt: opts.effectivePrompt,
+      assistantContent: assistant.content,
+      assistantThinking: assistant.thinking,
+      completedTools
+    });
+    setTimeout(() => {
+      try {
+        startPersistentAgentRun({
+          ...opts,
+          effectivePrompt: recoveryPrompt,
+          session: { started: false },
+          outputContinuationAttempt: outputContinuationAttempts
+        });
+      } catch (error) {
+        assistant.status = "error";
+        assistant.activity = "Task failed";
+        assistant.runtimeOutput = `${assistant.runtimeOutput || ""}${error instanceof Error ? error.message : String(error)}\n`;
+        saveCoworkMessage(assistant);
+        if (win && !win.isDestroyed()) {
+          win.webContents.send("cowork:event", {
+            taskId,
+            messageId,
+            type: "done",
+            content: assistant.content,
+            thinking: assistant.thinking,
+            toolCalls: assistant.toolCalls,
+            trace: assistant.trace,
             runtimeOutput: assistant.runtimeOutput,
             contextUsed: task.contextUsed,
             contextTotal: task.contextTotal || DEFAULT_CONTEXT_TOTAL,
@@ -894,20 +927,32 @@ function startPersistentClaudeRun(opts: {
       }
     }, 0);
     return true;
+  }
+
+  function recoverFromOutputLimit(source: unknown): boolean {
+    if (!isOutputLimitError(source)) return false;
+    return continueFromOutputBoundary("sdk");
+  }
+
+  const handleStderr = (data: string) => {
+    appendRuntimeOutput(data);
+    recoverFromOutputLimit(data);
   };
 
-  const onMessage = (raw: unknown) => {
-    const message = raw as any;
+  const onEvent = (event: AgentRuntimeEvent) => {
+    const message = runtimeEventAsCoworkMessage(event) as any;
     if (message.session_id) {
-      claudeSessions.set(taskId, { id: message.session_id, started: true });
+      agentSessions.set(taskId, { id: message.session_id, started: true });
       persistTask(task);
     }
     if (message.type === "system") {
       if (message.subtype === "init") publishActivity("Initializing");
       else if (message.subtype === "hook_started") publishActivity("Running hooks");
       else if (message.subtype === "api_retry") {
+        const retryError = message.error?.message || "Model request retry";
         publishActivity("Retrying");
-        appendRuntimeOutput(`${message.error?.message || "Model request retry"}\n`);
+        appendRuntimeOutput(`${retryError}\n`);
+        recoverFromOutputLimit(retryError);
       } else if (message.subtype === "compact_boundary") publishActivity("Compacting context");
       else if (message.subtype === "task_started") publishActivity("Starting subtask");
       else if (message.subtype === "task_progress") publishActivity("Running subtask");
@@ -935,17 +980,19 @@ function startPersistentClaudeRun(opts: {
           publishTools("tool_use", toolCall);
         } else if (block?.type === "thinking") {
           const initialThinking = block.thinking || block.text || "";
-          if (initialThinking) publishThinking(`${thinkingText}${initialThinking}`);
-          else publishActivity("Thinking");
+          startThinkingTrace(index, initialThinking);
         }
       } else if (event.type === "content_block_delta") {
         const delta = event.delta;
         if (delta?.type === "text_delta" && typeof delta.text === "string") {
-          partialText += delta.text;
+          if (delta.text.includes(OUTPUT_BOUNDARY_MARKER)) {
+            backendOutputBoundaryReached = true;
+          }
+          partialText += stripOutputBoundaryMarker(delta.text);
           publishText();
         } else if (delta?.type === "thinking_delta") {
           const thinking = delta.thinking || delta.text || delta.reasoning_content || "";
-          if (thinking) publishThinking(`${thinkingText}${thinking}`);
+          if (thinking) appendThinkingTrace(index, thinking);
           else publishActivity("Thinking");
         } else if (delta?.type === "input_json_delta") {
           const streamed = streamingTools.get(index);
@@ -962,6 +1009,7 @@ function startPersistentClaudeRun(opts: {
           }
         }
       } else if (event.type === "content_block_stop") {
+        streamingThinking.delete(index);
         const streamed = streamingTools.get(index);
         if (streamed) {
           streamingTools.delete(index);
@@ -982,11 +1030,15 @@ function startPersistentClaudeRun(opts: {
         .filter((block: any) => block.type === "text" && block.text)
         .map((block: any) => block.text)
         .join("\n\n");
+      if (text.includes(OUTPUT_BOUNDARY_MARKER)) {
+        backendOutputBoundaryReached = true;
+      }
+      const visibleText = stripOutputBoundaryMarker(text);
       if (message.parent_tool_use_id) {
-        if (text) appendRuntimeOutput(`[Subagent]\n${text}\n`);
+        if (visibleText) appendRuntimeOutput(`[Subagent]\n${visibleText}\n`);
         return;
       }
-      if (text || partialText) commitText(text || partialText);
+      if (visibleText || partialText) commitText(visibleText || partialText);
       for (const block of message.message.content) {
         if (block.type !== "tool_use") continue;
         const id = block.id || crypto.randomUUID();
@@ -1011,16 +1063,57 @@ function startPersistentClaudeRun(opts: {
         if (!toolCall) continue;
         toolCall.status = block.is_error ? "error" : "completed";
         toolCall.completedAt = Date.now();
-        toolCall.output = (
+        const toolOutput = (
           typeof block.content === "string" ? block.content : JSON.stringify(block.content, null, 2)
         ).slice(-262_144);
+        toolCall.output = toolOutput;
         publishTools("tool_result", toolCall);
+        if (block.is_error) {
+          const errorKey = `${toolCall.name}:${toolOutput.slice(-400)}`;
+          const attempts = (repeatedToolErrors.get(errorKey) || 0) + 1;
+          repeatedToolErrors.set(errorKey, attempts);
+          if (attempts >= 3) {
+            void agentSession?.runtime.interrupt().catch(() => undefined);
+            finish(1, `Stopped after 3 identical ${toolCall.name} errors: ${toolOutput.slice(-240)}`);
+            return;
+          }
+        } else {
+          for (const key of repeatedToolErrors.keys()) {
+            if (key.startsWith(`${toolCall.name}:`)) repeatedToolErrors.delete(key);
+          }
+        }
       }
       return;
     }
     if (message.type === "result") {
-      if (!assistant.content && typeof message.result === "string") commitText(message.result);
+      const transientBackendFailure =
+        isTransientBackendError(message.result) ||
+        isTransientBackendError(message.error) ||
+        isTransientBackendError(message.errors);
+      if (
+        !assistant.content &&
+        typeof message.result === "string" &&
+        !message.is_error &&
+        !transientBackendFailure
+      ) {
+        commitText(message.result);
+      }
       absorbUsage(message.usage);
+      if (backendOutputBoundaryReached) {
+        if (continueFromOutputBoundary("backend")) return;
+        appendRuntimeOutput(
+          `Automatic continuation stopped after ${MAX_OUTPUT_CONTINUATIONS} attempts.\n`
+        );
+        finish(1);
+        return;
+      }
+      if (
+        recoverFromOutputLimit(message.result) ||
+        recoverFromOutputLimit(message.error) ||
+        recoverFromOutputLimit(message.errors)
+      ) {
+        return;
+      }
       if (
         isContextOverflowError(message.result) ||
         isContextOverflowError(message.error) ||
@@ -1029,15 +1122,21 @@ function startPersistentClaudeRun(opts: {
         if (recoverFromContextOverflow()) return;
       }
       if (Array.isArray(message.errors) && message.errors.length) {
-        appendRuntimeOutput(`${message.errors.join("\n")}\n`);
+        const visibleErrors = message.errors.filter((error: unknown) => !isOutputLimitError(error));
+        if (visibleErrors.length) appendRuntimeOutput(`${visibleErrors.join("\n")}\n`);
+      }
+      if (transientBackendFailure) {
+        assistant.content = settings.language === "zh"
+          ? "本地模型连接中断，Lumen 已自动重试三次但仍未恢复。请重新发送这一轮消息。"
+          : "The local model connection was interrupted. Lumen retried three times but could not recover; please resend this turn.";
       }
       finish(message.subtype === "success" && !message.is_error ? 0 : 1);
     }
   };
 
   agentSession.current = {
-    onMessage,
-    onStderr: appendRuntimeOutput,
+    onEvent,
+    onStderr: handleStderr,
     canUseTool,
     finish
   };
@@ -1088,12 +1187,6 @@ let coworkIpcRegistered = false;
 
 function stopCoworkTask(taskId: string): boolean {
   let stopped = false;
-  const direct = activeDirectAnswers.get(taskId);
-  if (direct) {
-    direct.abort();
-    activeDirectAnswers.delete(taskId);
-    stopped = true;
-  }
   const session = persistentAgentSessions.get(taskId);
   if (session?.current) {
     void session.runtime.interrupt().catch(() => undefined);
@@ -1116,11 +1209,12 @@ export function registerCoworkIpc(): void {
   ));
   ipcMain.handle("cowork:createTask", (_event, opts: { title?: string; cwd?: string } = {}) => {
     const now = Date.now();
+    const settings = getSettings();
     const task: CoworkTask = {
       id: crypto.randomUUID(),
       title: opts.title || "新任务",
       cwd: resolveWorkingDir(opts.cwd),
-      engine: "claude-agent",
+      engine: settings.coworkEngine,
       contextUsed: 0,
       contextTotal: 16384,
       createdAt: now,
@@ -1142,7 +1236,7 @@ export function registerCoworkIpc(): void {
     }
     tasks.delete(taskId);
     messages.delete(taskId);
-    claudeSessions.delete(taskId);
+    agentSessions.delete(taskId);
     compactContexts.delete(taskId);
     taskAllowedTools.delete(taskId);
     deletePersistedCoworkTask(taskId);
@@ -1203,7 +1297,7 @@ export function registerCoworkIpc(): void {
       };
     }
     try {
-      const result = await agentSession.runtime.query.rewindFiles(message.checkpointId, { dryRun });
+      const result = await agentSession.runtime.rewindFiles(message.checkpointId, { dryRun });
       if (!dryRun && result.canRewind) {
         message.rewindAvailable = false;
         message.activity = "Files restored";
@@ -1246,7 +1340,7 @@ export function registerCoworkIpc(): void {
         taskAllowedTools.set(pending.taskId, allowed);
       }
       const updatedPermissions = decision === "allow_session"
-        ? pending.suggestions?.map((suggestion) => ({ ...suggestion, destination: "session" })) as PermissionUpdate[] | undefined
+        ? pending.suggestions?.map((suggestion) => ({ ...suggestion, destination: "session" })) as AgentPermissionUpdate[] | undefined
         : undefined;
       pending.resolve({ behavior: "allow", updatedPermissions });
       return true;
@@ -1259,11 +1353,45 @@ export function registerCoworkIpc(): void {
     cwd?: string;
     effort?: string;
     model?: string;
+    regenerateMessageId?: string;
   }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     let settings = getSettings();
-    const attachments = materializeCoworkAttachments(opts.taskId, opts.attachments || []);
-    const prompt = opts.prompt.trim();
+    const existingMessages = messages.get(opts.taskId) || [];
+    const regenerateIndex = opts.regenerateMessageId
+      ? existingMessages.findIndex(
+          (message) => message.id === opts.regenerateMessageId && message.role === "assistant"
+        )
+      : -1;
+    const replacedAssistant = regenerateIndex >= 0 ? existingMessages[regenerateIndex] : undefined;
+    let latestAssistantIndex = -1;
+    for (let index = existingMessages.length - 1; index >= 0; index -= 1) {
+      if (existingMessages[index].role === "assistant") {
+        latestAssistantIndex = index;
+        break;
+      }
+    }
+    if (opts.regenerateMessageId && regenerateIndex !== latestAssistantIndex) {
+      throw new Error("Only the latest Cowork result can be regenerated.");
+    }
+    let sourceUser: CoworkMessage | undefined;
+    for (let index = regenerateIndex - 1; index >= 0; index -= 1) {
+      if (existingMessages[index].role === "user") {
+        sourceUser = existingMessages[index];
+        break;
+      }
+    }
+    if (opts.regenerateMessageId && !sourceUser) {
+      throw new Error("The user task for this Cowork result was not found.");
+    }
+    if (opts.regenerateMessageId && persistentAgentSessions.get(opts.taskId)?.current) {
+      throw new Error("Stop the running Cowork task before regenerating.");
+    }
+    const isRegeneration = Boolean(sourceUser);
+    const attachments = isRegeneration
+      ? sourceUser!.attachments || []
+      : materializeCoworkAttachments(opts.taskId, opts.attachments || []);
+    const prompt = isRegeneration ? sourceUser!.content.trim() : opts.prompt.trim();
     if (!prompt && attachments.length === 0) {
       throw new Error("Cowork prompt cannot be empty.");
     }
@@ -1296,7 +1424,7 @@ export function registerCoworkIpc(): void {
         id: opts.taskId,
         title: prompt.slice(0, 16) || "新任务",
         cwd: resolvedCwd,
-        engine: "claude-agent",
+        engine: settings.coworkEngine,
         contextUsed: 0,
         contextTotal: 16384,
         createdAt: now,
@@ -1306,12 +1434,27 @@ export function registerCoworkIpc(): void {
       messages.set(task.id, []);
     } else {
       task.cwd = resolvedCwd;
-      task.engine = "claude-agent";
+      task.engine = settings.coworkEngine;
       task.updatedAt = Date.now();
     }
 
+    const taskMessages = messages.get(task.id) || [];
+    if (isRegeneration) {
+      const index = taskMessages.findIndex((message) => message.id === opts.regenerateMessageId);
+      if (index < 0) throw new Error("Cowork result to regenerate was not found.");
+      taskMessages.splice(index, 1);
+      deletePersistedCoworkMessage(opts.regenerateMessageId!);
+      const staleSession = persistentAgentSessions.get(task.id);
+      if (staleSession) {
+        staleSession.runtime.abortController.abort();
+        staleSession.runtime.close();
+        persistentAgentSessions.delete(task.id);
+      }
+      agentSessions.set(task.id, { started: false });
+    }
+
     const contextTotal = task.contextTotal || DEFAULT_CONTEXT_TOTAL;
-    const estimatedContext = estimateCoworkContext(task, messages.get(task.id) || []);
+    const estimatedContext = estimateCoworkContext(task, taskMessages);
     task.contextUsed = Math.max(task.contextUsed || 0, estimatedContext);
     if (
       (task.contextUsed || 0) >= contextTotal * AUTO_COMPACT_RATIO &&
@@ -1322,9 +1465,7 @@ export function registerCoworkIpc(): void {
       compactCoworkTask(task, "automatic");
     }
 
-    const taskMessages = messages.get(task.id) || [];
-    const previousMessages = taskMessages.slice();
-    if (taskMessages.length === 0 && prompt) {
+    if (!isRegeneration && !taskMessages.some((message) => message.role === "user") && prompt) {
       const initialTitle = immediateConversationTitle(prompt);
       task.title = initialTitle;
       persistTask(task);
@@ -1333,24 +1474,9 @@ export function registerCoworkIpc(): void {
         type: "renamed",
         title: task.title
       });
-      const taskId = task.id;
-      void generateConversationTitle(prompt, undefined, settings)
-        .then((generatedTitle) => {
-          const currentTask = tasks.get(taskId);
-          if (!currentTask || currentTask.title !== initialTitle || generatedTitle === initialTitle) return;
-          currentTask.title = generatedTitle;
-          currentTask.updatedAt = Date.now();
-          persistTask(currentTask);
-          win?.webContents.send("cowork:event", {
-            taskId,
-            type: "renamed",
-            title: generatedTitle
-          });
-        })
-        .catch(() => undefined);
     }
 
-    const userMessage: CoworkMessage = {
+    const userMessage: CoworkMessage = sourceUser || {
       id: crypto.randomUUID(),
       taskId: task.id,
       role: "user",
@@ -1372,32 +1498,21 @@ export function registerCoworkIpc(): void {
       contextTotal: task.contextTotal || 16384,
       createdAt: Date.now() + 1
     };
-    taskMessages.push(userMessage, assistant);
+    if (!isRegeneration) taskMessages.push(userMessage);
+    taskMessages.push(assistant);
     messages.set(task.id, taskMessages);
-    saveCoworkMessage(userMessage);
+    if (!isRegeneration) saveCoworkMessage(userMessage);
     saveCoworkMessage(assistant);
     persistTask(task);
 
-    if (isCoworkDirectConversation(prompt, attachments.length > 0)) {
-      startDirectAnswer({
-        win,
-        task,
-        taskMessages: previousMessages,
-        assistant,
-        prompt,
-        settings,
-        effort: "none",
-        vision: llamaStatus.vision
-      });
-      return {
-        ok: true,
-        taskId: task.id,
-        userMsgId: userMessage.id,
-        asstMsgId: assistant.id
-      };
-    }
-
     const compactedContext = compactContexts.get(task.id);
+    const regenerationHistory = isRegeneration
+      ? taskMessages
+          .filter((message) => message.id !== sourceUser!.id && message.role !== "system" && message.content.trim())
+          .slice(-8)
+          .map((message) => `${message.role}: ${message.content.slice(0, 1200)}`)
+          .join("\n\n")
+      : "";
     const attachmentBlock = attachments.length
       ? `<attachments>\n${attachments
           .map((file) => `- ${file.path || file.name}${file.relativePath ? ` (${file.relativePath})` : ""}`)
@@ -1413,14 +1528,21 @@ export function registerCoworkIpc(): void {
       compactedContext
         ? `<compacted_context>\n${compactedContext}\n</compacted_context>`
         : "",
+      regenerationHistory
+        ? `<recent_task_history>\n${regenerationHistory}\n</recent_task_history>`
+        : "",
       "<reasoning_discipline>Use the shortest sufficient reasoning. Never repeat a completed check or restart an established approach. Never call Glob, Grep, Read, or any other tool with the exact same input twice in one turn; reuse the existing result. After the same operation fails twice, stop retrying and report the exact blocker.</reasoning_discipline>",
-      "<lumen_agent>Lumen Cowork uses Claude Agent SDK with local Llama inference. Use Lumen tools directly; do not delegate to another coding agent.</lumen_agent>",
+      "<execution_budget>Keep every model response below 20000 output tokens. For large work, execute in small phases: inspect only what the phase needs, write each completed phase directly to files, verify it, then continue. Never accumulate the entire implementation in one response or dump complete file contents into the final answer. Report concise outcomes and file paths.</execution_budget>",
+      "<lumen_agent>Lumen Cowork uses Lumen's native code-agent runtime with local OpenAI-compatible inference. Use Lumen tools directly.</lumen_agent>",
+      isRegeneration
+        ? "<regeneration>Regenerate the latest result for the same user task. Re-check the current workspace state, use tools whenever the task requires them, and produce a fresh verified result.</regeneration>"
+        : "",
       "<web_research>When the user asks for public-web research or current information, use mcp__lumen__web_search. Run distinct precise queries as needed, then use Browser only to inspect selected results. Search queries and results are retained as task Sources.</web_research>",
       attachmentBlock,
       prompt
     ].filter(Boolean).join("\n\n");
     const selectedModel = opts.model || settings.model;
-    const session = claudeSessions.get(task.id) || { started: false };
+    const session = agentSessions.get(task.id) || { started: false };
     const tools = [
       "Bash",
       "Read",
@@ -1428,33 +1550,43 @@ export function registerCoworkIpc(): void {
       "Write",
       "Glob",
       "Grep",
+      "Task",
+      "TaskOutput",
+      "TaskStop",
       "mcp__lumen__web_search",
       "mcp__lumen__browser_open",
       "mcp__lumen__browser_snapshot",
       "mcp__lumen__browser_click",
       "mcp__lumen__browser_type",
       "mcp__lumen__browser_screenshot",
+      "mcp__lumen__browser_console",
+      "mcp__lumen__browser_network",
       "mcp__lumen__sites_preview",
       "mcp__lumen__sites_status",
       "mcp__lumen__plugins_list",
+      "mcp__lumen__skills_list",
+      "mcp__lumen__skills_read",
       "mcp__lumen__chrome_open",
       "mcp__lumen__chrome_snapshot",
       "mcp__lumen__chrome_click",
       "mcp__lumen__chrome_type",
-      "mcp__lumen__chrome_screenshot"
+      "mcp__lumen__chrome_screenshot",
+      "mcp__lumen__chrome_console",
+      "mcp__lumen__chrome_network"
     ].filter((tool) => {
       if (tool.includes("__browser_")) return settings.plugins.browser;
-      if (tool.includes("__sites_")) return settings.plugins.sites;
+      if (tool.includes("__sites_")) {
+        return settings.plugins.sites && settings.computerUseChromeEnabled;
+      }
       if (tool.includes("__plugins_")) return settings.plugins.plugins;
       if (tool.includes("__chrome_")) return settings.computerUseChromeEnabled;
       return true;
     });
 
     try {
-      await ensureClaudeBridge();
       const toolHost = await ensureToolHost();
       if (compactedContext) compactContexts.delete(task.id);
-      startPersistentClaudeRun({
+      startPersistentAgentRun({
         win,
         task,
         assistant,
@@ -1480,7 +1612,16 @@ export function registerCoworkIpc(): void {
       assistant.status = "error";
       assistant.activity = "Task failed";
       assistant.content = `启动失败: ${reason}`;
-      saveCoworkMessage(assistant);
+      if (isRegeneration && replacedAssistant) {
+        const failedIndex = taskMessages.findIndex((message) => message.id === assistant.id);
+        if (failedIndex >= 0) taskMessages.splice(failedIndex, 1);
+        taskMessages.push(replacedAssistant);
+        deletePersistedCoworkMessage(assistant.id);
+        saveCoworkMessage(replacedAssistant);
+        messages.set(task.id, taskMessages);
+      } else {
+        saveCoworkMessage(assistant);
+      }
       win?.webContents.send("cowork:event", {
         taskId: task.id,
         messageId: assistant.id,

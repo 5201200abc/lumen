@@ -97,7 +97,7 @@ export function CodeTerminal({ theme }: Props) {
     });
 
     const offExit = window.lumen.terminal.onExit((code) => {
-      term.writeln(`\r\n\x1b[33m[Claude Code 进程已退出 (代码: ${code})，可点击顶部按钮重新启动]\x1b[0m\r\n`);
+      term.writeln(`\r\n\x1b[33m[终端进程已退出 (代码: ${code})，可点击顶部按钮重新启动]\x1b[0m\r\n`);
     });
 
     const termDataSub = term.onData((data) => {
@@ -149,7 +149,7 @@ export function CodeTerminal({ theme }: Props) {
     setRestarting(true);
     if (termRef.current) {
       termRef.current.clear();
-      termRef.current.writeln(`\x1b[36m[正在重启 Claude Code 终端会话]\x1b[0m\r\n`);
+      termRef.current.writeln(`\x1b[36m[正在重启本地终端会话]\x1b[0m\r\n`);
       const res = await window.lumen.terminal.restart({
         cols: termRef.current.cols,
         rows: termRef.current.rows,
@@ -171,7 +171,7 @@ export function CodeTerminal({ theme }: Props) {
     <div className="terminal-view">
       <div className="terminal-toolbar">
         <div className="terminal-meta">
-          <span className="terminal-tag">Claude Code</span>
+          <span className="terminal-tag">Local Shell</span>
           <span className="terminal-path" title={cwd}>
             📁 {compactPath}
           </span>
