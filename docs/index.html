@@ -237,7 +237,7 @@
       position: relative;
     }
 
-    /* Left Button: Primary Download (Auto-detected OS, Clean Single Line with Version) */
+    /* Primary source button */
     .btn-download-primary {
       flex: 1.2;
       background: var(--primary-bg);
@@ -272,126 +272,6 @@
       transform: translateY(0);
     }
 
-    /* Right Button: Dropdown Container */
-    .dropdown-wrapper {
-      flex: 0.8;
-      position: relative;
-    }
-
-    .btn-dropdown-trigger {
-      width: 100%;
-      height: 50px;
-      background: var(--glass);
-      backdrop-filter: blur(var(--blur-strength));
-      -webkit-backdrop-filter: blur(var(--blur-strength));
-      color: var(--fg);
-      border: 1px solid var(--glass-border-hover);
-      padding: 0 20px;
-      border-radius: 14px;
-      font-family: var(--font-body);
-      font-size: 15px;
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      text-decoration: none;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      white-space: nowrap;
-    }
-
-    .btn-dropdown-trigger:hover {
-      background: var(--glass-dropdown);
-      border-color: var(--fg);
-      transform: translateY(-2px);
-      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
-    }
-
-    .btn-dropdown-trigger:active {
-      transform: translateY(0);
-    }
-
-    .chevron-icon {
-      transition: transform 0.2s ease;
-    }
-
-    .dropdown-wrapper.open .chevron-icon {
-      transform: rotate(180deg);
-    }
-
-    /* Floating Dropdown Menu */
-    .dropdown-menu {
-      position: absolute;
-      top: calc(100% + 10px);
-      right: 0;
-      width: 320px;
-      background: var(--glass-dropdown);
-      backdrop-filter: blur(32px);
-      -webkit-backdrop-filter: blur(32px);
-      border: 1px solid var(--glass-border-hover);
-      border-radius: 16px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-      padding: 12px;
-      text-align: left;
-      opacity: 0;
-      visibility: hidden;
-      transform: translateY(-8px) scale(0.97);
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      z-index: 100;
-      max-height: calc(100vh - 120px);
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      scrollbar-width: thin;
-      scrollbar-color: var(--glass-border-hover) transparent;
-    }
-
-    .dropdown-wrapper.open .dropdown-menu {
-      opacity: 1;
-      visibility: visible;
-      transform: translateY(0) scale(1);
-    }
-
-    .menu-section {
-      margin-bottom: 8px;
-    }
-
-    .menu-section:last-child {
-      margin-bottom: 0;
-    }
-
-    .menu-section-title {
-      font-family: var(--font-mono);
-      font-size: 10.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: var(--accent-copper);
-      padding: 6px 10px 4px;
-      font-weight: 500;
-    }
-
-    .dropdown-link {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 10px;
-      border-radius: 8px;
-      text-decoration: none;
-      color: var(--fg);
-      font-size: 13px;
-      transition: all 0.12s ease;
-    }
-
-    .dropdown-link:hover {
-      background: var(--glass-hover);
-      transform: translateX(2px);
-    }
-
-    .link-primary {
-      font-weight: 500;
-    }
-
     /* Bottom Legal Links */
     .legal-links {
       position: fixed;
@@ -419,8 +299,7 @@
       .brand-wordmark { font-size: 36px; }
       .brand-subtext { font-size: 13px; }
       .buttons-row { flex-direction: column; gap: 12px; }
-      .btn-download-primary, .dropdown-wrapper { width: 100%; }
-      .dropdown-menu { width: 100%; right: 0; }
+      .btn-download-primary { width: 100%; }
       .top-controls { top: 18px; right: 18px; }
       .legal-links { bottom: 14px; }
     }
@@ -483,91 +362,16 @@
       本地开源模型对话与 Cowork 智能体桌面应用。
     </p>
 
-    <!-- The Two Buttons (左右各一个按钮) -->
+    <!-- Source -->
     <div class="buttons-row">
-      <!-- Left Button: Primary Download for Detected OS with Version -->
-      <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-mac-arm64.dmg" id="primaryDownloadBtn" class="btn-download-primary">
+      <a href="https://github.com/5201200abc/lumen" id="primaryDownloadBtn" class="btn-download-primary" target="_blank" rel="noopener noreferrer">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
+          <path d="M16 18l6-6-6-6"/>
+          <path d="M8 6l-6 6 6 6"/>
+          <path d="M14.5 4l-5 16"/>
         </svg>
-        <span id="primaryBtnLabel">下载 macOS 版 v0.7.0</span>
+        <span id="primaryBtnLabel">查看源代码</span>
       </a>
-
-      <!-- Right Button: Dropdown Menu Trigger for Other Clients -->
-      <div class="dropdown-wrapper" id="dropdownWrapper">
-        <button type="button" class="btn-dropdown-trigger" onclick="toggleDropdown(event)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-          <span id="dropdownBtnLabel">其他客户端</span>
-          <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"></polyline>
-          </svg>
-        </button>
-
-        <!-- Dropdown Menu List -->
-        <div class="dropdown-menu" id="dropdownMenu" onclick="event.stopPropagation()">
-          <!-- macOS -->
-          <div class="menu-section">
-            <div class="menu-section-title">macOS</div>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-mac-arm64.dmg" class="dropdown-link" id="linkMacArmDmg">
-              <span class="link-primary" id="txtMacArmDmg">Apple Silicon (M1/M2/M3/M4) DMG</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-mac-arm64.zip" class="dropdown-link" id="linkMacArmZip">
-              <span class="link-primary" id="txtMacArmZip">Apple Silicon 便携免安装版</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-mac-x64.dmg" class="dropdown-link" id="linkMacIntelDmg">
-              <span class="link-primary" id="txtMacIntelDmg">Intel Core (x64) DMG</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-mac-x64.zip" class="dropdown-link" id="linkMacIntelZip">
-              <span class="link-primary" id="txtMacIntelZip">Intel Core (x64) 免安装版</span>
-            </a>
-          </div>
-
-          <!-- Windows -->
-          <div class="menu-section">
-            <div class="menu-section-title">Windows</div>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-Setup-0.7.0-x64.exe" class="dropdown-link" id="linkWinX64">
-              <span class="link-primary" id="txtWinX64">Windows 64-bit 安装向导</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-Portable-0.7.0-x64.exe" class="dropdown-link" id="linkWinPortable">
-              <span class="link-primary" id="txtWinPortable">Windows 绿色便携版</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-Setup-0.7.0-arm64.exe" class="dropdown-link" id="linkWinArm">
-              <span class="link-primary" id="txtWinArm">Windows ARM64 (骁龙 X)</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-windows-x64.zip" class="dropdown-link" id="linkWinZip">
-              <span class="link-primary" id="txtWinZip">Windows 64-bit ZIP 压缩包</span>
-            </a>
-          </div>
-
-          <!-- Linux -->
-          <div class="menu-section">
-            <div class="menu-section-title">Linux</div>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-linux-x86_64.AppImage" class="dropdown-link" id="linkLinuxAppImage">
-              <span class="link-primary" id="txtLinuxAppImage">Linux x64 免安装版</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-linux-amd64.deb" class="dropdown-link" id="linkLinuxDeb">
-              <span class="link-primary" id="txtLinuxDeb">Debian / Ubuntu 软件包</span>
-            </a>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/Lumen-0.7.0-linux-arm64.AppImage" class="dropdown-link" id="linkLinuxArm">
-              <span class="link-primary" id="txtLinuxArm">Linux ARM64 (树莓派)</span>
-            </a>
-          </div>
-
-          <!-- Checksums -->
-          <div class="menu-section">
-            <div class="menu-section-title" id="txtSectionChecksum">校验</div>
-            <a href="https://github.com/5201200abc/lumen/releases/download/0.7.0/SHA256SUMS.txt" class="dropdown-link" id="linkChecksums" target="_blank" rel="noopener noreferrer">
-              <span class="link-primary" id="txtChecksums">SHA256SUMS 校验清单</span>
-            </a>
-          </div>
-        </div>
-      </div>
     </div>
   </main>
 
@@ -696,52 +500,16 @@
       zh: {
         guideTitle: '使用文档',
         subtitle: '本地开源模型对话与 Cowork 智能体桌面应用。',
-        downloadMac: '下载 macOS 版',
-        downloadWin: '下载 Windows 版',
-        downloadLinux: '下载 Linux 版',
-        dropdownBtn: '其他客户端',
-        macArmDmg: 'Apple Silicon (M1/M2/M3/M4) DMG',
-        macArmZip: 'Apple Silicon 免安装版',
-        macIntelDmg: 'Intel Core (x64) DMG',
-        macIntelZip: 'Intel Core (x64) 免安装版',
-        winX64: 'Windows 64-bit 安装向导',
-        winPortable: 'Windows 绿色便携版',
-        winArm: 'Windows ARM64 (骁龙 X)',
-        winZip: 'Windows 64-bit ZIP 压缩包',
-        linuxAppImage: 'Linux x64 免安装版',
-        linuxDeb: 'Debian / Ubuntu 软件包',
-        linuxArm: 'Linux ARM64 (树莓派)',
-        checksumSection: '校验',
-        checksums: 'SHA256SUMS 校验清单'
+        sourceCode: '查看源代码'
       },
       en: {
         guideTitle: 'Usage guide',
         subtitle: 'Local open-source model chat & Cowork agent desktop app.',
-        downloadMac: 'Download for macOS',
-        downloadWin: 'Download for Windows',
-        downloadLinux: 'Download for Linux',
-        dropdownBtn: 'Other Clients',
-        macArmDmg: 'Apple Silicon (M1/M2/M3/M4) DMG',
-        macArmZip: 'Apple Silicon Portable ZIP',
-        macIntelDmg: 'Intel Core (x64) DMG',
-        macIntelZip: 'Intel Core (x64) Portable ZIP',
-        winX64: 'Windows 64-bit Installer',
-        winPortable: 'Windows Portable EXE',
-        winArm: 'Windows ARM64 (Snapdragon)',
-        winZip: 'Windows 64-bit Portable ZIP',
-        linuxAppImage: 'Linux x64 AppImage',
-        linuxDeb: 'Debian / Ubuntu (.deb)',
-        linuxArm: 'Linux ARM64 (Raspberry Pi)',
-        checksumSection: 'Checksums',
-        checksums: 'SHA256SUMS Checksums'
+        sourceCode: 'View source'
       }
     };
 
     let currentLang = localStorage.getItem('lumen_lang') || 'zh';
-    let detectedOS = 'mac-arm';
-    let latestVersion = '0.7.0';
-    let assetMap = {};
-
     function applyLanguage(lang) {
       currentLang = lang;
       localStorage.setItem('lumen_lang', lang);
@@ -751,204 +519,15 @@
       const guideBtn = document.getElementById('guideBtn');
       if (guideBtn) guideBtn.title = t.guideTitle;
       document.getElementById('heroSubtitle').textContent = t.subtitle;
-      document.getElementById('dropdownBtnLabel').textContent = t.dropdownBtn;
-
-      // Update dropdown menu items
-      document.getElementById('txtMacArmDmg').textContent = t.macArmDmg;
-      document.getElementById('txtMacArmZip').textContent = t.macArmZip;
-      document.getElementById('txtMacIntelDmg').textContent = t.macIntelDmg;
-      document.getElementById('txtMacIntelZip').textContent = t.macIntelZip;
-      document.getElementById('txtWinX64').textContent = t.winX64;
-      document.getElementById('txtWinPortable').textContent = t.winPortable;
-      document.getElementById('txtWinArm').textContent = t.winArm;
-      document.getElementById('txtWinZip').textContent = t.winZip;
-      document.getElementById('txtLinuxAppImage').textContent = t.linuxAppImage;
-      document.getElementById('txtLinuxDeb').textContent = t.linuxDeb;
-      document.getElementById('txtLinuxArm').textContent = t.linuxArm;
-      document.getElementById('txtSectionChecksum').textContent = t.checksumSection;
-      document.getElementById('txtChecksums').textContent = t.checksums;
-
-      updateDetectedDownload();
+      document.getElementById('primaryBtnLabel').textContent = t.sourceCode;
     }
 
     function toggleLanguage() {
       applyLanguage(currentLang === 'zh' ? 'en' : 'zh');
     }
 
-    // High Accuracy OS & Architecture Detection
-    function detectPlatform() {
-      if (navigator.userAgentData) {
-        const p = (navigator.userAgentData.platform || '').toLowerCase();
-        if (p.includes('win')) return 'win-x64';
-        if (p.includes('linux')) return 'linux-x64';
-        if (p.includes('mac')) return 'mac-arm';
-      }
-
-      const ua = (navigator.userAgent || '').toLowerCase();
-      const plat = (navigator.platform || '').toLowerCase();
-
-      if (ua.includes('win') || plat.includes('win')) {
-        if (ua.includes('arm64') || ua.includes('snapdragon')) return 'win-arm';
-        return 'win-x64';
-      }
-
-      if (ua.includes('linux') || plat.includes('linux')) {
-        if (ua.includes('aarch64') || ua.includes('arm64')) return 'linux-arm';
-        return 'linux-x64';
-      }
-
-      if (ua.includes('mac') || plat.includes('mac') || plat.includes('darwin')) {
-        let isAppleSilicon = true;
-        try {
-          const canvas = document.createElement('canvas');
-          const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-          if (gl) {
-            const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-            if (dbg) {
-              const renderer = (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
-              if (renderer.includes('intel')) {
-                isAppleSilicon = false;
-              } else if (renderer.includes('apple')) {
-                isAppleSilicon = true;
-              }
-            }
-          }
-        } catch(e) {}
-        return isAppleSilicon ? 'mac-arm' : 'mac-intel';
-      }
-
-      return 'mac-arm';
-    }
-
-    // Update Primary Button: Displays OS + Specific Architecture + Version
-    function updateDetectedDownload() {
-      const isZh = currentLang === 'zh';
-      let label = '';
-      let link = '';
-
-      switch (detectedOS) {
-        case 'mac-arm':
-          label = isZh ? ('下载 macOS 版 v' + latestVersion) : ('Download for macOS v' + latestVersion);
-          link = 'https://github.com/5201200abc/lumen/releases/download/' + latestVersion + '/Lumen-' + latestVersion + '-mac-arm64.dmg';
-          break;
-        case 'mac-intel':
-          label = isZh ? ('下载 macOS (Intel) v' + latestVersion) : ('Download for macOS (Intel) v' + latestVersion);
-          link = 'https://github.com/5201200abc/lumen/releases/download/' + latestVersion + '/Lumen-' + latestVersion + '-mac-x64.dmg';
-          break;
-        case 'win-x64':
-          label = isZh ? ('下载 Windows 版 v' + latestVersion) : ('Download for Windows v' + latestVersion);
-          link = 'https://github.com/5201200abc/lumen/releases/download/' + latestVersion + '/Lumen-Setup-' + latestVersion + '-x64.exe';
-          break;
-        case 'win-arm':
-          label = isZh ? ('下载 Windows (ARM64) v' + latestVersion) : ('Download for Windows (ARM64) v' + latestVersion);
-          link = 'https://github.com/5201200abc/lumen/releases/download/' + latestVersion + '/Lumen-Setup-' + latestVersion + '-arm64.exe';
-          break;
-        case 'linux-arm':
-          label = isZh ? ('下载 Linux (ARM64) v' + latestVersion) : ('Download for Linux (ARM64) v' + latestVersion);
-          link = 'https://github.com/5201200abc/lumen/releases/download/' + latestVersion + '/Lumen-' + latestVersion + '-linux-arm64.AppImage';
-          break;
-        case 'linux-x64':
-        default:
-          label = isZh ? ('下载 Linux 版 v' + latestVersion) : ('Download for Linux v' + latestVersion);
-          link = 'https://github.com/5201200abc/lumen/releases/download/' + latestVersion + '/Lumen-' + latestVersion + '-linux-x86_64.AppImage';
-          break;
-      }
-
-      if (assetMap[detectedOS]) {
-        link = assetMap[detectedOS];
-      }
-
-      const btn = document.getElementById('primaryDownloadBtn');
-      const btnLabel = document.getElementById('primaryBtnLabel');
-      if (btnLabel) btnLabel.textContent = label;
-      if (btn) btn.href = link;
-    }
-
-    detectedOS = detectPlatform();
     applyLanguage(currentLang);
 
-    // Dynamic release version resolution from GitHub API
-    async function syncLatestRelease() {
-      try {
-        const res = await fetch('https://api.github.com/repos/5201200abc/lumen/releases/latest');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data && data.tag_name) {
-          latestVersion = data.tag_name.replace(/^v/, '');
-          if (Array.isArray(data.assets)) {
-            data.assets.forEach(asset => {
-              const name = asset.name;
-              const url = asset.browser_download_url;
-              if (name.includes('mac-arm64.dmg')) {
-                assetMap['mac-arm'] = url;
-                const el = document.getElementById('linkMacArmDmg');
-                if (el) el.href = url;
-              } else if (name.includes('mac-arm64.zip')) {
-                const el = document.getElementById('linkMacArmZip');
-                if (el) el.href = url;
-              } else if (name.includes('mac-x64.dmg')) {
-                assetMap['mac-intel'] = url;
-                const el = document.getElementById('linkMacIntelDmg');
-                if (el) el.href = url;
-              } else if (name.includes('mac-x64.zip')) {
-                const el = document.getElementById('linkMacIntelZip');
-                if (el) el.href = url;
-              } else if (name.includes('Setup') && name.includes('x64.exe')) {
-                assetMap['win-x64'] = url;
-                const el = document.getElementById('linkWinX64');
-                if (el) el.href = url;
-              } else if (name.includes('Portable') && name.includes('x64.exe')) {
-                const el = document.getElementById('linkWinPortable');
-                if (el) el.href = url;
-              } else if (name.includes('Setup') && name.includes('arm64.exe')) {
-                assetMap['win-arm'] = url;
-                const el = document.getElementById('linkWinArm');
-                if (el) el.href = url;
-              } else if (name.includes('windows-x64.zip')) {
-                const el = document.getElementById('linkWinZip');
-                if (el) el.href = url;
-              } else if (name.includes('linux-x86_64.AppImage')) {
-                assetMap['linux-x64'] = url;
-                const el = document.getElementById('linkLinuxAppImage');
-                if (el) el.href = url;
-              } else if (name.includes('linux-amd64.deb')) {
-                const el = document.getElementById('linkLinuxDeb');
-                if (el) el.href = url;
-              } else if (name.includes('linux-arm64.AppImage')) {
-                assetMap['linux-arm'] = url;
-                const el = document.getElementById('linkLinuxArm');
-                if (el) el.href = url;
-              } else if (name.includes('SHA256SUMS')) {
-                const el = document.getElementById('linkChecksums');
-                if (el) el.href = url;
-              }
-            });
-          }
-          updateDetectedDownload();
-        }
-      } catch (err) {}
-    }
-    syncLatestRelease();
-
-    // Dropdown Toggle Logic
-    const dropdownWrapper = document.getElementById('dropdownWrapper');
-
-    function toggleDropdown(e) {
-      e.stopPropagation();
-      dropdownWrapper.classList.toggle('open');
-    }
-
-    document.addEventListener('click', (e) => {
-      if (!dropdownWrapper.contains(e.target)) {
-        dropdownWrapper.classList.remove('open');
-      }
-    });
-
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        dropdownWrapper.classList.remove('open');
-      }
-    });
   </script>
 </body>
 </html>

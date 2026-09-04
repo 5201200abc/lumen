@@ -4,10 +4,11 @@
 
 本地开源模型驱动的桌面 Chat 与 Cowork 智能体。
 
-## 1. 安装 Lumen
+## 1. 运行 Lumen
 
-1. 从 [GitHub Releases](https://github.com/5201200abc/lumen/releases/latest) 下载 macOS、Windows 或 Linux 的 x64/ARM64 版本。
-2. 打开应用。Lumen 不包含模型权重。
+1. 安装 Node.js 22.12 或更高版本。
+2. 克隆本仓库，执行 `npm ci`，再执行 `npm run dev`。
+3. Lumen 不包含模型权重。
 
 ## 2. 安装 llama-server
 

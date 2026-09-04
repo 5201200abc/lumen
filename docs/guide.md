@@ -2,11 +2,11 @@
 
 English is the default. Follow the steps in order.
 
-## 1. Install Lumen
+## 1. Run Lumen
 
-### Download
+### From source
 
-Get the build for your OS from [GitHub Releases](https://github.com/5201200abc/lumen/releases/latest).
+Install Node.js 22.12 or newer, clone this repository, then run `npm ci` and `npm run dev`.
 
 ### Open
 
@@ -116,7 +116,3 @@ Settings → Instructions. Model style lives in `~/.config/llama/LLAMA.md`.
 npm ci
 npm run dev
 ```
-
-### Release
-
-Node ≥ 22.12. Bump `package.json`, then `git tag -a 0.7.0` and push the tag.

@@ -2,11 +2,11 @@
 
 按照步骤依次配置即可快速上手。
 
-## 1. 安装 Lumen
+## 1. 运行 Lumen
 
-### 下载安装
+### 从源码运行
 
-从 [GitHub Releases](https://github.com/5201200abc/lumen/releases/latest) 下载适用于你操作系统的安装包（macOS、Windows、Linux）。
+安装 Node.js 22.12 或更高版本，克隆本仓库，然后执行 `npm ci` 和 `npm run dev`。
 
 ### 启动应用
 
@@ -115,13 +115,4 @@ Cowork 基于 Claude Agent SDK 驱动，并通过 Lumen 独创的本地模型桥
 ```bash
 npm ci
 npm run dev
-```
-
-### 打包发布
-
-需 Node ≥ 22.12。更新 `package.json` 中的版本号，然后创建并推送 git tag：
-
-```bash
-git tag -a 0.7.0 -m "Release 0.7.0"
-git push origin main 0.7.0
 ```

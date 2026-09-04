@@ -4,10 +4,11 @@ Local open-source model chat and Cowork agent for the desktop.
 
 [中文](README.zh.md) · [Usage guide](https://5201200abc.github.io/lumen/guide.html)
 
-## 1. Install Lumen
+## 1. Run Lumen
 
-1. Download macOS / Windows / Linux (x64 or ARM64) from [GitHub Releases](https://github.com/5201200abc/lumen/releases/latest).
-2. Open the app. Lumen does not ship model weights.
+1. Install Node.js 22.12 or newer.
+2. Clone this repository, run `npm ci`, then `npm run dev`.
+3. Lumen does not ship model weights.
 
 ## 2. Install llama-server
 
@@ -50,12 +51,3 @@ Lumen runs a directory router (`--models-max 1`): every GGUF stays registered; o
 npm ci
 npm run dev
 ```
-
-Release: bump `package.json`, then:
-
-```bash
-git tag -a 0.7.0 -m "Release 0.7.0"
-git push origin main 0.7.0
-```
-
-CI builds six OS/arch artifacts and `SHA256SUMS.txt`.
